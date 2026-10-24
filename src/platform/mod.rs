@@ -17,7 +17,23 @@ pub struct RunningProcess {
     pub pids: Vec<u32>,
 }
 #[cfg(windows)]
+pub use windows::picker::choose_executable;
+#[cfg(windows)]
 pub use windows::process::running_processes;
+#[cfg(windows)]
+pub use windows::startup::{autostart_enabled, set_autostart};
+#[cfg(not(windows))]
+pub fn choose_executable() -> anyhow::Result<Option<String>> {
+    anyhow::bail!("Выбор EXE пока поддерживается только в Windows")
+}
+#[cfg(not(windows))]
+pub fn autostart_enabled() -> Result<bool> {
+    Ok(false)
+}
+#[cfg(not(windows))]
+pub fn set_autostart(_: bool) -> Result<bool> {
+    anyhow::bail!("Автозапуск пока поддерживается только в Windows")
+}
 #[cfg(not(windows))]
 pub fn running_processes() -> anyhow::Result<Vec<RunningProcess>> {
     anyhow::bail!("Выбор запущенных процессов пока поддерживается только в Windows")

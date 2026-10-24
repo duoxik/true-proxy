@@ -1,6 +1,6 @@
-import { CheckBox, ComboBox, ScrollView, AboutSlint, Palette } from "std-widgets.slint";
+import { CheckBox, ComboBox, ScrollView, Palette } from "std-widgets.slint";
 
-export struct ProxyRow { id: string, name: string, address: string, status: string }
+export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, health: int, udp: bool }
 export struct RuleRow { id: string, name: string, process: string, conditions: string, route: string, enabled: bool }
 export struct LogRow { process: string, destination: string, route: string, message: string }
 export struct ProcessChoice { key: string, name: string, path: string, pids: string, instances: int, selected: bool }
@@ -81,19 +81,70 @@ component Field inherits VerticalLayout {
     }
 }
 
+component RuleSwitch inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback toggled;
+    width: 44px; height: 38px;
+    opacity: root.enabled ? 1 : 0.45;
+    Rectangle { y: 7px; width: 42px; height: 24px; border-radius: 12px; background: root.checked ? Theme.accent : Theme.switch-off;
+        border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
+        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.checked ? Theme.primary-text : #d9dfed; animate x { duration: 100ms; } }
+    }
+    TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
+    focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }
+    forward-focus: focus;
+    accessible-role: switch; accessible-label: root.label; accessible-checked: root.checked; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.toggled(); } }
+}
+
+component Disclosure inherits Rectangle {
+    in property <bool> expanded;
+    in property <string> label;
+    in property <int> count;
+    callback clicked;
+    height: 40px; border-radius: 6px;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+    HorizontalLayout { padding-left: 7px; padding-right: 10px; spacing: 10px;
+        Rectangle { width: 14px; Path { y: (parent.height - 12px) / 2; width: 12px; height: 12px; viewbox-width: 12; viewbox-height: 12; stroke: Theme.secondary; stroke-width: 1.5px; commands: root.expanded ? "M2 4 L6 8 L10 4" : "M4 2 L8 6 L4 10"; } }
+        Text { text: root.label; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+        if root.count > 0: Text { text: root.count + " условий"; color: Theme.muted; font-size: 10px; horizontal-alignment: right; vertical-alignment: center; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+    focus := FocusScope { width: 0px; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
+    forward-focus: focus;
+    accessible-role: button; accessible-label: root.label; accessible-expanded: root.expanded;
+    accessible-action-default => { root.clicked(); }
+}
+
 component ListEditor inherits VerticalLayout {
     in property <string> title;
     in property <string> placeholder;
     in property <string> extra-label;
+    in property <bool> applications: false;
+    in property <bool> show-input: true;
     in property <[string]> values;
     in-out property <string> draft;
     callback add(string);
     callback remove(int);
     callback extra;
+    callback choose(int);
     spacing: 7px;
     HorizontalLayout { height: 32px;
         Text { text: root.title + (root.values.length > 0 ? " · " + root.values.length : ""); color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; }
         if root.extra-label != "": ActionButton { label: root.extra-label; height: 32px; clicked => { root.extra(); } }
+        if root.applications: Rectangle { width: 38px; height: 32px;
+            ActionButton { label: "+"; accessible-label: "Добавить приложение"; height: 32px; clicked => { add-menu.show(); } }
+            add-menu := PopupWindow { x: parent.width - self.width; y: parent.height + 5px; width: 250px; height: 136px;
+                close-policy: close-on-click-outside;
+                Rectangle { background: Theme.surface; border-radius: 8px; border-width: 1px; border-color: Theme.border;
+                    VerticalLayout { padding: 6px; spacing: 3px;
+                        for label[index] in ["Вручную", "Из запущенных процессов", "Путь до EXE"]: ActionButton { label: label; min-width: parent.width; max-width: parent.width; height: 38px; clicked => { root.choose(index); add-menu.close(); } }
+                    }
+                }
+            }
+        }
     }
     for value[index] in root.values: Rectangle { height: 34px; border-radius: 6px; background: Theme.field; border-width: 1px; border-color: Theme.border;
         HorizontalLayout { padding-left: 12px; spacing: 8px;
@@ -101,7 +152,7 @@ component ListEditor inherits VerticalLayout {
             ActionButton { label: "×"; height: 34px; accessible-label: "Удалить " + value; clicked => { root.remove(index); } }
         }
     }
-    HorizontalLayout { spacing: 8px;
+    if root.show-input: HorizontalLayout { spacing: 8px;
         Field { placeholder: root.placeholder; value <=> root.draft; accepted => { let count = root.values.length; root.add(root.draft); if root.values.length > count { root.draft = ""; } } }
         ActionButton { label: "Добавить"; enabled: root.draft != ""; clicked => { let count = root.values.length; root.add(root.draft); if root.values.length > count { root.draft = ""; } } }
     }
@@ -110,12 +161,10 @@ component ListEditor inherits VerticalLayout {
 component StatCard inherits Rectangle {
     in property <string> label;
     in property <string> value;
-    in property <string> detail;
     background: Theme.surface; border-radius: 10px; border-width: 1px; border-color: Theme.border;
     VerticalLayout { padding: 20px; spacing: 7px;
         Text { text: root.label; font-size: 10px; color: Theme.secondary; }
         Text { text: root.value; font-size: 27px; font-weight: 600; color: Theme.text; }
-        Text { text: root.detail; font-size: 10px; color: Theme.muted; }
     }
 }
 
@@ -129,7 +178,8 @@ export component MainWindow inherits Window {
     in property <bool> active: false;
     in property <bool> busy: false;
     in property <bool> probe-busy: false;
-    in property <bool> admin: false;
+    in-out property <bool> autostart-enabled: false;
+    in property <bool> autostart-busy: false;
     in property <string> status: "Настройте подключение";
     in property <string> app-version: "dev";
     in property <bool> update-available;
@@ -143,6 +193,7 @@ export component MainWindow inherits Window {
     in property <string> uploaded: "0 Б";
     in property <string> downloaded: "0 Б";
     in property <string> connection-count: "0";
+    in property <string> uptime: "00:00:00";
     in property <string> blocked-count: "0";
     in property <[ProxyRow]> proxies;
     in property <[RuleRow]> rules;
@@ -173,9 +224,12 @@ export component MainWindow inherits Window {
     in property <[string]> form-domains;
     in property <[string]> form-networks;
     in property <[string]> form-ports;
-    in-out property <bool> form-use-domains: false;
     in-out property <bool> form-advanced: false;
     in-out property <bool> form-show-paths: false;
+    in-out property <bool> form-manual: false;
+    in property <string> form-probe-status;
+    in property <string> form-probe-token;
+    in property <int> form-probe-health;
     in-out property <string> form-new-process;
     in-out property <string> form-new-path;
     in-out property <string> form-new-domain;
@@ -185,21 +239,25 @@ export component MainWindow inherits Window {
     in-out property <int> form-action: 0;
     in-out property <int> form-proxy: 0;
     in-out property <bool> form-enabled: true;
-    in-out property <int> settings-default: 0;
-    in-out property <int> settings-default-proxy: 0;
+    in-out property <int> fallback-action: 0;
+    in-out property <int> fallback-proxy: 0;
     callback toggle;
     callback add-proxy;
     callback edit-proxy(string);
     callback save-proxy;
     callback delete-proxy(string);
     callback probe-proxy(string);
+    callback probe-proxy-form;
+    callback proxy-form-edited;
+    callback add-application(int);
     callback add-rule;
     callback edit-rule(string);
     callback save-rule;
     callback delete-rule(string);
     callback toggle-rule(string);
     callback move-rule(string, int);
-    callback save-settings;
+    callback save-fallback;
+    callback set-autostart(bool);
     callback clear-logs;
     callback hide-window;
     callback close-dialog;
@@ -244,16 +302,7 @@ export component MainWindow inherits Window {
             HorizontalLayout { height: 55px; spacing: 16px;
                 VerticalLayout { spacing: 5px;
                     Text { text: ["Обзор", "Правила маршрутизации", "Прокси-серверы", "Соединения", "Настройки"][root.page]; font-size: 25px; font-weight: 600; color: Theme.text; }
-                    Text { text: ["Все подключения — по вашим правилам.", "Первое совпавшее правило определяет маршрут.", "Ваши точки выхода в сеть.", "Последние события сетевого слоя.", "Запуск приложения и маршрут по умолчанию."][root.page]; color: Theme.secondary; font-size: 11px; }
-                }
-                Text { text: root.busy ? "Подождите…" : root.active ? "Включено" : "Выключено"; font-size: 11px; color: root.active ? Theme.success : Theme.secondary; vertical-alignment: center; horizontal-alignment: right; }
-                Rectangle { width: 52px; height: 44px;
-                    Rectangle { y: 9px; width: 48px; height: 26px; border-radius: 13px; background: root.active ? Theme.accent : switch-touch.has-hover ? #505c76 : Theme.switch-off;
-                        Rectangle { x: root.active ? 25px : 3px; y: 3px; width: 20px; height: 20px; border-radius: 10px; background: root.active ? Theme.primary-text : #d9dfed; animate x { duration: 120ms; } }
-                    }
-                    switch-touch := TouchArea { enabled: !root.busy; mouse-cursor: pointer; clicked => { root.toggle(); } }
-                    accessible-role: switch; accessible-label: "Маршрутизация"; accessible-checked: root.active; accessible-enabled: !root.busy;
-                    accessible-action-default => { if !root.busy { root.toggle(); } }
+                    Text { text: ["Все подключения — по вашим правилам.", "Первое совпавшее правило определяет маршрут.", "Ваши точки выхода в сеть.", "Последние события сетевого слоя.", "Запуск приложения и обновления."][root.page]; color: Theme.secondary; font-size: 11px; }
                 }
             }
             if root.notice != "": Rectangle { min-height: 48px; border-radius: 8px; background: Theme.warning-surface;
@@ -275,45 +324,65 @@ export component MainWindow inherits Window {
                 horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                 content-height: max(self.visible-height, overview-content.preferred-height);
                 overview-content := VerticalLayout { spacing: 18px; padding-right: 15px; padding-bottom: 20px;
-                Rectangle { height: 155px; border-radius: 14px; background: @linear-gradient(110deg, #202940, #181e2d); border-width: 1px; border-color: #34405d;
-                    HorizontalLayout { padding: 26px; spacing: 18px;
-                        VerticalLayout { spacing: 10px;
-                            Text { text: root.active ? "Ваш трафик под контролем" : "Ваш трафик. Ваши правила."; color: Theme.text; font-size: 23px; font-weight: 600; }
-                            Text { text: root.status; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
-                            HorizontalLayout { alignment: start; spacing: 9px; for badge in ["TCP", "UDP", "SOCKS5"]: Rectangle { width: 55px; height: 21px; border-radius: 5px; background: Theme.accent-soft; Text { text: badge; color: Theme.accent; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; } } }
+                VerticalLayout { height: 345px; alignment: center; spacing: 18px;
+                    HorizontalLayout { alignment: center;
+                        power := Rectangle { width: 150px; height: 150px; border-radius: 75px; border-width: 1px;
+                            background: root.active ? Theme.accent-soft : power-touch.has-hover ? Theme.accent-hover : Theme.accent;
+                            border-color: root.active ? Theme.accent : Theme.accent-hover;
+                            opacity: root.busy ? 0.5 : 1;
+                            Path { x: 49px; y: 42px; width: 52px; height: 52px; viewbox-width: 48; viewbox-height: 48;
+                                stroke: root.active ? Theme.accent : Theme.primary-text; stroke-width: 3px;
+                                commands: "M24 4 L24 23 M13 11 C-3 22 5 43 24 43 C43 43 51 22 35 11";
+                            }
+                            Text { y: 108px; height: 20px; width: parent.width; text: root.busy ? "Подождите…" : root.active ? "Остановить" : "Запустить";
+                                color: root.active ? Theme.accent : Theme.primary-text; font-size: 13px; font-weight: 600; horizontal-alignment: center; }
+                            focus := FocusScope { width: 0px; enabled: !root.busy; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggle(); return accept; } return reject; } }
+                            power-touch := TouchArea { enabled: !root.busy; mouse-cursor: pointer; clicked => { focus.focus(); root.toggle(); } }
+                            accessible-role: button; accessible-label: "Маршрутизация"; accessible-enabled: !root.busy;
+                            accessible-action-default => { if !root.busy { root.toggle(); } }
                         }
-                        Text { text: "⇄"; color: #354263; font-size: 84px; width: 100px; vertical-alignment: center; horizontal-alignment: center; }
                     }
+                    Text { text: root.uptime; color: root.active ? Theme.text : Theme.secondary; font-size: 32px; font-weight: 600; horizontal-alignment: center; }
+                    Text { text: root.busy ? "Подождите…" : root.active ? "Маршрутизация работает" : "Маршрутизация выключена"; color: root.active ? Theme.success : Theme.muted; font-size: 12px; horizontal-alignment: center; }
                 }
-                HorizontalLayout { height: 112px; spacing: 14px;
-                    StatCard { label: "АКТИВНЫЕ СОЕДИНЕНИЯ"; value: root.connection-count; detail: "Через SOCKS5-прокси"; }
-                    StatCard { label: "ОТПРАВЛЕНО"; value: root.uploaded; detail: "За текущий запуск"; }
-                    StatCard { label: "ПОЛУЧЕНО"; value: root.downloaded; detail: "За текущий запуск"; }
+                HorizontalLayout { height: 96px; spacing: 14px;
+                    StatCard { label: "АКТИВНЫЕ СОЕДИНЕНИЯ"; value: root.connection-count; }
+                    StatCard { label: "ОТПРАВЛЕНО"; value: root.uploaded; }
+                    StatCard { label: "ПОЛУЧЕНО"; value: root.downloaded; }
                 }
-                Text { text: "Быстрый старт"; height: 24px; color: Theme.text; font-size: 16px; font-weight: 600; }
-                Rectangle { border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
-                    VerticalLayout { padding: 22px; spacing: 18px;
-                        HorizontalLayout { spacing: 16px; Text { text: "01"; width: 26px; color: Theme.accent; font-size: 18px; vertical-alignment: center; } VerticalLayout { spacing: 5px; Text { text: "Добавьте SOCKS5-подключение"; color: Theme.text; font-weight: 600; font-size: 12px; } Text { text: "Например, локальный порт VPN: 127.0.0.1:1080"; color: Theme.secondary; font-size: 10px; } } ActionButton { label: "Добавить прокси"; clicked => { root.add-proxy(); } } }
-                        Rectangle { height: 1px; background: Theme.border; }
-                        HorizontalLayout { spacing: 16px; Text { text: "02"; width: 26px; color: Theme.accent; font-size: 18px; vertical-alignment: center; } VerticalLayout { spacing: 5px; Text { text: "Выберите приложения и маршрут"; color: Theme.text; font-weight: 600; font-size: 12px; } Text { text: "Разные процессы — разные SOCKS-порты."; color: Theme.secondary; font-size: 10px; } } ActionButton { label: "Создать правило"; clicked => { root.add-rule(); } } }
-                        Rectangle { height: 1px; background: Theme.border; }
-                        HorizontalLayout { spacing: 16px; Text { text: "03"; width: 26px; color: Theme.accent; font-size: 18px; vertical-alignment: center; } VerticalLayout { spacing: 5px; Text { text: "Включите и сверните в трей"; color: Theme.text; font-weight: 600; font-size: 12px; } Text { text: "Закрытие окна сохраняет работу. Выход — из трея."; color: Theme.secondary; font-size: 10px; } } ActionButton { label: root.active ? "В трей" : "Включить"; primary: true; enabled: !root.busy; clicked => { if root.active { root.hide-window(); } else { root.toggle(); } } } }
-                    }
-                }
+                Rectangle { vertical-stretch: 1; }
             } }
 
             if root.page == 1: VerticalLayout { spacing: 14px;
                 HorizontalLayout { height: 40px; Text { text: root.rules.length + " правил · сверху вниз"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; } ActionButton { label: "+ Создать правило"; primary: true; clicked => { root.add-rule(); } } }
-                if root.rules.length == 0: Text { text: "У каждого приложения свой маршрут.\nСоздайте первое правило по имени процесса или полному пути."; color: Theme.secondary; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
-                if root.rules.length > 0: ScrollView { VerticalLayout { spacing: 9px;
+                rule-list := ScrollView {
+                    horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
+                    content-height: max(self.visible-height, rules-content.preferred-height);
+                    rules-content := VerticalLayout { spacing: 9px; padding-right: 15px; padding-bottom: 24px;
+                    if root.rules.length == 0: Text { text: "Добавьте правила для отдельных приложений. Остальной трафик следует последнему маршруту."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
                     for rule[index] in root.rules: Rectangle { height: 98px; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
                         HorizontalLayout { padding: 14px; spacing: 9px;
                             VerticalLayout { width: 38px; spacing: 2px; ActionButton { label: "↑"; enabled: index > 0; height: 27px; clicked => { root.move-rule(rule.id, -1); } } ActionButton { label: "↓"; enabled: index < root.rules.length - 1; height: 27px; clicked => { root.move-rule(rule.id, 1); } } }
                             VerticalLayout { spacing: 5px; Text { text: (index + 1) + ". " + rule.name; color: rule.enabled ? Theme.text : Theme.muted; font-weight: 600; font-size: 13px; } Text { text: rule.process; color: Theme.secondary; font-size: 11px; overflow: elide; } Text { text: rule.conditions; color: Theme.muted; font-size: 10px; overflow: elide; } }
                             Text { text: rule.route; width: 90px; color: Theme.accent; font-size: 11px; vertical-alignment: center; overflow: elide; }
-                            ActionButton { label: rule.enabled ? "Вкл" : "Выкл"; clicked => { root.toggle-rule(rule.id); } }
+                            RuleSwitch { checked: rule.enabled; label: "Правило " + rule.name; enabled: !root.active && !root.busy; toggled => { root.toggle-rule(rule.id); } }
                             ActionButton { label: "Изменить"; clicked => { root.edit-rule(rule.id); } }
                             ActionButton { label: "×"; clicked => { root.delete-rule(rule.id); } }
+                        }
+                    }
+                    fallback-card := Rectangle { height: 185px; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.accent-soft;
+                        VerticalLayout { padding: 18px; spacing: 12px;
+                            HorizontalLayout { height: 23px;
+                                Text { text: "Маршрут по умолчанию"; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+                                Text { text: "ВСЕГДА ПОСЛЕДНИЙ"; color: Theme.muted; font-size: 9px; horizontal-alignment: right; vertical-alignment: center; }
+                            }
+                            Text { text: "Применяется, если ни одно правило выше не совпало."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                            HorizontalLayout { spacing: 14px;
+                                ComboBox { model: ["Напрямую", "Блокировать", "Через прокси"]; current-index <=> root.fallback-action; }
+                                ComboBox { model: root.proxy-names; current-index <=> root.fallback-proxy; enabled: root.fallback-action == 2; }
+                                ActionButton { label: "Сохранить маршрут"; primary: true; clicked => { root.save-fallback(); } }
+                            }
+                            Text { text: "Этот блок нельзя удалить или переместить. Localhost остаётся локальным; неизвестный владелец блокируется."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
                         }
                     }
                     Rectangle { vertical-stretch: 1; }
@@ -328,7 +397,12 @@ export component MainWindow inherits Window {
                     for proxy in root.proxies: Rectangle { height: 106px; border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
                         HorizontalLayout { padding: 20px; spacing: 14px;
                             Rectangle { width: 38px; height: 38px; border-radius: 9px; background: Theme.accent-soft; Text { text: "◇"; color: Theme.accent; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; } }
-                            VerticalLayout { spacing: 6px; Text { text: proxy.name; color: Theme.text; font-weight: 600; font-size: 14px; } Text { text: "SOCKS5 · " + proxy.address; color: Theme.secondary; font-size: 11px; } Text { text: proxy.status; color: Theme.muted; font-size: 10px; overflow: elide; } }
+                            VerticalLayout { spacing: 6px; Text { text: proxy.name; color: Theme.text; font-weight: 600; font-size: 14px; } Text { text: "SOCKS5 · " + proxy.address; color: Theme.secondary; font-size: 11px; } HorizontalLayout { alignment: start; spacing: 8px;
+                                Rectangle { width: 7px; height: 7px; border-radius: 4px; background: proxy.health == 2 ? Theme.success : proxy.health == 3 ? #f08080 : Theme.muted; }
+                                Text { text: proxy.health == 2 ? "TCP · " + proxy.status : proxy.health == 3 ? "Недоступен" : "Не проверено"; color: proxy.health == 2 ? Theme.success : proxy.health == 3 ? #f08080 : Theme.muted; font-size: 11px; }
+                                if proxy.health == 2: Text { text: "● UDP"; color: proxy.udp ? Theme.success : #f08080; font-size: 11px; }
+                            }
+                            if proxy.health == 3: Text { text: proxy.status; color: Theme.muted; font-size: 10px; overflow: elide; } }
                             ActionButton { label: "Проверить"; enabled: !root.probe-busy; clicked => { root.probe-proxy(proxy.id); } }
                             ActionButton { label: "Изменить"; clicked => { root.edit-proxy(proxy.id); } }
                             ActionButton { label: "×"; clicked => { root.delete-proxy(proxy.id); } }
@@ -387,7 +461,6 @@ export component MainWindow inherits Window {
                 }
                 Text { text: "Нажмите на процесс, чтобы раскрыть журнал. Активные сеансы и байты — через SOCKS за текущий запуск; журнал — 256 событий."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
             }
-            if root.page == 4: HorizontalLayout { height: 40px; alignment: start; spacing: 12px; ActionButton { label: "Сохранить настройки"; primary: true; clicked => { root.save-settings(); } } }
             if root.page == 4: settings-scroll := ScrollView {
                 horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                 content-height: max(self.visible-height, settings-content.preferred-height);
@@ -401,20 +474,20 @@ export component MainWindow inherits Window {
                         Text { text: "Проверка при запуске и каждые 6 часов. Загрузка и установка — по вашему нажатию."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
                     }
                 }
-                Rectangle { height: 110px; border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border; VerticalLayout { padding: 20px; spacing: 13px; Text { text: "При запуске"; font-size: 15px; font-weight: 600; color: Theme.text; } Text { text: "Приложение запрашивает права администратора и восстанавливает последнее состояние тумблера."; wrap: word-wrap; color: Theme.secondary; font-size: 12px; } Text { text: "Закрытие окна сворачивает приложение в трей; ручная пауза сохраняется после выхода."; font-size: 10px; color: Theme.muted; wrap: word-wrap; } } }
+                Rectangle { height: 155px; border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border; VerticalLayout { padding: 20px; spacing: 13px;
+                    Text { text: "При запуске"; font-size: 15px; font-weight: 600; color: Theme.text; }
+                    CheckBox { text: "Запускать при входе в Windows"; checked <=> root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.set-autostart(self.checked); } }
+                    Text { text: root.autostart-busy ? "Настраиваем автозапуск…" : "При входе программа откроется в трее и восстановит последнее состояние прокси."; wrap: word-wrap; color: Theme.secondary; font-size: 11px; }
+                    Text { text: "Закрытие окна сворачивает приложение в трей; ручная пауза сохраняется после выхода."; font-size: 10px; color: Theme.muted; wrap: word-wrap; }
+                } }
                 Rectangle { height: 130px; border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
                     VerticalLayout { padding: 20px; spacing: 12px;
                         Text { text: "Системный DNS"; font-size: 15px; font-weight: 600; color: Theme.text; }
                         Text { text: "Имена разрешает Windows. DNS по TCP/UDP на порту 53 идёт напрямую; настройки сетевых адаптеров сохраняются."; wrap: word-wrap; color: Theme.secondary; font-size: 12px; }
                         Text { text: "DoH/DoT приложений следует их обычным правилам TCP/UDP."; wrap: word-wrap; color: Theme.muted; font-size: 11px; }
                     }
-                }                Rectangle { height: 145px; border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
-                    VerticalLayout { padding: 20px; spacing: 13px; Text { text: "Если ни одно правило не совпало"; font-size: 15px; font-weight: 600; color: Theme.text; } HorizontalLayout { spacing: 16px; ComboBox { model: ["Напрямую", "Блокировать", "Через прокси"]; current-index <=> root.settings-default; } ComboBox { model: root.proxy-names; current-index <=> root.settings-default-proxy; enabled: root.settings-default == 2; } } Text { text: "Localhost остается локальным. Неизвестный владелец соединения блокируется."; font-size: 10px; color: Theme.muted; wrap: word-wrap; } }
                 }
-                HorizontalLayout { height: 30px; Text { text: "True Proxy " + root.app-version + " · Rust + Slint · WinDivert 2.2.2"; color: Theme.muted; font-size: 10px; vertical-alignment: center; } AboutSlint { } }
             } }
-
-            HorizontalLayout { height: 14px; Text { text: root.proxies.length + " прокси  ·  " + root.rules.length + " правил"; color: Theme.muted; font-size: 9px; } Text { text: root.admin ? "ПРАВА АДМИНИСТРАТОРА" : "ПЕРЕХВАТУ НУЖНЫ ПРАВА АДМИНИСТРАТОРА"; color: Theme.muted; font-size: 8px; horizontal-alignment: right; } }
         }
     }
 
@@ -423,11 +496,14 @@ export component MainWindow inherits Window {
             VerticalLayout { padding: 28px; spacing: 17px;
                 HorizontalLayout { height: 32px; Text { text: root.dialog == 1 ? (root.form-id == "" ? "Новое подключение" : "Изменить подключение") : (root.form-id == "" ? "Новое правило" : "Изменить правило"); color: Theme.text; font-size: 21px; font-weight: 600; vertical-alignment: center; } ActionButton { label: "×"; clicked => { root.close-dialog(); } } }
                 if root.dialog == 1: VerticalLayout { spacing: 15px;
-                    Field { label: "Название"; placeholder: "Мой VPN"; value <=> root.form-name; }
-                    HorizontalLayout { spacing: 14px; Field { label: "Адрес SOCKS5"; placeholder: "127.0.0.1"; value <=> root.form-host; } Field { label: "Порт"; placeholder: "1080"; value <=> root.form-port; width: 110px; } }
-                    CheckBox { text: "Требуется аутентификация"; checked <=> root.form-auth; }
-                    HorizontalLayout { spacing: 14px; Field { label: "Логин"; value <=> root.form-username; } Field { label: "Пароль"; secret: true; placeholder: root.form-id != "" ? "Пусто — сохранить текущий" : "Пароль SOCKS5"; value <=> root.form-password; } }
-                    Text { text: "Пароль защищен для вашей учетной записи Windows. Подключение проверяется отдельной кнопкой."; wrap: word-wrap; font-size: 10px; color: Theme.muted; }
+                    Field { label: "Название"; placeholder: "Мой VPN"; value <=> root.form-name; edited => { root.proxy-form-edited(); } }
+                    HorizontalLayout { spacing: 14px; Field { label: "Адрес SOCKS5"; placeholder: "127.0.0.1"; value <=> root.form-host; edited => { root.proxy-form-edited(); } } Field { label: "Порт"; placeholder: "1080"; value <=> root.form-port; width: 110px; edited => { root.proxy-form-edited(); } } }
+                    CheckBox { text: "Требуется аутентификация"; checked <=> root.form-auth; toggled => { root.proxy-form-edited(); } }
+                    HorizontalLayout { spacing: 14px; Field { label: "Логин"; value <=> root.form-username; edited => { root.proxy-form-edited(); } } Field { label: "Пароль"; secret: true; placeholder: root.form-id != "" ? "Пусто — сохранить текущий" : "Пароль SOCKS5"; value <=> root.form-password; edited => { root.proxy-form-edited(); } } }
+                    HorizontalLayout { height: 38px; spacing: 12px;
+                        ActionButton { label: root.probe-busy ? "Проверяем…" : "Проверить соединение"; enabled: !root.probe-busy; clicked => { root.probe-proxy-form(); } }
+                        Text { text: root.form-probe-status; color: root.form-probe-health == 2 ? Theme.success : root.form-probe-health == 3 ? #f58190 : Theme.secondary; wrap: word-wrap; font-size: 11px; vertical-alignment: center; }
+                    }
                 }
                 if root.dialog == 2: rule-scroll := ScrollView {
                     horizontal-scrollbar-policy: always-off;
@@ -440,25 +516,19 @@ export component MainWindow inherits Window {
                         VerticalLayout { spacing: 6px; Text { text: "Маршрут"; font-size: 11px; color: Theme.secondary; } ComboBox { model: ["Через прокси", "Напрямую", "Блокировать"]; current-index <=> root.form-action; } }
                         VerticalLayout { spacing: 6px; Text { text: "SOCKS-подключение"; font-size: 11px; color: Theme.secondary; } ComboBox { model: root.proxy-names; current-index <=> root.form-proxy; enabled: root.form-action == 0; } }
                     }
-                    ListEditor { title: "Приложения по имени EXE"; placeholder: "destiny2.exe"; extra-label: "Из запущенных…"; values: root.form-processes; draft <=> root.form-new-process; add(value) => { root.add-condition(0, value); } remove(index) => { root.remove-condition(0, index); } extra => { root.open-processes(); } }
-                    Text { text: root.form-processes.length == 0 && root.form-paths.length == 0 ? "Приложения не указаны — правило применяется ко всем процессам." : "Список работает и после перезапуска приложений; PID сохранять не нужно."; wrap: word-wrap; color: Theme.muted; font-size: 10px; }
-                    if !root.form-show-paths: ActionButton { label: "+ Добавить полный путь"; clicked => { root.form-show-paths = true; } }
-                    if root.form-show-paths: ListEditor { title: "Полные пути"; placeholder: "C:\\Apps\\game.exe"; values: root.form-paths; draft <=> root.form-new-path; add(value) => { root.add-condition(1, value); } remove(index) => { root.remove-condition(1, index); } }
+                    ListEditor { title: "Приложения по имени EXE"; placeholder: "destiny2.exe"; applications: true; show-input: root.form-manual; values: root.form-processes; draft <=> root.form-new-process; add(value) => { root.add-condition(0, value); } remove(index) => { root.remove-condition(0, index); } choose(kind) => { root.add-application(kind); } }
+                    if root.form-processes.length == 0 && root.form-paths.length == 0: Text { text: "Приложения не указаны — правило применяется ко всем процессам."; wrap: word-wrap; color: Theme.muted; font-size: 10px; }
+                    if root.form-show-paths: ListEditor { title: "Полные пути"; show-input: false; values: root.form-paths; draft <=> root.form-new-path; add(value) => { root.add-condition(1, value); } remove(index) => { root.remove-condition(1, index); } }
                     if root.form-processes.length > 0 && root.form-paths.length > 0: Text { text: "Имя EXE и полный путь должны совпасть одновременно (И)."; color: Theme.warning; wrap: word-wrap; font-size: 11px; }
                     Rectangle { height: 1px; background: Theme.border; }
-                    CheckBox { text: "Ограничить маршрут доменами"; checked <=> root.form-use-domains; }
-                    if root.form-use-domains: VerticalLayout { spacing: 9px;
+                    Disclosure { label: "Дополнительные условия"; expanded: root.form-advanced; count: root.form-domains.length + root.form-networks.length + root.form-ports.length; clicked => { root.form-advanced = !root.form-advanced; } }
+                    if root.form-advanced: VerticalLayout { spacing: 12px;
                         ListEditor { title: "Домены"; placeholder: "example.com или *.example.com"; values: root.form-domains; draft <=> root.form-new-domain; add(value) => { root.add-condition(2, value); } remove(index) => { root.remove-condition(2, index); } }
                         Text { text: "example.com — точное имя; *.example.com — домен и все его поддомены. Процесс и домен должны совпасть одновременно."; wrap: word-wrap; color: Theme.secondary; font-size: 11px; }
-                        Text { text: "Доменные правила зависят от наблюдаемых DNS-ответов. Кэш Windows, DoH и подключения по IP могут скрывать имя. Чтобы направить весь трафик игры, выключите ограничение доменами."; wrap: word-wrap; color: Theme.warning; font-size: 11px; }
-                    }
-                    CheckBox { text: "Дополнительные условия: IP-адреса и порты"; checked <=> root.form-advanced; }
-                    if root.form-advanced: VerticalLayout { spacing: 12px;
+                        Text { text: "Доменные правила зависят от наблюдаемых DNS-ответов. Кэш Windows, DoH и подключения по IP могут скрывать имя."; wrap: word-wrap; color: Theme.warning; font-size: 11px; }
                         ListEditor { title: "IP / CIDR"; placeholder: "10.0.0.0/8 или 1.2.3.4"; values: root.form-networks; draft <=> root.form-new-network; add(value) => { root.add-condition(3, value); } remove(index) => { root.remove-condition(3, index); } }
                         ListEditor { title: "Порты"; placeholder: "443 или 8000-9000"; values: root.form-ports; draft <=> root.form-new-port; add(value) => { root.add-condition(4, value); } remove(index) => { root.remove-condition(4, index); } }
                     }
-                    Text { text: "Значения списка — ИЛИ. Разные виды условий — И. Пустой список не ограничивает маршрут."; wrap: word-wrap; color: Theme.muted; font-size: 10px; }
-                    CheckBox { text: "Правило включено"; checked <=> root.form-enabled; }
                 } }
                 if root.notice != "": Text { text: root.notice; wrap: word-wrap; color: Theme.warning; font-size: 11px; }
                 HorizontalLayout { alignment: end; spacing: 10px; ActionButton { label: "Отмена"; clicked => { root.close-dialog(); } } ActionButton { label: "Сохранить"; primary: true; clicked => { if root.dialog == 1 { root.save-proxy(); } else { root.save-rule(); } } } }

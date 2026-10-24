@@ -8,7 +8,9 @@ adds one. Third-party licenses remain applicable independently.
 
 This application uses Slint (https://slint.dev), copyright SixtyFPS GmbH and
 contributors. Slint is used under its royalty-free desktop license option.
-The UI includes Slint's `AboutSlint` attribution component in Settings.
+The public README download page and release pages display the unmodified
+Slint attribution badge, using section 2(b) of the Royalty-free License 2.0.
+The badge is also included in docs/branding/slint-badge.png.
 
 - Source: https://github.com/slint-ui/slint/tree/v1.18.1
 - License options and full texts: https://github.com/slint-ui/slint/blob/v1.18.1/LICENSE.md

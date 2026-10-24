@@ -3,7 +3,9 @@ pub mod divert;
 pub mod http;
 pub mod monitor;
 pub mod network;
+pub mod picker;
 pub mod process;
+pub mod startup;
 pub mod update;
 
 use anyhow::{Context, Result, ensure};
@@ -67,7 +69,7 @@ pub fn relaunch_elevated() -> Result<()> {
     // Normal launches elevate before creating UI or reading the profile. Safe
     // diagnostic/preview modes bypass this path. Never force-enable a saved pause.
     let mut arguments = format!("--wait-parent {}", std::process::id());
-    for flag in ["--paused", "--enable"] {
+    for flag in ["--paused", "--enable", "--tray"] {
         if std::env::args().any(|argument| argument == flag) {
             arguments.push(' ');
             arguments.push_str(flag);

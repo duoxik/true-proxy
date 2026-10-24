@@ -6,6 +6,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 #[derive(Clone)]
@@ -26,6 +27,7 @@ pub struct Statistics {
     sequence: AtomicU64,
     logs: Mutex<VecDeque<LogEntry>>,
     processes: Mutex<HashMap<String, Arc<ProcessCounters>>>,
+    routing_started: Mutex<Option<Instant>>,
 }
 
 #[derive(Default)]
@@ -55,6 +57,15 @@ impl Drop for ConnectionGuard {
 }
 
 impl Statistics {
+    pub fn routing_active(&self, active: bool) {
+        *self.routing_started.lock().unwrap() = active.then(Instant::now);
+    }
+    pub fn uptime(&self) -> Duration {
+        self.routing_started
+            .lock()
+            .unwrap()
+            .map_or(Duration::ZERO, |start| start.elapsed())
+    }
     pub fn process(&self, name: &str) -> Arc<ProcessCounters> {
         let mut processes = self
             .processes
@@ -185,6 +196,17 @@ impl Drop for Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_uptime_uses_start_instant_and_resets_at_stop() {
+        let stats = Statistics::default();
+        assert_eq!(stats.uptime(), Duration::ZERO);
+        *stats.routing_started.lock().unwrap() = Some(Instant::now() - Duration::from_secs(3723));
+        assert_eq!(stats.uptime().as_secs(), 3723);
+        stats.routing_active(false);
+        assert_eq!(stats.uptime(), Duration::ZERO);
+        stats.routing_active(true);
+        assert!(stats.uptime() < Duration::from_secs(1));
+    }
     #[test]
     fn per_process_live_counts_survive_log_clear_and_end_on_drop() {
         let stats = Arc::new(Statistics::default());

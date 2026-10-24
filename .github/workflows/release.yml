@@ -52,6 +52,14 @@ jobs:
           if ($process.ExitCode -ne 0) { throw 'Standalone DLL check failed' }
           $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
           if (-not $result.ok -or $result.interception) { throw 'Invalid standalone diagnostic' }
+      - name: Verify packaged UI without interception or startup registration
+        shell: pwsh
+        run: |
+          $preview = Join-Path $env:RUNNER_TEMP 'release-ui'
+          $process = Start-Process ./dist/TrueProxy/TrueProxy.exe -ArgumentList @('--smoke-ui', "`"$preview`"") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Packaged UI exited with an error' }
+          $result = Get-Content -LiteralPath (Join-Path $preview 'result.txt') -Raw
+          if ($result -notlike 'PASS:*') { throw $result }
       - name: Upload complete release
         shell: pwsh
         run: |

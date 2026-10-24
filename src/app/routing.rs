@@ -21,10 +21,7 @@ pub fn flush_drafts(ui: &MainWindow) -> Result<()> {
     ];
     let mut changes = Vec::new();
     for (kind, draft) in drafts {
-        if draft.trim().is_empty()
-            || (kind == 2 && !ui.get_form_use_domains())
-            || (kind >= 3 && !ui.get_form_advanced())
-        {
+        if draft.trim().is_empty() {
             continue;
         }
         let mut rows = values(get(ui, kind));
@@ -113,6 +110,21 @@ pub fn set_processes(ui: &MainWindow, processes: Vec<RunningProcess>) {
 }
 pub fn wire(ui: &MainWindow, sender: SyncSender<Command>) {
     let weak = ui.as_weak();
+    ui.on_add_application(move |kind| {
+        if let Some(ui) = weak.upgrade() {
+            match kind {
+                0 => ui.set_form_manual(true),
+                1 => ui.invoke_open_processes(),
+                2 => match true_proxy::platform::choose_executable() {
+                    Ok(Some(path)) => ui.invoke_add_condition(1, path.into()),
+                    Ok(None) => {}
+                    Err(error) => report(&ui, Err(error)),
+                },
+                _ => {}
+            }
+        }
+    });
+    let weak = ui.as_weak();
     ui.on_add_condition(move |kind, input| {
         if let Some(ui) = weak.upgrade() {
             report(
@@ -125,10 +137,7 @@ pub fn wire(ui: &MainWindow, sender: SyncSender<Command>) {
                     if kind == 1 {
                         ui.set_form_show_paths(true);
                     }
-                    if kind == 2 {
-                        ui.set_form_use_domains(true);
-                    }
-                    if kind >= 3 {
+                    if kind >= 2 {
                         ui.set_form_advanced(true);
                     }
                     ui.set_notice("".into());
@@ -230,6 +239,23 @@ pub fn wire(ui: &MainWindow, sender: SyncSender<Command>) {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+    #[test]
+    fn collapsed_conditions_keep_values_and_flush_uncommitted_drafts() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.set_form_advanced(false);
+        ui.set_form_domains(strings(vec!["*.example.com".into()]));
+        ui.set_form_new_domain("other.example".into());
+        ui.set_form_new_network("192.0.2.0/24".into());
+        ui.set_form_new_port("8000-9000".into());
+        flush_drafts(&ui).unwrap();
+        assert_eq!(
+            values(ui.get_form_domains()),
+            ["*.example.com", "other.example"]
+        );
+        assert_eq!(values(ui.get_form_networks()), ["192.0.2.0/24"]);
+        assert_eq!(values(ui.get_form_ports()), ["8000-9000"]);
+    }
     #[test]
     fn process_selection_survives_filtering_and_adds_persistent_names() {
         i_slint_backend_testing::init_no_event_loop();

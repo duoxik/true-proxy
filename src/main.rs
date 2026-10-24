@@ -168,7 +168,10 @@ mod ui_tests {
                 matches!(
                     element.accessible_role(),
                     Some(
-                        AccessibleRole::Button | AccessibleRole::TextInput | AccessibleRole::Switch
+                        AccessibleRole::Button
+                            | AccessibleRole::TextInput
+                            | AccessibleRole::Switch
+                            | AccessibleRole::Checkbox
                     )
                 )
             })
@@ -206,10 +209,11 @@ mod ui_tests {
             move || weak.unwrap().set_dialog(0)
         });
 
-        click(&ui, "Добавить прокси");
+        click(&ui, "Прокси");
+        click(&ui, "+ Добавить прокси");
         assert_eq!(calls.get(), 1, "the first click must open the editor");
         assert_eq!(ui.get_dialog(), 1);
-        click(&ui, "Добавить прокси");
+        click(&ui, "+ Добавить прокси");
         assert_eq!(calls.get(), 1, "a modal must block controls behind it");
         click(&ui, "Название");
         ui.window()
@@ -236,11 +240,74 @@ mod ui_tests {
         assert_eq!(ui.get_page(), 1);
         click(&ui, "Прокси");
         assert_eq!(ui.get_page(), 2);
+        click(&ui, "Обзор");
         click(&ui, "Маршрутизация");
         assert_eq!(toggles.get(), 1);
         ui.set_busy(true);
         click(&ui, "Маршрутизация");
         assert_eq!(toggles.get(), 1, "busy controls must remain disabled");
+    }
+
+    #[test]
+    fn rule_switch_disclosure_and_application_menu_activate_on_first_click() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1120., 780.));
+        ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
+            crate::RuleRow {
+                id: "one".into(),
+                name: "Game".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        ])));
+        ui.set_page(1);
+        ui.show().unwrap();
+        let toggles = Rc::new(Cell::new(0));
+        let count = toggles.clone();
+        ui.on_toggle_rule(move |id| {
+            assert_eq!(id, "one");
+            count.set(count.get() + 1);
+        });
+        click(&ui, "Правило Game");
+        assert_eq!(toggles.get(), 1);
+        ui.set_active(true);
+        click(&ui, "Правило Game");
+        assert_eq!(toggles.get(), 1, "Cannot mutate rules during routing");
+        ui.set_active(false);
+        ui.set_dialog(2);
+        click(&ui, "Дополнительные условия");
+        assert!(ui.get_form_advanced());
+        click(&ui, "Дополнительные условия");
+        assert!(!ui.get_form_advanced());
+        let choice = Rc::new(Cell::new(-1));
+        let selected = choice.clone();
+        ui.on_add_application(move |index| selected.set(index));
+        for (index, label) in ["Вручную", "Из запущенных процессов", "Путь до EXE"]
+            .into_iter()
+            .enumerate()
+        {
+            click(&ui, "Добавить приложение");
+            click(&ui, label);
+            assert_eq!(choice.get(), index as i32);
+        }
+        ui.set_dialog(1);
+        let calls = Rc::new(Cell::new(0));
+        let count = calls.clone();
+        ui.on_probe_proxy_form(move || count.set(count.get() + 1));
+        click(&ui, "Проверить соединение");
+        assert_eq!(calls.get(), 1);
+        ui.set_probe_busy(true);
+        click(&ui, "Проверяем…");
+        assert_eq!(calls.get(), 1);
+        ui.set_dialog(0);
+        ui.set_page(4);
+        let calls = Rc::new(Cell::new(0));
+        let count = calls.clone();
+        ui.on_set_autostart(move |_| count.set(count.get() + 1));
+        click(&ui, "Запускать при входе в Windows");
+        assert_eq!(calls.get(), 1);
+        assert!(ui.get_autostart_enabled());
     }
 
     #[test]
@@ -262,7 +329,6 @@ mod ui_tests {
             "*.deadorbit.net",
             "*.gravityshavings.net",
         ]));
-        ui.set_form_use_domains(true);
         ui.set_form_show_paths(true);
         ui.set_form_paths(rows(&["C:\\Games\\Destiny 2\\destiny2.exe"]));
         ui.set_form_advanced(true);
@@ -271,26 +337,29 @@ mod ui_tests {
         ui.show().unwrap();
         for (width, height) in [(960., 700.), (1120., 780.), (1280., 900.)] {
             ui.window().set_size(slint::LogicalSize::new(width, height));
-            ui.set_form_enabled(true);
             let scroll = ElementHandle::find_by_element_id(&ui, "MainWindow::rule-scroll")
                 .next()
                 .unwrap();
             scroll.scroll(0., -10000.);
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
-            let checkbox = ElementHandle::find_by_accessible_label(&ui, "Правило включено")
+            let field = ElementHandle::find_by_accessible_label(&ui, "443 или 8000-9000")
                 .next()
                 .unwrap();
             let bounds = (scroll.absolute_position(), scroll.size());
-            let bottom = checkbox.absolute_position().y + checkbox.size().height;
+            let bottom = field.absolute_position().y + field.size().height;
             assert!(
-                checkbox.absolute_position().y >= bounds.0.y
-                    && bottom <= bounds.0.y + bounds.1.height,
+                field.absolute_position().y >= bounds.0.y && bottom <= bounds.0.y + bounds.1.height,
                 "Last control clipped at {width}x{height}: {bottom} outside {bounds:?}"
             );
-            checkbox.mock_single_click(PointerEventButton::Left);
+            ui.set_form_new_port("".into());
+            field.mock_single_click(PointerEventButton::Left);
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                    text: "12345".into(),
+                });
             assert!(
-                !ui.get_form_enabled(),
-                "Last checkbox must respond to the first click"
+                ui.get_form_new_port() == "12345",
+                "Last field must focus on the first click"
             );
         }
     }

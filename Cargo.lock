@@ -4461,7 +4461,7 @@ dependencies = [
 
 [[package]]
 name = "true-proxy"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "i-slint-backend-testing",
@@ -4474,6 +4474,7 @@ dependencies = [
  "slint",
  "slint-build",
  "tokio",
+ "windows",
  "windows-sys 0.61.2",
 ]
 
