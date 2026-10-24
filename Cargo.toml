@@ -1,0 +1,43 @@
+[package]
+name = "true-proxy"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.92"
+description = "Lightweight per-application SOCKS5 router for Windows"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ipnet = { version = "2", features = ["serde"] }
+png = "0.18"
+semver = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18", "system-tray", "accessibility"] }
+
+[target.'cfg(windows)'.dependencies]
+libloading = "0.9"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Networking_WinHttp", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_Memory", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_FileSystem"] }
+
+[build-dependencies]
+slint-build = "=1.18.1"
+png = "0.18"
+
+[dev-dependencies]
+i-slint-backend-testing = "=1.18.1"
+
+[[example]]
+name = "dns-route-client"
+path = "examples/dns-routing/client.rs"
+
+[[example]]
+name = "dns-route-probe"
+path = "examples/dns-routing/probe.rs"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

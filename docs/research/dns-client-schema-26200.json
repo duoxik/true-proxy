@@ -1,0 +1,682 @@
+{
+  "provider": "Microsoft-Windows-DNS-Client",
+  "guid": "1c95126e-7eea-49a9-a3fe-a378b03ddb4d",
+  "osBuild": "26200",
+  "scope": "Provider metadata only. No trace session or DNS traffic capture.",
+  "events": [
+    {
+      "id": 3006,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "ServerList",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "IsNetworkQuery",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkQueryIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "IsAsyncQuery",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3008,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "QueryStatus",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        }
+      ]
+    },
+    {
+      "id": 3009,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "IsParallelNetworkQuery",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceCount",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "AdapterName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "LocalAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "DNSServerAddress",
+          "type": "win:UnicodeString"
+        }
+      ]
+    },
+    {
+      "id": 3009,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "IsParallelNetworkQuery",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceCount",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "AdapterName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "LocalAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "DNSServerAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3009,
+      "version": 2,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "IsParallelNetworkQuery",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceCount",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "AdapterName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "LocalAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "DNSServerAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryBlob",
+          "type": "win:Pointer"
+        },
+        {
+          "name": "ParentBlob",
+          "type": "win:Pointer"
+        }
+      ]
+    },
+    {
+      "id": 3010,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "DnsServerIpAddress",
+          "type": "win:UnicodeString"
+        }
+      ]
+    },
+    {
+      "id": 3010,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "DnsServerIpAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3011,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "DnsServerIpAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ResponseStatus",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3011,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "DnsServerIpAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ResponseStatus",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3011,
+      "version": 2,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "DnsServerIpAddress",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ResponseStatus",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "SendBlob",
+          "type": "win:Pointer"
+        },
+        {
+          "name": "SendBlobContext",
+          "type": "win:Pointer"
+        }
+      ]
+    },
+    {
+      "id": 3016,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3016,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3016,
+      "version": 2,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryBlob",
+          "type": "win:Pointer"
+        }
+      ]
+    },
+    {
+      "id": 3018,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "Status",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        }
+      ]
+    },
+    {
+      "id": 3018,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "Status",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3018,
+      "version": 2,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryOptions",
+          "type": "win:UInt64"
+        },
+        {
+          "name": "Status",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryBlob",
+          "type": "win:Pointer"
+        }
+      ]
+    },
+    {
+      "id": 3019,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3019,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3019,
+      "version": 2,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryBlob",
+          "type": "win:Pointer"
+        }
+      ]
+    },
+    {
+      "id": 3020,
+      "version": 0,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "Status",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        }
+      ]
+    },
+    {
+      "id": 3020,
+      "version": 1,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "Status",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    },
+    {
+      "id": 3020,
+      "version": 2,
+      "fields": [
+        {
+          "name": "QueryName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "QueryType",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "NetworkIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "InterfaceIndex",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "Status",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryResults",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "QueryBlob",
+          "type": "win:Pointer"
+        }
+      ]
+    },
+    {
+      "id": 3023,
+      "version": 0,
+      "fields": [
+        {
+          "name": "OperationName",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "Name",
+          "type": "win:UnicodeString"
+        },
+        {
+          "name": "Flag",
+          "type": "win:UInt32"
+        },
+        {
+          "name": "ClientPID",
+          "type": "win:UInt32"
+        }
+      ]
+    }
+  ]
+}

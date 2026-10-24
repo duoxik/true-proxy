@@ -1,0 +1,6 @@
+/target/
+/.tools/
+/dist/
+/vendor/WinDivert/
+/.idea/
+*.log

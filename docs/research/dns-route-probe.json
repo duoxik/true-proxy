@@ -1,0 +1,54 @@
+{
+  "clients": [
+    {
+      "fake_ip": "127.77.54.1",
+      "pid": 32372,
+      "reply": "via-A:client-a"
+    },
+    {
+      "fake_ip": "127.77.54.1",
+      "pid": 14892,
+      "reply": "via-B:client-b"
+    }
+  ],
+  "dns_queries_by_proxy": {
+    "socks-a": 1,
+    "socks-b": 1
+  },
+  "domain": "tp-route-1792855078400.invalid",
+  "elapsed_ms": 60,
+  "fake_dns_queries": 2,
+  "not_covered": [
+    "system-wide DNS interception",
+    "unselected/direct applications",
+    "UDP payload relay",
+    "IPv6",
+    "SRV/TXT and DNSSEC",
+    "DNS-only queries without a connection",
+    "deferred-mode proxy failure",
+    "cache/restart persistence",
+    "games/anti-cheat",
+    "real VPN"
+  ],
+  "ok": true,
+  "routes": [
+    {
+      "dns_answer": "192.0.2.11",
+      "downloaded": 14,
+      "pid": 32372,
+      "process": "dns-probe-a.exe",
+      "proxy": "socks-a",
+      "uploaded": 8
+    },
+    {
+      "dns_answer": "192.0.2.22",
+      "downloaded": 14,
+      "pid": 14892,
+      "process": "dns-probe-b.exe",
+      "proxy": "socks-b",
+      "uploaded": 8
+    }
+  ],
+  "scope": "Owned helpers, ordinary Windows resolver, loopback DNS/SOCKS mocks. No WinDivert, foreign process changes, or game compatibility test.",
+  "shared_fake_ip": "127.77.54.1"
+}

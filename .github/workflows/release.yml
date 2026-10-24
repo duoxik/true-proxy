@@ -1,0 +1,73 @@
+name: Publish Windows release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: '-C target-feature=+crt-static'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-static
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          $project = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($project.packages | Where-Object name -EQ 'true-proxy').version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Release requires a v<package-version> tag' }
+      - name: Prepare signed driver without starting it
+        run: ./scripts/fetch-driver.ps1
+      - name: Format, lint and tests without interception
+        shell: pwsh
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo clippy --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Lint failed' }
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          cargo test --locked --test driver_abi -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'DLL ABI check failed' }
+      - name: Package standalone executable
+        run: ./scripts/dev.ps1 package
+      - name: Verify standalone driver loading without interception
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'driver-check.json'
+          $process = Start-Process ./dist/TrueProxy/TrueProxy.exe -ArgumentList @('--check-driver', "`"$report`"") -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw 'Standalone DLL check failed' }
+          $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if (-not $result.ok -or $result.interception) { throw 'Invalid standalone diagnostic' }
+      - name: Upload complete release
+        shell: pwsh
+        run: |
+          $exe = './dist/TrueProxy/TrueProxy.exe'
+          $zip = './dist/TrueProxy-windows-x64.zip'
+          @($exe, $zip) | ForEach-Object {
+            "$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant())  $(Split-Path -Leaf $_)"
+          } | Set-Content ./dist/SHA256SUMS.txt -Encoding utf8
+          $existing = gh release view $env:GITHUB_REF_NAME --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not ($existing | ConvertFrom-Json).isDraft) { throw 'A published version cannot be overwritten; publish a new tag' }
+          } else {
+            gh release create $env:GITHUB_REF_NAME --verify-tag --draft --title "True Proxy $env:GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          }
+          gh release upload $env:GITHUB_REF_NAME $exe $zip ./dist/SHA256SUMS.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
+          gh release edit $env:GITHUB_REF_NAME --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

@@ -1,0 +1,16 @@
+{
+  "exeBytes": 11726848,
+  "scope": "Isolated UI; interception and update HTTP requests disabled. CPU percent uses one logical core as 100%.",
+  "visible": {
+    "privateMiB": 7.44,
+    "workingSetMiB": 28.54,
+    "sampleSeconds": 3.08,
+    "cpuPercentOfOneCore": 0.0
+  },
+  "tray": {
+    "privateMiB": 7.44,
+    "workingSetMiB": 28.54,
+    "sampleSeconds": 7.18,
+    "cpuPercentOfOneCore": 0.0
+  }
+}
