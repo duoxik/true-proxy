@@ -67,7 +67,7 @@ pub fn relaunch_elevated() -> Result<()> {
 pub struct SingleInstance;
 #[cfg(not(windows))]
 impl SingleInstance {
-    pub fn acquire() -> Result<Self> {
-        Ok(Self)
+    pub fn acquire() -> Result<Option<Self>> {
+        Ok(Some(Self))
     }
 }

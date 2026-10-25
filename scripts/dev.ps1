@@ -38,13 +38,17 @@ try {
         'smoke' {
             cargo build --locked
             if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
-            $taskPreview = Join-Path $taskRoot '.tools\ui-smoke'
             $taskPreviewExe = Join-Path $taskRoot 'target\debug\true-proxy.exe'
-            $taskProcess = Start-Process -FilePath $taskPreviewExe -ArgumentList @('--smoke-ui', "`"$taskPreview`"") -WindowStyle Hidden -Wait -PassThru
-            if ($taskProcess.ExitCode -ne 0) { throw "UI process exited with $($taskProcess.ExitCode)" }
-            $taskResult = Get-Content -LiteralPath (Join-Path $taskPreview 'result.txt')
-            Write-Output $taskResult
-            if ($taskResult -notlike 'PASS:*') { throw 'UI smoke test failed' }
+            foreach ($taskHidden in @($false, $true)) {
+                $taskPreview = Join-Path $taskRoot $(if ($taskHidden) { '.tools\ui-smoke-tray' } else { '.tools\ui-smoke' })
+                $taskArguments = @('--smoke-ui', "`"$taskPreview`"")
+                if ($taskHidden) { $taskArguments += '--tray' }
+                $taskProcess = Start-Process -FilePath $taskPreviewExe -ArgumentList $taskArguments -WindowStyle Hidden -Wait -PassThru
+                if ($taskProcess.ExitCode -ne 0) { throw "UI process exited with $($taskProcess.ExitCode)" }
+                $taskResult = Get-Content -LiteralPath (Join-Path $taskPreview 'result.txt')
+                Write-Output $taskResult
+                if ($taskResult -notlike 'PASS:*') { throw 'UI smoke test failed' }
+            }
         }
         'package' {
             cargo build --locked --release

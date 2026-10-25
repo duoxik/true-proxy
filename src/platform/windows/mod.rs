@@ -6,6 +6,7 @@ pub mod network;
 pub mod picker;
 pub mod process;
 pub mod startup;
+pub mod tray;
 pub mod update;
 
 use anyhow::{Context, Result, ensure};
@@ -30,7 +31,7 @@ fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
 
 pub struct SingleInstance(HANDLE);
 impl SingleInstance {
-    pub fn acquire() -> Result<Self> {
+    pub fn acquire() -> Result<Option<Self>> {
         // SAFETY: NUL-terminated name, null optional security descriptor, owned handle.
         let handle =
             unsafe { CreateMutexW(ptr::null(), 0, wide("Local\\TrueProxy.Desktop.v1").as_ptr()) };
@@ -40,9 +41,12 @@ impl SingleInstance {
         );
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             unsafe { CloseHandle(handle) };
+            if tray::activate_existing() {
+                return Ok(None);
+            }
             anyhow::bail!("True Proxy уже запущен. Откройте приложение через значок в трее.");
         }
-        Ok(Self(handle))
+        Ok(Some(Self(handle)))
     }
 }
 impl Drop for SingleInstance {

@@ -56,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           $preview = Join-Path $env:RUNNER_TEMP 'release-ui'
-          $process = Start-Process ./dist/TrueProxy/TrueProxy.exe -ArgumentList @('--smoke-ui', "`"$preview`"") -WindowStyle Hidden -Wait -PassThru
+          $process = Start-Process ./dist/TrueProxy/TrueProxy.exe -ArgumentList @('--smoke-ui', "`"$preview`"", '--tray') -WindowStyle Hidden -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'Packaged UI exited with an error' }
           $result = Get-Content -LiteralPath (Join-Path $preview 'result.txt') -Raw
           if ($result -notlike 'PASS:*') { throw $result }

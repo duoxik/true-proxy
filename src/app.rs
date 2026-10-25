@@ -2,7 +2,9 @@ mod activity;
 mod proxies;
 mod routing;
 mod updating;
-use crate::{MainWindow, RuleRow, Tray};
+#[cfg(not(windows))]
+use crate::Tray;
+use crate::{MainWindow, RuleRow};
 use anyhow::{Context, Result, ensure};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{
@@ -17,6 +19,8 @@ use std::{
     thread,
     time::Duration,
 };
+#[cfg(windows)]
+use true_proxy::platform::windows::tray::Tray;
 use true_proxy::{
     config::{Action, Config, DnsPolicy, PortRange, Protocol, Proxy, Rule},
     engine::{Engine, Statistics},
@@ -187,14 +191,24 @@ fn should_start(config: &Config, paused: bool, enable: bool) -> bool {
     !paused && !config.proxies.is_empty() && (config.routing_enabled || enable)
 }
 
+#[cfg(not(windows))]
 fn icon(active: bool, _error: bool) -> slint::Image {
     let pixels = true_proxy::branding::rgba(64, Some(active));
     let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&pixels, 64, 64);
     slint::Image::from_rgba8(buffer)
 }
+fn sync_tray(tray: &Tray, active: bool, status: &str) {
+    #[cfg(windows)]
+    tray.update(active, status);
+    #[cfg(not(windows))]
+    {
+        tray.set_active(active);
+        tray.set_status(status.into());
+        tray.set_tray_image(icon(active, false));
+    }
+}
 fn update_status(
     ui: slint::Weak<MainWindow>,
-    tray: slint::Weak<Tray>,
     active: bool,
     busy: bool,
     message: String,
@@ -205,17 +219,13 @@ fn update_status(
             ui.set_active(active);
             ui.set_busy(busy);
             ui.set_status(message.clone().into());
+            ui.invoke_sync_tray(active, message.clone().into());
             if error {
                 ui.set_notice(message.clone().into());
             }
             if !busy {
                 ui.invoke_remember_routing(active);
             }
-        }
-        if let Some(tray) = tray.upgrade() {
-            tray.set_active(active);
-            tray.set_status(message.into());
-            tray.set_tray_image(icon(active, error));
         }
     });
 }
@@ -224,7 +234,6 @@ fn worker(
     rx: mpsc::Receiver<Command>,
     sender: SyncSender<Command>,
     ui: slint::Weak<MainWindow>,
-    tray: slint::Weak<Tray>,
     stats: Arc<Statistics>,
     statuses: Arc<std::sync::Mutex<proxies::Statuses>>,
     preview: bool,
@@ -236,7 +245,6 @@ fn worker(
             Command::Start(config) => {
                 update_status(
                     ui.clone(),
-                    tray.clone(),
                     false,
                     true,
                     "Запускаем сетевой слой…".into(),
@@ -259,39 +267,26 @@ fn worker(
                         stats.routing_active(true);
                         update_status(
                             ui.clone(),
-                            tray.clone(),
                             true,
                             false,
                             "Маршрутизация работает. Приложение можно свернуть в трей.".into(),
                             false,
                         );
                     }
-                    Err(error) => update_status(
-                        ui.clone(),
-                        tray.clone(),
-                        false,
-                        false,
-                        format!("{error:#}"),
-                        true,
-                    ),
+                    Err(error) => {
+                        update_status(ui.clone(), false, false, format!("{error:#}"), true)
+                    }
                 }
             }
             Command::Stop => {
                 drop(engine.take());
                 stats.routing_active(false);
-                update_status(
-                    ui.clone(),
-                    tray.clone(),
-                    false,
-                    false,
-                    "Приостановлено".into(),
-                    false,
-                );
+                update_status(ui.clone(), false, false, "Приостановлено".into(), false);
             }
             Command::Failed(error) => {
                 drop(engine.take());
                 stats.routing_active(false);
-                update_status(ui.clone(), tray.clone(), false, false, error, true);
+                update_status(ui.clone(), false, false, error, true);
             }
             Command::Probe(proxy, token) => {
                 let weak = ui.clone();
@@ -457,6 +452,10 @@ pub fn run() -> Result<()> {
         .and_then(|i| arguments.get(i + 1))
         .map(PathBuf::from);
     #[cfg(windows)]
+    if preview.is_none() && platform::windows::tray::activate_existing() {
+        return Ok(());
+    }
+    #[cfg(windows)]
     if preview.is_none() && !platform::is_admin() {
         platform::relaunch_elevated()?;
         return Ok(());
@@ -468,7 +467,10 @@ pub fn run() -> Result<()> {
         platform::windows::wait_for_parent(pid)?;
     }
     let _instance = if preview.is_none() {
-        Some(platform::SingleInstance::acquire()?)
+        let Some(instance) = platform::SingleInstance::acquire()? else {
+            return Ok(());
+        };
+        Some(instance)
     } else {
         None
     };
@@ -502,15 +504,21 @@ pub fn run() -> Result<()> {
             None
         }
     };
-    let tray = Tray::new()?;
-    tray.set_tray_image(icon(false, false));
+    #[cfg(windows)]
+    let tray = Rc::new(Tray::new(preview.is_some())?);
+    #[cfg(not(windows))]
+    let tray = Rc::new(Tray::new()?);
     let initial_status = if state.borrow().proxies.is_empty() {
         "Настройте подключение"
     } else {
         "Приостановлено"
     };
     ui.set_status(initial_status.into());
-    tray.set_status(initial_status.into());
+    sync_tray(&tray, false, initial_status);
+    {
+        let tray = tray.clone();
+        ui.on_sync_tray(move |active, status| sync_tray(&tray, active, &status));
+    }
     let statuses = Arc::new(std::sync::Mutex::new(proxies::Statuses::new()));
     refresh(&ui, &state.borrow(), &statuses.lock().unwrap());
     let stats = Arc::new(Statistics::default());
@@ -550,7 +558,6 @@ pub fn run() -> Result<()> {
         });
     }
     let worker_ui = ui.as_weak();
-    let worker_tray = tray.as_weak();
     let worker_stats = stats.clone();
     let worker_sender = sender.clone();
     let worker_statuses = statuses.clone();
@@ -562,7 +569,6 @@ pub fn run() -> Result<()> {
                 receiver,
                 worker_sender,
                 worker_ui,
-                worker_tray,
                 worker_stats,
                 worker_statuses,
                 is_preview,
@@ -645,6 +651,7 @@ pub fn run() -> Result<()> {
         let restart = restart_stats.clone();
         tray.on_open(move || {
             if let Some(ui) = weak.upgrade() {
+                ui.window().set_minimized(false);
                 let _ = ui.show();
                 restart();
             }
@@ -1100,7 +1107,7 @@ pub fn run() -> Result<()> {
         ui.set_busy(true);
         sender.send(Command::Start(state.borrow().clone()))?;
     }
-    if arguments.iter().any(|argument| argument == "--tray") && preview.is_none() {
+    if arguments.iter().any(|argument| argument == "--tray") {
         stats_timer.stop();
         ui.hide()?;
     } else {
@@ -1114,7 +1121,7 @@ pub fn run() -> Result<()> {
             smoke_ui(&ui, &tray, &preview_timer, dir, stats.clone());
         }
     }
-    let result = slint::run_event_loop();
+    let result = slint::run_event_loop_until_quit();
     stats_timer.stop();
     preview_timer.stop();
     health_timer.stop();
@@ -1169,22 +1176,35 @@ fn bytes(value: u64) -> String {
 
 fn smoke_ui(
     ui: &MainWindow,
-    tray: &Tray,
+    tray: &Rc<Tray>,
     timer: &slint::Timer,
     dir: PathBuf,
     stats: Arc<Statistics>,
 ) {
     let weak = ui.as_weak();
-    let weak_tray = tray.as_weak();
+    let weak_tray = Rc::downgrade(tray);
     let mut step = 0;
     let mut startup_waits = 0;
+    let mut tray_waits = 0;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), move || {
         let Some(ui) = weak.upgrade() else { return; };
+        #[cfg(windows)]
+        let tray_available = weak_tray.upgrade().is_some_and(|tray| tray.registered());
+        #[cfg(not(windows))]
+        let tray_available = true;
+        if step == 0 && (!ui.window().is_visible() || !tray_available) && tray_waits < 25 {
+            tray_waits += 1;
+            if !ui.window().is_visible() && let Some(tray) = weak_tray.upgrade() { tray.invoke_open(); }
+            return;
+        }
         // A slow disk/scheduler may delay the worker response beyond one frame.
         if step == 7 && ui.get_busy() && startup_waits < 25 { startup_waits += 1; return; }
         let result = (|| -> Result<()> {
             match step {
                 0 => {
+                    ensure!(ui.window().is_visible(), "Трей не открыл скрытое окно");
+                    #[cfg(windows)]
+                    ensure!(weak_tray.upgrade().is_some_and(|tray| tray.registered()), "Значок не зарегистрирован в Windows");
                     snapshot(&ui, &dir.join("01-overview.png"))?;
                     for (name, active) in [("logo.png", None), ("tray-on.png", Some(true)), ("tray-off.png", Some(false))] {
                         let file = std::fs::File::create(dir.join(name))?;
