@@ -1,0 +1,80 @@
+import { ScrollView } from "std-widgets.slint";
+
+export struct JsonLine { number: int, text: styled-text }
+
+// Keep native editing, clipboard shortcuts, selection and undo. Styled lines
+// paint below a transparent native input; only the viewport is instantiated.
+export component JsonEditor inherits Rectangle {
+    in-out property <string> text;
+    in property <[JsonLine]> lines;
+    callback edited;
+    callback viewport(int, int);
+    property <length> line-height: 16px;
+    property <length> probe-y;
+    property <bool> second-probe: false;
+    property <length> caret-x;
+    property <length> caret-y;
+    property <bool> colored: root.lines.length > 0 && input.preedit-text == "";
+    property <int> first-line: max(0, floor(-scroll.content-y / root.line-height) - 2);
+    property <int> visible-lines: ceil(scroll.visible-height / root.line-height) + 4;
+    changed first-line => { root.viewport(root.first-line, root.visible-lines); }
+    changed visible-lines => { root.viewport(root.first-line, root.visible-lines); }
+    background: #131620; border-color: input.has-focus ? #9aaaff : #2b3040; border-width: 1px; border-radius: 7px;
+    clip: true;
+    vertical-stretch: 1;
+    min-height: 180px;
+    forward-focus: input;
+    init => {
+        metrics.set-selection-offsets(2, 2);
+        root.second-probe = true;
+        metrics.set-selection-offsets(4, 4);
+        input.focus();
+    }
+    public function paste() { input.select-all(); input.paste(); input.focus(); }
+    // Cursor geometry includes fractional leading; a rounded Text.preferred-height
+    // would accumulate drift on subsequent lines, especially with DPI scaling.
+    metrics := TextInput { x: 0px; y: 0px; width: 100px; height: 100px; visible: false; text: "M\nM\nM"; single-line: false; font-family: "Consolas"; font-size: 13px;
+        cursor-position-changed(cpos) => {
+            if root.second-probe { root.line-height = max(1px, cpos.y - root.probe-y); }
+            else { root.probe-y = cpos.y; }
+        }
+    }
+    scroll := ScrollView {
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        content-width: max(self.visible-width, input.preferred-width + 28px);
+        content-height: max(self.visible-height, input.preferred-height + 28px);
+        for line in root.lines: StyledText {
+            visible: root.colored;
+            x: 12px; y: 12px + line.number * root.line-height;
+            width: input.width; height: root.line-height;
+            text: line.text; default-font-family: "Consolas"; default-font-size: 13px;
+            default-color: #edf0f8; accessible-role: none;
+        }
+        input := TextInput {
+            x: 12px; y: 12px; width: scroll.content-width - 28px;
+            height: max(self.preferred-height, scroll.visible-height - 28px);
+            text <=> root.text; font-family: "Consolas"; font-size: 13px;
+            color: root.colored ? transparent : #edf0f8; selection-background-color: #3d4d80; selection-foreground-color: #edf0f8;
+            wrap: no-wrap; single-line: false; page-height: scroll.visible-height;
+            accessible-label: "JSON конфигурации";
+            edited => { root.edited(); }
+            cursor-position-changed(cpos) => {
+                root.caret-x = cpos.x; root.caret-y = cpos.y;
+                if cpos.x + self.x + scroll.content-x < 12px {
+                    scroll.content-x = min(0px, -cpos.x);
+                } else if cpos.x + self.x + scroll.content-x > scroll.visible-width - 20px {
+                    scroll.content-x = min(0px, scroll.visible-width - 20px - cpos.x - self.x);
+                }
+                if cpos.y + self.y + scroll.content-y < 12px {
+                    scroll.content-y = min(0px, -cpos.y);
+                } else if cpos.y + self.y + scroll.content-y > scroll.visible-height - root.line-height - 16px {
+                    scroll.content-y = min(0px, scroll.visible-height - root.line-height - 16px - cpos.y - self.y);
+                }
+            }
+        }
+        if root.colored && input.has-focus: Rectangle {
+            x: input.x + root.caret-x; y: input.y + root.caret-y; width: 1px;
+            height: input.font-metrics.ascent - input.font-metrics.descent; background: #9aaaff;
+        }
+    }
+}

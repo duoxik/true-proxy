@@ -6,6 +6,7 @@ pub mod editor;
 pub mod engine;
 pub mod packet;
 pub mod platform;
+pub mod profile;
 pub mod rules;
 pub mod socks;
 pub mod transfer;

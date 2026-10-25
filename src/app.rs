@@ -1,7 +1,10 @@
 mod activity;
 mod appearance;
+mod json_highlight;
+mod pending;
 mod proxies;
 mod routing;
+mod transfer;
 mod updating;
 #[cfg(not(windows))]
 use crate::Tray;
@@ -33,7 +36,7 @@ enum Command {
     Stop,
     Probe(Proxy, Option<String>),
     CheckProxies(Vec<Proxy>),
-    Failed(String),
+    Failed { generation: u64, error: String },
     Processes,
     Autostart(Option<bool>),
     Quit,
@@ -150,27 +153,6 @@ fn refresh(ui: &MainWindow, config: &Config, statuses: &proxies::Statuses) {
     ));
 }
 
-fn persist(
-    ui: &MainWindow,
-    state: &State,
-    path: &std::path::Path,
-    _command: &SyncSender<Command>,
-    statuses: &proxies::Statuses,
-    mutate: impl FnOnce(&mut Config) -> Result<()>,
-) -> Result<()> {
-    ensure!(
-        !ui.get_active() && !ui.get_busy(),
-        "Приостановите маршрутизацию перед изменением настроек. После сохранения включите ее снова."
-    );
-    let mut next = state.borrow().clone();
-    mutate(&mut next)?;
-    next.save(path)?;
-    *state.borrow_mut() = next.clone();
-    refresh(ui, &next, statuses);
-    ui.set_notice("".into());
-    Ok(())
-}
-
 fn report(ui: &MainWindow, result: Result<()>) {
     if let Err(error) = result {
         ui.set_notice(format!("{error:#}").into());
@@ -220,6 +202,7 @@ fn update_status(
             ui.set_active(active);
             ui.set_busy(busy);
             ui.set_status(message.clone().into());
+            pending::on_status(&ui, busy);
             ui.invoke_sync_tray(active, message.clone().into());
             if !busy
                 && ui.window().is_visible()
@@ -247,10 +230,12 @@ fn worker(
     preview: bool,
 ) {
     let mut engine: Option<Engine> = None;
+    let mut generation = 0_u64;
     let sweeping = Arc::new(AtomicBool::new(false));
     while let Ok(command) = rx.recv() {
         match command {
             Command::Start(config) => {
+                generation = generation.wrapping_add(1);
                 update_status(
                     ui.clone(),
                     false,
@@ -261,8 +246,12 @@ fn worker(
                 drop(engine.take());
                 stats.routing_active(false);
                 let sender = sender.clone();
+                let started_generation = generation;
                 let failure = Arc::new(move |error| {
-                    let _ = sender.try_send(Command::Failed(error));
+                    let _ = sender.try_send(Command::Failed {
+                        generation: started_generation,
+                        error,
+                    });
                 });
                 let result = if preview {
                     Err(anyhow::anyhow!("В режиме проверки UI перехват отключен"))
@@ -287,11 +276,18 @@ fn worker(
                 }
             }
             Command::Stop => {
+                generation = generation.wrapping_add(1);
                 drop(engine.take());
                 stats.routing_active(false);
                 update_status(ui.clone(), false, false, "Приостановлено".into(), false);
             }
-            Command::Failed(error) => {
+            Command::Failed {
+                generation: failed_generation,
+                error,
+            } => {
+                if failed_generation != generation {
+                    continue;
+                }
                 drop(engine.take());
                 stats.routing_active(false);
                 update_status(ui.clone(), false, false, error, true);
@@ -553,6 +549,14 @@ pub fn run() -> Result<()> {
         });
     }
     routing::wire(&ui, sender.clone());
+    pending::wire(&ui, state.clone(), sender.clone());
+    transfer::wire(
+        &ui,
+        state.clone(),
+        path.clone(),
+        statuses.clone(),
+        preview.is_some(),
+    );
     proxies::wire_form_probe(&ui, state.clone(), sender.clone(), preview.is_some());
     activity::wire(&ui, stats.clone());
     activity::render(&ui, &stats);
@@ -769,27 +773,19 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_save_proxy(move || {
             if let Some(ui) = weak.upgrade() {
                 let result = (|| {
                     let proxy = proxies::from_form(&ui, &state.borrow())?;
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| {
-                            if let Some(old) = c.proxies.iter_mut().find(|p| p.id == proxy.id) {
-                                *old = proxy;
-                            } else {
-                                c.proxies.push(proxy);
-                            }
-                            Ok(())
-                        },
-                    )?;
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        if let Some(old) = c.proxies.iter_mut().find(|p| p.id == proxy.id) {
+                            *old = proxy;
+                        } else {
+                            c.proxies.push(proxy);
+                        }
+                        Ok(())
+                    })?;
                     statuses
                         .lock()
                         .unwrap()
@@ -810,20 +806,14 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_delete_proxy(move |id| {
             if let Some(ui) = weak.upgrade() {
                 report(
                     &ui,
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| c.remove_proxy(&id),
-                    ),
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        c.remove_proxy(&id)
+                    }),
                 );
             }
         });
@@ -921,7 +911,6 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_save_rule(move || {
             if let Some(ui) = weak.upgrade() {
@@ -974,21 +963,14 @@ pub fn run() -> Result<()> {
                         action,
                         dns: DnsPolicy::Inherit,
                     };
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| {
-                            if let Some(old) = c.rules.iter_mut().find(|r| r.id == rule.id) {
-                                *old = rule;
-                            } else {
-                                c.rules.push(rule);
-                            }
-                            Ok(())
-                        },
-                    )?;
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        if let Some(old) = c.rules.iter_mut().find(|r| r.id == rule.id) {
+                            *old = rule;
+                        } else {
+                            c.rules.push(rule);
+                        }
+                        Ok(())
+                    })?;
                     ui.set_dialog(0);
                     ui.set_page(1);
                     Ok(())
@@ -1001,23 +983,15 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_delete_rule(move |id| {
             if let Some(ui) = weak.upgrade() {
                 report(
                     &ui,
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| {
-                            c.rules.retain(|r| id != r.id);
-                            Ok(())
-                        },
-                    ),
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        c.rules.retain(|r| id != r.id);
+                        Ok(())
+                    }),
                 );
             }
         });
@@ -1026,25 +1000,17 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_toggle_rule(move |id| {
             if let Some(ui) = weak.upgrade() {
                 report(
                     &ui,
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| {
-                            if let Some(r) = c.rules.iter_mut().find(|r| id == r.id) {
-                                r.enabled = !r.enabled;
-                            }
-                            Ok(())
-                        },
-                    ),
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        if let Some(r) = c.rules.iter_mut().find(|r| id == r.id) {
+                            r.enabled = !r.enabled;
+                        }
+                        Ok(())
+                    }),
                 );
             }
         });
@@ -1053,28 +1019,20 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_move_rule(move |id, direction| {
             if let Some(ui) = weak.upgrade() {
                 report(
                     &ui,
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| {
-                            if let Some(index) = c.rules.iter().position(|r| id == r.id) {
-                                let other = index as i32 + direction;
-                                if other >= 0 && (other as usize) < c.rules.len() {
-                                    c.rules.swap(index, other as usize);
-                                }
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        if let Some(index) = c.rules.iter().position(|r| id == r.id) {
+                            let other = index as i32 + direction;
+                            if other >= 0 && (other as usize) < c.rules.len() {
+                                c.rules.swap(index, other as usize);
                             }
-                            Ok(())
-                        },
-                    ),
+                        }
+                        Ok(())
+                    }),
                 );
             }
         });
@@ -1083,27 +1041,19 @@ pub fn run() -> Result<()> {
         let weak = ui.as_weak();
         let state = state.clone();
         let path = path.clone();
-        let sender = sender.clone();
         let statuses = statuses.clone();
         ui.on_save_fallback(move || {
             if let Some(ui) = weak.upgrade() {
                 report(
                     &ui,
-                    persist(
-                        &ui,
-                        &state,
-                        &path,
-                        &sender,
-                        &statuses.lock().unwrap(),
-                        |c| {
-                            c.default_action = match ui.get_fallback_action() {
-                                1 => Action::Block,
-                                2 => Action::Proxy(selected_proxy(c, ui.get_fallback_proxy())?),
-                                _ => Action::Direct,
-                            };
-                            Ok(())
-                        },
-                    ),
+                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
+                        c.default_action = match ui.get_fallback_action() {
+                            1 => Action::Block,
+                            2 => Action::Proxy(selected_proxy(c, ui.get_fallback_proxy())?),
+                            _ => Action::Direct,
+                        };
+                        Ok(())
+                    }),
                 );
             }
         });
@@ -1228,6 +1178,7 @@ fn smoke_ui(
                 }
                 2 => {
                     snapshot(&ui, &dir.join("03-proxies.png"))?; ui.invoke_add_rule();
+                    snapshot(&ui, &dir.join("03b-empty-rule-editor.png"))?;
                     ui.set_form_name("Браузер через VPN".into()); ui.invoke_add_condition(0, "firefox.exe, chrome.exe".into()); ui.invoke_add_condition(4, "80, 443, 8000-9000".into());
                     ui.invoke_add_condition(2, "*.steamserver.net; *.deadorbit.net; *.gravityshavings.net; exact.example.com".into());
                 }
@@ -1243,8 +1194,38 @@ fn smoke_ui(
                     ui.set_form_manual(false);
                     ui.set_form_new_process("steam.exe".into()); ui.set_form_advanced(false); ui.invoke_save_rule(); ensure!(ui.get_dialog() == 0, "Не сохраняется правило: {}", ui.get_notice());
                 }
-                4 => { snapshot(&ui, &dir.join("05-rules.png"))?; ui.set_page(4); }
-                5 => { snapshot(&ui, &dir.join("06-settings.png"))?; ui.invoke_save_fallback(); ui.set_page(3); }
+                4 => {
+                    snapshot(&ui, &dir.join("05-rules.png"))?;
+                    // Explicit preview fixture: no backend is running in this mode.
+                    ui.set_notice("Проверка UI: перехват отключён".into());
+                    ui.set_active(true);
+                    ui.invoke_edit_rule(ui.get_rules().row_data(0).unwrap().id);
+                    ui.set_form_name("Браузер через VPN · изменено".into());
+                    ui.invoke_save_rule();
+                    ensure!(ui.get_dialog() == 0 && ui.get_restart_prompt() && ui.get_routing_pending(), "Нет предложения применить сохранённые правила");
+                    ui.set_notice("Проверка UI: перехват отключён".into());
+                    snapshot(&ui, &dir.join("05a-restart-prompt.png"))?;
+                    ui.set_restart_prompt(false);
+                    snapshot(&ui, &dir.join("05b-pending-rules.png"))?;
+                    ui.set_active(false);
+                    pending::on_status(&ui, false);
+                    ui.set_notice("".into());
+                    ui.set_page(4);
+                }
+                5 => {
+                    snapshot(&ui, &dir.join("06-settings.png"))?;
+                    ui.invoke_open_import();
+                    let config=Config::load(&dir.join("config.json"))?;
+                    ui.set_import_json(true_proxy::profile::Profile::export(&config)?.into());
+                    ui.invoke_format_import();
+                    ensure!(ui.get_import_valid(), "Импорт отклонил экспортированную конфигурацию: {}", ui.get_import_error());
+                    snapshot(&ui,&dir.join("06a-json-import.png"))?;
+                    ui.set_import_json("{\n  \"proxies\": [\n}".into());ui.invoke_format_import();
+                    ensure!(!ui.get_import_valid() && !ui.get_import_error().is_empty(), "Нет ошибки некорректного JSON");
+                    snapshot(&ui,&dir.join("06b-json-error.png"))?;
+                    ui.invoke_cancel_import();
+                    ui.invoke_save_fallback(); ui.set_page(3);
+                }
                 6 => {
                     for (index,(process,destination,protocol)) in [("firefox.exe","203.0.113.1:443",Protocol::Tcp),("firefox.exe","203.0.113.2:443",Protocol::Udp),("steam.exe","203.0.113.3:443",Protocol::Tcp)].into_iter().enumerate() {
                         if let Some(record)=stats.activity.start(true_proxy::connections::Info {pid:100,process:process.into(),source:format!("192.0.2.1:{}",5000+index).parse()?,destination:destination.parse()?,protocol,route:"Локальный VPN".into(),detail:"Тестовое соединение".into(),proxied:true,stamp:0},true_proxy::connections::Status::Active) {fixture_records.push(record);}
@@ -1285,7 +1266,7 @@ fn smoke_ui(
                 11 => {
                     #[cfg(windows)] appearance::verify_surface(&ui)?;
                     ui.set_notice("Проверка UI: пример уведомления об обновлении; запросы к GitHub и установка отключены.".into());
-                    ui.set_update_available(true); ui.set_update_version("0.3.0".into()); ui.set_update_text("Новая версия готова к загрузке.".into());
+                    ui.set_update_available(true); ui.set_update_version(true_proxy::updates::VERSION.into()); ui.set_update_text("Новая версия готова к загрузке.".into());
                     snapshot(&ui, &dir.join("10-update-available.png"))?;
                     ui.set_update_ready(true); ui.set_update_text("Обновление загружено. Для установки приостановите маршрутизацию.".into());
                     ui.set_page(4); snapshot(&ui, &dir.join("11-update-ready.png"))?;

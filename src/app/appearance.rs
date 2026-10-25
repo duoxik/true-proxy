@@ -28,7 +28,9 @@ pub fn wire(ui: &MainWindow) {
 }
 
 #[cfg(windows)]
-fn native_handle(ui: &MainWindow) -> anyhow::Result<windows_sys::Win32::Foundation::HWND> {
+pub(super) fn native_handle(
+    ui: &MainWindow,
+) -> anyhow::Result<windows_sys::Win32::Foundation::HWND> {
     use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     ui.window()
         .with_winit_window(|window| {

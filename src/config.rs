@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Proxy {
     pub id: String,
@@ -79,7 +79,7 @@ impl PortRange {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub id: String,

@@ -1,4 +1,5 @@
 mod bundle;
+pub mod clipboard;
 pub mod divert;
 pub mod http;
 pub mod monitor;

@@ -273,7 +273,19 @@ mod ui_tests {
         assert_eq!(toggles.get(), 1);
         ui.set_active(true);
         click(&ui, "Правило Game");
-        assert_eq!(toggles.get(), 1, "Cannot mutate rules during routing");
+        assert_eq!(
+            toggles.get(),
+            2,
+            "Running routes may be saved for an explicit restart"
+        );
+        ui.set_busy(true);
+        click(&ui, "Правило Game");
+        assert_eq!(
+            toggles.get(),
+            2,
+            "Cannot mutate rules during a lifecycle transition"
+        );
+        ui.set_busy(false);
         ui.set_active(false);
         ui.set_dialog(2);
         click(&ui, "Дополнительные условия");
@@ -370,7 +382,7 @@ mod ui_tests {
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1120., 780.));
         ui.set_update_available(true);
-        ui.set_update_version("0.3.0".into());
+        ui.set_update_version(true_proxy::updates::VERSION.into());
         ui.show().unwrap();
         let calls = Rc::new(Cell::new(0));
         let count = calls.clone();
