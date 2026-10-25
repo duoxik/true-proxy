@@ -1,6 +1,6 @@
 [package]
 name = "true-proxy"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Lightweight per-application SOCKS5 router for Windows"
@@ -14,7 +14,7 @@ ipnet = { version = "2", features = ["serde"] }
 png = "0.18"
 semver = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18", "system-tray", "accessibility"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit", "renderer-software", "compat-1-18", "system-tray", "accessibility", "unstable-winit-030"] }
 
 [target.'cfg(windows)'.dependencies]
 libloading = "0.9"

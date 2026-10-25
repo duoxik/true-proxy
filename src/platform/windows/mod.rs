@@ -4,6 +4,7 @@ pub mod http;
 pub mod monitor;
 pub mod network;
 pub mod picker;
+pub mod presentation;
 pub mod process;
 pub mod startup;
 pub mod tray;

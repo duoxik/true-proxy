@@ -29,6 +29,9 @@ impl Default for Address {
     }
 }
 impl Address {
+    pub fn timestamp(&self) -> i64 {
+        self.timestamp
+    }
     pub fn outbound(&self) -> bool {
         self.flags & (1 << 17) != 0
     }
@@ -121,7 +124,7 @@ impl Driver {
     }
 
     pub fn open_monitor(self: &Arc<Self>) -> Result<Arc<Device>> {
-        let filter = CString::new("event == CLOSE and protocol == 17")?;
+        let filter = CString::new("event == CLOSE and (protocol == 6 or protocol == 17)")?;
         let handle = unsafe { (self.open)(filter.as_ptr(), 3, 0, 1 | 4) };
         ensure!(
             !handle.is_null() && handle as isize != -1,
@@ -135,16 +138,66 @@ impl Driver {
     }
 }
 
+impl Driver {
+    fn decode_socket_close(&self, address: &Address) -> Result<SocketClose> {
+        let ip = self.socket_ip(address, 20)?;
+        let remote = self.socket_ip(address, 36)?;
+        Ok(SocketClose {
+            pid: u32::from_ne_bytes(address.data[16..20].try_into().unwrap()),
+            source: std::net::SocketAddr::new(
+                ip,
+                u16::from_ne_bytes([address.data[52], address.data[53]]),
+            ),
+            destination: std::net::SocketAddr::new(
+                remote,
+                u16::from_ne_bytes([address.data[54], address.data[55]]),
+            ),
+            tcp: address.data[56] == 6,
+            stamp: address.timestamp,
+        })
+    }
+
+    fn socket_ip(&self, address: &Address, offset: usize) -> Result<IpAddr> {
+        debug_assert!(offset == 20 || offset == 36);
+        let mut buffer = [0i8; 64];
+        // SAFETY: the socket union contains aligned four-u32 addresses at offsets 20 and 36.
+        ensure!(
+            unsafe {
+                (self.format_address)(
+                    address.data.as_ptr().add(offset).cast(),
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u32,
+                )
+            } != 0,
+            "Некорректный адрес сокета"
+        );
+        let ip: IpAddr = unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_str()?
+            .parse()?;
+        let ip = match ip {
+            IpAddr::V6(v) => v.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+            _ => ip,
+        };
+        Ok(ip)
+    }
+}
 pub struct Device {
     driver: Arc<Driver>,
     handle: Handle,
+}
+pub struct SocketClose {
+    pub pid: u32,
+    pub source: std::net::SocketAddr,
+    pub destination: std::net::SocketAddr,
+    pub tcp: bool,
+    pub stamp: i64,
 }
 // SAFETY: WinDivert explicitly permits concurrent receive/send/shutdown calls on a handle.
 // The handle remains valid until the last Arc is released; shutdown does not free it.
 unsafe impl std::marker::Send for Device {}
 unsafe impl Sync for Device {}
 impl Device {
-    pub fn recv_socket_change(&self) -> Result<(IpAddr, u16, bool)> {
+    pub fn recv_socket_change(&self) -> Result<SocketClose> {
         let mut address = Address::default();
         ensure!(
             unsafe {
@@ -159,30 +212,7 @@ impl Device {
             "Монитор сокетов остановился: {}",
             std::io::Error::last_os_error()
         );
-        let mut buffer = [0i8; 64];
-        // SAFETY: the 64-byte socket union has an aligned four-u32 LocalAddr at offset 20.
-        ensure!(
-            unsafe {
-                (self.driver.format_address)(
-                    address.data.as_ptr().add(20).cast(),
-                    buffer.as_mut_ptr(),
-                    buffer.len() as u32,
-                )
-            } != 0,
-            "Некорректный адрес сокета"
-        );
-        let ip: IpAddr = unsafe { CStr::from_ptr(buffer.as_ptr()) }
-            .to_str()?
-            .parse()?;
-        let ip = match ip {
-            IpAddr::V6(v) => v.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
-            _ => ip,
-        };
-        Ok((
-            ip,
-            u16::from_ne_bytes([address.data[52], address.data[53]]),
-            address.data[56] == 6,
-        ))
+        self.driver.decode_socket_close(&address)
     }
     pub fn recv(&self, buffer: &mut [u8]) -> Result<(usize, Address)> {
         let mut len = 0;
@@ -250,6 +280,54 @@ impl Drop for Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn socket_close_abi_preserves_pid_remote_address_protocol_ports_and_timestamp() {
+        #[repr(C)]
+        struct SocketData {
+            endpoint: u64,
+            parent: u64,
+            pid: u32,
+            local: [u32; 4],
+            remote: [u32; 4],
+            local_port: u16,
+            remote_port: u16,
+            protocol: u8,
+            padding: [u8; 7],
+        }
+        assert_eq!(size_of::<SocketData>(), 64);
+        let driver = Driver::load().unwrap();
+        for protocol in [6, 17] {
+            let data = SocketData {
+                endpoint: 1,
+                parent: 2,
+                pid: 1234,
+                local: [0xc0000201, 0xffff, 0, 0],
+                remote: [1, 0, 0, 0x20010db8],
+                local_port: 5000,
+                remote_port: 443,
+                protocol,
+                padding: [0; 7],
+            };
+            let mut address = Address {
+                timestamp: 123456,
+                ..Default::default()
+            };
+            // A synthetic ABI payload; only DLL formatting helpers are called.
+            unsafe {
+                address
+                    .data
+                    .as_mut_ptr()
+                    .cast::<SocketData>()
+                    .write_unaligned(data);
+            }
+            let event = driver.decode_socket_close(&address).unwrap();
+            assert_eq!(event.pid, 1234);
+            assert_eq!(event.stamp, 123456);
+            assert_eq!(event.source, "192.0.2.1:5000".parse().unwrap());
+            assert_eq!(event.destination, "[2001:db8::1]:443".parse().unwrap());
+            assert_eq!(event.tcp, protocol == 6);
+        }
+    }
     #[test]
     fn abi_size() {
         assert_eq!(std::mem::size_of::<Address>(), 80);

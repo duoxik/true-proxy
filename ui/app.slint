@@ -2,7 +2,7 @@ import { CheckBox, ComboBox, ScrollView, Palette } from "std-widgets.slint";
 
 export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, health: int, udp: bool }
 export struct RuleRow { id: string, name: string, process: string, conditions: string, route: string, enabled: bool }
-export struct LogRow { process: string, destination: string, route: string, message: string }
+export struct LogRow { id: string, process: string, destination: string, route: string, message: string, source: string, status: string, state: int }
 export struct ProcessChoice { key: string, name: string, path: string, pids: string, instances: int, selected: bool }
 export struct ProcessSummary { name: string, active: int, events: int, uploaded: string, downloaded: string, expanded: bool, connections: [LogRow] }
 
@@ -205,6 +205,9 @@ export component MainWindow inherits Window {
     in-out property <string> connection-query;
     in property <int> connection-event-count;
     in property <int> filtered-event-count;
+    in-out property <bool> only-active: true;
+    in property <int> connection-omitted;
+    in-out property <bool> surface-fresh: false;
     in property <[ProcessChoice]> all-processes;
     in property <[ProcessChoice]> process-choices;
     in property <int> process-selected-count;
@@ -258,7 +261,7 @@ export component MainWindow inherits Window {
     callback move-rule(string, int);
     callback save-fallback;
     callback set-autostart(bool);
-    callback clear-logs;
+    callback set-only-active(bool);
     callback hide-window;
     callback close-dialog;
     callback add-condition(int, string);
@@ -276,6 +279,9 @@ export component MainWindow inherits Window {
     callback update-now;
     callback set-updates-automatic(bool);
 
+    // Explicit opaque full-window surface: invalidating it also repaints static
+    // content after Windows discards the software presentation buffer.
+    surface := Rectangle { width: parent.width; height: parent.height; background: root.surface-fresh ? #101219 : Theme.background;
     HorizontalLayout { spacing: 0px;
         Rectangle { width: 210px; background: Theme.sidebar;
             VerticalLayout { padding: 18px; padding-top: 27px; spacing: 7px;
@@ -303,7 +309,7 @@ export component MainWindow inherits Window {
             HorizontalLayout { height: 55px; spacing: 16px;
                 VerticalLayout { spacing: 5px;
                     Text { text: ["Обзор", "Правила маршрутизации", "Прокси-серверы", "Соединения", "Настройки"][root.page]; font-size: 25px; font-weight: 600; color: Theme.text; }
-                    Text { text: ["Все подключения — по вашим правилам.", "Первое совпавшее правило определяет маршрут.", "Ваши точки выхода в сеть.", "Последние события сетевого слоя.", "Запуск приложения и обновления."][root.page]; color: Theme.secondary; font-size: 11px; }
+                    Text { text: ["Все подключения — по вашим правилам.", "Первое совпавшее правило определяет маршрут.", "Ваши точки выхода в сеть.", "Активные соединения и история по приложениям.", "Запуск приложения и обновления."][root.page]; color: Theme.secondary; font-size: 11px; }
                 }
             }
             if root.notice != "": Rectangle { min-height: 48px; border-radius: 8px; background: Theme.warning-surface;
@@ -418,10 +424,10 @@ export component MainWindow inherits Window {
                 HorizontalLayout { spacing: 10px; height: 40px;
                     Field { placeholder: "Поиск адреса, процесса или правила"; value <=> root.connection-query; edited => { root.filter-connections(); } }
                     ComboBox { width: 205px; model: root.connection-processes; current-index <=> root.connection-process; selected(index) => { root.filter-connections(); } }
-                    ActionButton { label: "Очистить журнал"; clicked => { root.clear-logs(); } }
                 }
-                HorizontalLayout { height: 28px;
-                    Text { text: "По процессам · " + root.filtered-event-count + " из " + root.connection-event-count + " событий"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                HorizontalLayout { height: 32px; spacing: 12px;
+                    CheckBox { text: "Только активные соединения"; checked <=> root.only-active; toggled => { root.set-only-active(self.checked); } }
+                    Text { text: "По процессам · " + root.filtered-event-count + " из " + root.connection-event-count + " соединений"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
                     if root.connection-process > 0 || root.connection-query != "": ActionButton { label: "Сбросить фильтры"; height: 28px; clicked => { root.connection-query = ""; root.connection-process = 0; root.filter-connections(); } }
                 }
                 connection-list := ScrollView {
@@ -442,17 +448,17 @@ export component MainWindow inherits Window {
                                     Text { text: process.name; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; vertical-alignment: center; }
                                     Text { text: process.active + " активных"; width: 84px; color: process.active > 0 ? Theme.success : Theme.secondary; font-size: 11px; vertical-alignment: center; }
                                     Text { text: "↑ " + process.uploaded + "   ↓ " + process.downloaded; width: 170px; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
-                                    Text { text: process.events + " событий"; width: 80px; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                                    Text { text: process.events + " соед."; width: 80px; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
                                 }
                                 TouchArea { mouse-cursor: pointer; clicked => { root.expand-process(process.name); } }
                                 accessible-role: button; accessible-label: "Подключения " + process.name; accessible-expanded: process.expanded; accessible-action-default => { root.expand-process(process.name); }
                             }
                             if process.expanded: VerticalLayout { spacing: 4px; padding-top: 6px; padding-left: 23px; padding-bottom: 5px;
-                                if process.connections.length == 0: Text { text: "В журнале нет событий этого процесса. Счётчики SOCKS сохранены."; wrap: word-wrap; color: Theme.muted; font-size: 11px; }
-                                for log in process.connections: Rectangle { height: 58px; background: Theme.surface; border-radius: 6px;
+                                for log in process.connections: Rectangle { height: 76px; background: Theme.surface; border-radius: 6px;
                                     HorizontalLayout { padding: 11px; spacing: 12px;
-                                        Text { width: 125px; text: log.route; color: Theme.accent; font-size: 11px; overflow: elide; vertical-alignment: center; }
-                                        VerticalLayout { spacing: 4px; Text { text: log.destination; color: Theme.secondary; font-size: 12px; overflow: elide; } Text { text: log.message; color: Theme.muted; font-size: 10px; overflow: elide; } }
+                                        Text { width: 100px; text: log.route; color: Theme.accent; font-size: 11px; overflow: elide; vertical-alignment: center; }
+                                        VerticalLayout { spacing: 4px; Text { text: log.destination; color: Theme.secondary; font-size: 12px; overflow: elide; } Text { text: process.name == "Другие процессы" ? log.process + " · " + log.source : log.source; color: Theme.muted; font-size: 10px; overflow: elide; } Text { text: log.message; color: Theme.muted; font-size: 10px; overflow: elide; } }
+                                        Text { width: 105px; text: log.status; color: log.state == 1 ? Theme.success : log.state == 0 ? Theme.accent : log.state == 2 ? Theme.warning : (log.state == 4 || log.state == 5) ? #f08080 : Theme.muted; font-size: 11px; vertical-alignment: center; }
                                     }
                                 }
                             }
@@ -460,8 +466,9 @@ export component MainWindow inherits Window {
                         Rectangle { vertical-stretch: 1; }
                     }
                 }
-                Text { text: "Нажмите на процесс, чтобы раскрыть журнал. Активные сеансы и байты — через SOCKS за текущий запуск; журнал — 256 событий."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                Text { text: root.only-active ? "TCP-соединения и UDP-сессии. Счётчики трафика — через SOCKS." : "История: последние 256 завершённых соединений с момента снятия галочки. Трафик — через SOCKS."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
             }
+            if root.page == 3 && root.connection-omitted > 0: Text { text: "Лимит отслеживания: 4096 активных соединений. Пропущено: " + root.connection-omitted; color: Theme.warning; font-size: 10px; wrap: word-wrap; }
             if root.page == 4: settings-scroll := ScrollView {
                 horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                 content-height: max(self.visible-height, settings-content.preferred-height);
@@ -490,6 +497,8 @@ export component MainWindow inherits Window {
                 }
             } }
         }
+    }
+
     }
 
     if root.dialog > 0: Rectangle { background: #05060cb8; TouchArea { }

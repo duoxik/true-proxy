@@ -1,6 +1,9 @@
 //! Invalidate cached routing when a local socket is closed or its port is reused.
 use super::divert::Device;
-use crate::{engine::FailureHandler, packet::FlowKey};
+use crate::{
+    engine::{FailureHandler, Statistics},
+    packet::FlowKey,
+};
 use anyhow::Result;
 use std::{
     collections::HashMap,
@@ -49,7 +52,11 @@ impl SocketGenerations {
 }
 
 impl SocketMonitor {
-    pub fn start(device: Arc<Device>, failure: FailureHandler) -> Result<Self> {
+    pub fn start(
+        device: Arc<Device>,
+        failure: FailureHandler,
+        stats: Arc<Statistics>,
+    ) -> Result<Self> {
         let generations = Arc::new(Mutex::new(Generations::default()));
         let stopping = Arc::new(AtomicBool::new(false));
         let worker_device = device.clone();
@@ -57,7 +64,17 @@ impl SocketMonitor {
         let worker_stopping = stopping.clone();
         let thread=thread::Builder::new().name("socket-monitor".into()).spawn(move||{
             loop {match worker_device.recv_socket_change() {
-                Ok((ip,port,tcp))=>{if port==0{continue;}let mut g=worker_generations.lock().unwrap();if g.ports.len()>=8192{g.ports.clear();g.epoch=g.epoch.wrapping_add(1);}let generation=g.ports.entry((ip,port,tcp)).or_default();*generation=generation.wrapping_add(1);},
+                Ok(event)=>{
+                    if event.source.port()==0 {continue;}
+                    // Routing generations retain their existing UDP-only semantics.
+                    if !event.tcp {
+                        let mut g=worker_generations.lock().unwrap();
+                        if g.ports.len()>=8192 {g.ports.clear();g.epoch=g.epoch.wrapping_add(1);}
+                        let generation=g.ports.entry((event.source.ip(),event.source.port(),false)).or_default();
+                        *generation=generation.wrapping_add(1);
+                    }
+                    stats.activity.close_socket(event.pid,event.source,event.destination,event.tcp,event.stamp);
+                },
                 Err(error)=>{if !worker_stopping.load(Ordering::Acquire){failure(format!("Не удалось продолжить отслеживание владельцев сокетов: {error:#}"));}break;}
             }}
         })?;

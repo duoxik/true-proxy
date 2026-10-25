@@ -1,17 +1,17 @@
 {
-  "exeBytes": 11683840,
-  "scope": "True Proxy 0.2.2 GNU, isolated UI: interception, SOCKS/update checks and startup task access disabled. CPU percent uses one logical core as 100%.",
+  "exeBytes": 11742720,
+  "scope": "True Proxy 0.3.0 GNU, isolated UI: interception, SOCKS/update checks and startup task access disabled. CPU percent uses one logical core as 100%.",
   "visible": {
+    "sampleSeconds": 3.09,
     "cpuPercentOfOneCore": 0.0,
-    "workingSetMiB": 26.21,
-    "privateMiB": 7.18,
-    "sampleSeconds": 3.09
+    "workingSetMiB": 26.24,
+    "privateMiB": 7.2
   },
   "tray": {
+    "sampleSeconds": 7.21,
     "cpuPercentOfOneCore": 0.0,
-    "workingSetMiB": 26.21,
-    "privateMiB": 7.18,
-    "sampleSeconds": 7.2
+    "workingSetMiB": 26.24,
+    "privateMiB": 7.2
   },
-  "sha256": "21175d781919ea91ec86813ecb01188f007f633dc2beb6ac94c7d3aab74ed815"
+  "sha256": "de10c8ce8cfb266d0125b0b979b240585c88eb8d6743782688ab4738c465f8f1"
 }

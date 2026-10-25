@@ -1,4 +1,5 @@
 mod activity;
+mod appearance;
 mod proxies;
 mod routing;
 mod updating;
@@ -220,6 +221,13 @@ fn update_status(
             ui.set_busy(busy);
             ui.set_status(message.clone().into());
             ui.invoke_sync_tray(active, message.clone().into());
+            if !busy
+                && ui.window().is_visible()
+                && !ui.window().is_minimized()
+                && ui.get_page() == 3
+            {
+                ui.invoke_filter_connections();
+            }
             if error {
                 ui.set_notice(message.clone().into());
             }
@@ -496,6 +504,7 @@ pub fn run() -> Result<()> {
         remember_routing(&state, &path, false)?;
     }
     let ui = MainWindow::new()?;
+    appearance::wire(&ui);
     let _updates = match updating::wire(&ui, path.with_file_name("updates.json"), preview.is_some())
     {
         Ok(controller) => controller,
@@ -602,6 +611,9 @@ pub fn run() -> Result<()> {
         move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_uptime(uptime(stats.uptime()).into());
+                if ui.get_page() == 3 {
+                    activity::render(&ui, &stats);
+                }
             }
             let weak = weak.clone();
             let stats = stats.clone();
@@ -610,6 +622,9 @@ pub fn run() -> Result<()> {
                 Duration::from_secs(1),
                 move || {
                     if let Some(ui) = weak.upgrade() {
+                        if !ui.window().is_visible() || ui.window().is_minimized() {
+                            return;
+                        }
                         ui.set_uptime(uptime(stats.uptime()).into());
                         ui.set_uploaded(bytes(stats.uploaded.load(Ordering::Relaxed)).into());
                         ui.set_downloaded(bytes(stats.downloaded.load(Ordering::Relaxed)).into());
@@ -651,6 +666,7 @@ pub fn run() -> Result<()> {
         let restart = restart_stats.clone();
         tray.on_open(move || {
             if let Some(ui) = weak.upgrade() {
+                appearance::refresh(&ui);
                 ui.window().set_minimized(false);
                 let _ = ui.show();
                 restart();
@@ -1092,16 +1108,6 @@ pub fn run() -> Result<()> {
             }
         });
     }
-    {
-        let weak = ui.as_weak();
-        let stats = stats.clone();
-        ui.on_clear_logs(move || {
-            stats.clear();
-            if let Some(ui) = weak.upgrade() {
-                activity::render(&ui, &stats);
-            }
-        });
-    }
 
     if auto_start {
         ui.set_busy(true);
@@ -1184,6 +1190,7 @@ fn smoke_ui(
     let weak = ui.as_weak();
     let weak_tray = Rc::downgrade(tray);
     let mut step = 0;
+    let mut fixture_records = Vec::new();
     let mut startup_waits = 0;
     let mut tray_waits = 0;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), move || {
@@ -1239,9 +1246,9 @@ fn smoke_ui(
                 4 => { snapshot(&ui, &dir.join("05-rules.png"))?; ui.set_page(4); }
                 5 => { snapshot(&ui, &dir.join("06-settings.png"))?; ui.invoke_save_fallback(); ui.set_page(3); }
                 6 => {
-                    stats.log("firefox.exe", "203.0.113.1:443", "Локальный VPN", "TCP · Браузер через VPN · example.com");
-                    stats.log("firefox.exe", "203.0.113.2:443", "Локальный VPN", "UDP · Браузер через VPN · имя DNS неизвестно");
-                    stats.log("steam.exe", "203.0.113.3:443", "Напрямую", "TCP · по умолчанию");
+                    for (index,(process,destination,protocol)) in [("firefox.exe","203.0.113.1:443",Protocol::Tcp),("firefox.exe","203.0.113.2:443",Protocol::Udp),("steam.exe","203.0.113.3:443",Protocol::Tcp)].into_iter().enumerate() {
+                        if let Some(record)=stats.activity.start(true_proxy::connections::Info {pid:100,process:process.into(),source:format!("192.0.2.1:{}",5000+index).parse()?,destination:destination.parse()?,protocol,route:"Локальный VPN".into(),detail:"Тестовое соединение".into(),proxied:true,stamp:0},true_proxy::connections::Status::Active) {fixture_records.push(record);}
+                    }
                     activity::render(&ui, &stats);
                     ui.set_connection_process(ui.get_connection_processes().iter().position(|name| name == "firefox.exe").unwrap() as i32); ui.invoke_filter_connections(); ensure!(ui.get_filtered_event_count() == 2, "Не работает фильтр процесса");
                     ui.set_connection_query("203.0.113.2".into()); ui.invoke_filter_connections(); ensure!(ui.get_filtered_event_count() == 1, "Не работает поиск соединений");
@@ -1249,6 +1256,13 @@ fn smoke_ui(
                     ui.invoke_expand_process("firefox.exe".into());
                     ui.set_notice("Проверка UI: тестовые события, перехват отключён".into());
                     snapshot(&ui, &dir.join("07-connections.png"))?;
+                    ui.set_only_active(false);ui.invoke_set_only_active(false);
+                    fixture_records[0].finish(true_proxy::connections::Status::Closed,"Тестовое завершение");
+                    fixture_records[1].finish(true_proxy::connections::Status::Failed,"Тестовый отказ SOCKS");
+                    activity::render(&ui,&stats);snapshot(&ui,&dir.join("07b-history.png"))?;
+                    ui.set_only_active(true);ui.invoke_set_only_active(true);ensure!(ui.get_filtered_event_count()==1,"Завершённые соединения не очищены");
+                    ui.set_only_active(false);ui.invoke_set_only_active(false);ensure!(ui.get_filtered_event_count()==1,"Старая история вернулась");
+                    ui.set_only_active(true);ui.invoke_set_only_active(true);
                     let config = Config::load(&dir.join("config.json"))?;
                     ensure!(config.proxies.len() == 1 && config.rules.len() == 1, "Не пройдена проверка сохранения UI");
                     ensure!(config.rules[0].process_names.iter().any(|name| name == "steam.exe"), "Не сохранён незавершённый ввод списка");
@@ -1264,12 +1278,18 @@ fn smoke_ui(
                 8 => { weak_tray.upgrade().context("Значок трея исчез")?.invoke_open(); ui.set_notice("".into()); ui.set_page(0); }
                 9 => {
                     snapshot(&ui, &dir.join("09-restored-from-tray.png"))?;
+                    #[cfg(windows)] appearance::mark_surface(&ui)?;
+                    ui.window().set_minimized(true);
+                }
+                10 => {ui.window().set_minimized(false);}
+                11 => {
+                    #[cfg(windows)] appearance::verify_surface(&ui)?;
                     ui.set_notice("Проверка UI: пример уведомления об обновлении; запросы к GitHub и установка отключены.".into());
                     ui.set_update_available(true); ui.set_update_version("0.3.0".into()); ui.set_update_text("Новая версия готова к загрузке.".into());
                     snapshot(&ui, &dir.join("10-update-available.png"))?;
                     ui.set_update_ready(true); ui.set_update_text("Обновление загружено. Для установки приостановите маршрутизацию.".into());
                     ui.set_page(4); snapshot(&ui, &dir.join("11-update-ready.png"))?;
-                    std::fs::write(dir.join("result.txt"), "PASS: proxy/rule editors, settings, persistence, startup failure and tray hide/restore; interception was disabled.")?;
+                    std::fs::write(dir.join("result.txt"), "PASS: editors, persistence, connection history, startup failure, tray restore and native minimize repaint; interception was disabled.")?;
                     slint::quit_event_loop()?;
                 }
                 _ => {}

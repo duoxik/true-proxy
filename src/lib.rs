@@ -1,5 +1,6 @@
 pub mod branding;
 pub mod config;
+pub mod connections;
 pub mod dns;
 pub mod editor;
 pub mod engine;

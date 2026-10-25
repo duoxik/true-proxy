@@ -20,6 +20,7 @@ pub struct LogEntry {
 
 #[derive(Default)]
 pub struct Statistics {
+    pub activity: Arc<crate::connections::Connections>,
     pub uploaded: AtomicU64,
     pub downloaded: AtomicU64,
     pub connections: AtomicU64,
@@ -58,6 +59,9 @@ impl Drop for ConnectionGuard {
 
 impl Statistics {
     pub fn routing_active(&self, active: bool) {
+        if !active {
+            self.activity.finish_all("Маршрутизация остановлена");
+        }
         *self.routing_started.lock().unwrap() = active.then(Instant::now);
     }
     pub fn uptime(&self) -> Duration {

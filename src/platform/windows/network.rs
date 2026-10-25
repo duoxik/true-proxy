@@ -5,6 +5,7 @@ use super::{
 };
 use crate::{
     config::{Action, Config, Protocol},
+    connections::{Connection, Info, Status},
     dns::{self, DomainCache},
     engine::{FailureHandler, Statistics},
     packet::{FlowKey, Packet, udp_reply},
@@ -45,6 +46,177 @@ struct NatMaps {
 mod tests {
     use super::*;
     #[test]
+    fn idle_direct_tcp_keeps_one_decision_until_closed_with_a_tail_packet_grace_period() {
+        let stats = Arc::new(Statistics::default());
+        let flow = FlowKey {
+            source: "192.0.2.1:5000".parse().unwrap(),
+            destination: "203.0.113.1:443".parse().unwrap(),
+        };
+        let record = stats
+            .activity
+            .start(
+                Info {
+                    pid: 10,
+                    process: "game.exe".into(),
+                    source: flow.source,
+                    destination: flow.destination,
+                    protocol: Protocol::Tcp,
+                    route: "Direct".into(),
+                    detail: String::new(),
+                    proxied: false,
+                    stamp: 0,
+                },
+                Status::Active,
+            )
+            .unwrap();
+        let now = Instant::now();
+        let decision = Decision {
+            action: Action::Direct,
+            last: now,
+            stamp: (0, 0, 0),
+            initial_sequence: 0,
+            owner: process::Process {
+                pid: 10,
+                name: "game.exe".into(),
+                path: String::new(),
+            },
+            dns_check: now,
+            record: Some(record.clone()),
+        };
+        assert!(decision.keep(
+            flow,
+            true,
+            &NatMaps::default(),
+            now + Duration::from_secs(3600)
+        ));
+        record.finish(Status::Closed, "");
+        assert!(!decision.keep(
+            flow,
+            true,
+            &NatMaps::default(),
+            now + Duration::from_secs(3600)
+        ));
+        assert!(decision.keep(
+            flow,
+            true,
+            &NatMaps::default(),
+            now + Duration::from_secs(10)
+        ));
+    }
+    #[tokio::test]
+    async fn tcp_relay_lifecycle_has_one_record_for_success_or_socks_rejection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for reject in [false, true] {
+            let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let proxy_port = proxy_listener.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = proxy_listener.accept().await.unwrap();
+                let mut greeting = [0; 3];
+                stream.read_exact(&mut greeting).await.unwrap();
+                assert_eq!(greeting, [5, 1, 0]);
+                stream.write_all(&[5, 0]).await.unwrap();
+                let mut request = [0; 10];
+                stream.read_exact(&mut request).await.unwrap();
+                stream
+                    .write_all(&[5, if reject { 5 } else { 0 }, 0, 1, 127, 0, 0, 1, 0, 1])
+                    .await
+                    .unwrap();
+                if !reject {
+                    let mut hello = [0; 5];
+                    stream.read_exact(&mut hello).await.unwrap();
+                    assert_eq!(&hello, b"hello");
+                    stream.write_all(b"world").await.unwrap();
+                    stream.shutdown().await.unwrap();
+                }
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap())
+                .await
+                .unwrap();
+            let (local, _) = listener.accept().await.unwrap();
+            let stats = Arc::new(Statistics::default());
+            stats.activity.set_only_active(false);
+            let flow = FlowKey {
+                source: client.local_addr().unwrap(),
+                destination: "203.0.113.1:443".parse().unwrap(),
+            };
+            let record = stats
+                .activity
+                .start(
+                    Info {
+                        pid: 1,
+                        process: "game.exe".into(),
+                        source: flow.source,
+                        destination: flow.destination,
+                        protocol: Protocol::Tcp,
+                        route: "VPN".into(),
+                        detail: "Rule".into(),
+                        proxied: true,
+                        stamp: 0,
+                    },
+                    Status::Connecting,
+                )
+                .unwrap();
+            let mapping = Nat {
+                original: flow,
+                proxy_id: "p".into(),
+                process: "game.exe".into(),
+                last: Instant::now(),
+                active: Arc::new(AtomicBool::new(true)),
+                record: Some(record.clone()),
+            };
+            let config = Config {
+                proxies: vec![crate::config::Proxy {
+                    id: "p".into(),
+                    name: "VPN".into(),
+                    host: "127.0.0.1".into(),
+                    port: proxy_port,
+                    username: String::new(),
+                    protected_password: None,
+                }],
+                ..Config::default()
+            };
+            let counters = stats.clone();
+            let worker =
+                tokio::spawn(async move { tcp_session(local, &mapping, &config, &counters).await });
+            if !reject {
+                timeout(Duration::from_secs(3), async {
+                    while record.status() == Status::Connecting {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                assert_eq!(record.status(), Status::Active);
+                client.write_all(b"hello").await.unwrap();
+                client.shutdown().await.unwrap();
+                let mut reply = Vec::new();
+                timeout(Duration::from_secs(3), client.read_to_end(&mut reply))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(reply, b"world");
+            }
+            let result = timeout(Duration::from_secs(3), worker)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.is_err(), reject);
+            server.await.unwrap();
+            let rows = stats.activity.snapshots();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0].status,
+                if reject {
+                    Status::Failed
+                } else {
+                    Status::Closed
+                }
+            );
+            assert_eq!(stats.connections.load(Ordering::Relaxed), 0);
+        }
+    }
+    #[test]
     fn idle_live_tcp_connection_survives_cache_cleanup() {
         let original = FlowKey {
             source: "192.0.2.1:51000".parse().unwrap(),
@@ -66,6 +238,7 @@ mod tests {
                 process: "test.exe".into(),
                 last: now,
                 active: active.clone(),
+                record: None,
             },
         );
         maps.cleanup(now + Duration::from_secs(3600));
@@ -95,6 +268,7 @@ struct Nat {
     process: String,
     last: Instant,
     active: Arc<AtomicBool>,
+    record: Option<Connection>,
 }
 struct Decision {
     action: Action,
@@ -103,6 +277,19 @@ struct Decision {
     initial_sequence: u32,
     owner: process::Process,
     dns_check: Instant,
+    record: Option<Connection>,
+}
+impl Decision {
+    fn keep(&self, flow: FlowKey, tcp: bool, table: &NatMaps, now: Instant) -> bool {
+        now.duration_since(self.last) < Duration::from_secs(900)
+            || (tcp && self.record.as_ref().is_some_and(|c| !c.status().finished()))
+            || (tcp
+                && table
+                    .original
+                    .get(&flow)
+                    .and_then(|key| table.reflected.get(key))
+                    .is_some_and(|n| n.active.load(Ordering::Relaxed)))
+    }
 }
 struct Datagram {
     payload: Vec<u8>,
@@ -166,8 +353,17 @@ impl Network {
         let nat = NatTable::default();
         let domains = Arc::new(Mutex::new(DomainCache::default()));
         let driver = Driver::load()?;
-        let monitor = SocketMonitor::start(driver.open_monitor()?, failure.clone())?;
+        let monitor = SocketMonitor::start(driver.open_monitor()?, failure.clone(), stats.clone())?;
         let generations = monitor.generations();
+        let activity = stats.activity.clone();
+        runtime.spawn(async move {
+            let mut timer = tokio::time::interval(Duration::from_secs(5));
+            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                timer.tick().await;
+                activity.expire();
+            }
+        });
         // Opening the driver is the first operation that intercepts real traffic.
         let device = driver.open()?;
         let stopping = Arc::new(AtomicBool::new(false));
@@ -350,15 +546,7 @@ fn capture(context: CaptureContext) -> Result<()> {
         if cleanup.elapsed() > Duration::from_secs(15) {
             let mut table = nat.lock().unwrap();
             table.cleanup(now);
-            decisions.retain(|(flow, tcp), d| {
-                now.duration_since(d.last) < Duration::from_secs(900)
-                    || (*tcp
-                        && table
-                            .original
-                            .get(flow)
-                            .and_then(|key| table.reflected.get(key))
-                            .is_some_and(|n| n.active.load(Ordering::Relaxed)))
-            });
+            decisions.retain(|(flow, tcp), decision| decision.keep(*flow, *tcp, &table, now));
             drop(table);
             udp.retain(|_, flow| !flow.sender.is_closed());
             dns_flows.retain(|_, last| now.duration_since(*last) < Duration::from_secs(120));
@@ -376,7 +564,11 @@ fn capture(context: CaptureContext) -> Result<()> {
             d.stamp != stamp
                 || (tcp && packet.is_syn() && d.initial_sequence != packet.tcp_sequence)
         }) {
-            decisions.remove(&key);
+            if let Some(d) = decisions.remove(&key)
+                && let Some(record) = d.record
+            {
+                record.finish(Status::Closed, "Новый экземпляр соединения");
+            }
             udp.remove(&packet.flow);
             let mut table = nat.lock().unwrap();
             if let Some(reflected) = table.original.remove(&packet.flow) {
@@ -416,9 +608,29 @@ fn capture(context: CaptureContext) -> Result<()> {
                     stats.log(
                         &d.owner.name,
                         packet.flow.destination.to_string(),
-                        route,
+                        route.clone(),
                         format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
                     );
+                    if let Some(old) = d.record.take() {
+                        let mut info = old.info();
+                        old.finish(Status::Closed, "Маршрут изменён");
+                        info.route = route;
+                        info.detail = format!("UDP · маршрут уточнён по DNS: {}", names.join(", "));
+                        info.proxied = matches!(action, Action::Proxy(_));
+                        info.stamp = address.timestamp();
+                        if action == Action::Block {
+                            stats.activity.completed(info, Status::Blocked);
+                        } else {
+                            d.record = stats.activity.start(
+                                info,
+                                if action == Action::Direct {
+                                    Status::Active
+                                } else {
+                                    Status::Connecting
+                                },
+                            );
+                        }
+                    }
                     d.action = action;
                 }
             }
@@ -463,6 +675,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                     },
                 )
             };
+            let mut record = None;
             if owner.pid != std::process::id() {
                 let route = match &action {
                     Action::Direct => "Напрямую".into(),
@@ -486,15 +699,41 @@ fn capture(context: CaptureContext) -> Result<()> {
                 stats.log(
                     &owner.name,
                     packet.flow.destination.to_string(),
-                    route,
-                    explanation,
+                    route.clone(),
+                    explanation.clone(),
                 );
+                let info = Info {
+                    pid: owner.pid,
+                    process: owner.name.clone(),
+                    source: packet.flow.source,
+                    destination: packet.flow.destination,
+                    protocol: packet.protocol,
+                    route,
+                    detail: explanation,
+                    proxied: matches!(action, Action::Proxy(_)),
+                    stamp: address.timestamp(),
+                };
+                if action == Action::Block {
+                    stats.activity.completed(info, Status::Blocked);
+                } else {
+                    record = stats.activity.start(
+                        info,
+                        if action == Action::Direct && (!tcp || !packet.is_syn()) {
+                            Status::Active
+                        } else {
+                            Status::Connecting
+                        },
+                    );
+                }
             }
             if let Action::Proxy(id) = &action
                 && tcp
             {
                 // Do not take over a TCP connection established before interception began.
                 if !packet.is_syn() {
+                    if let Some(c) = &record {
+                        c.finish(Status::Blocked, "Требуется новое TCP-соединение");
+                    }
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
@@ -530,9 +769,13 @@ fn capture(context: CaptureContext) -> Result<()> {
                             process: owner.name.clone(),
                             last: now,
                             active: Arc::new(AtomicBool::new(false)),
+                            record: record.clone(),
                         },
                     );
                 } else {
+                    if let Some(c) = &record {
+                        c.finish(Status::Failed, "Лимит TCP-соединений");
+                    }
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
@@ -546,10 +789,34 @@ fn capture(context: CaptureContext) -> Result<()> {
                     initial_sequence: packet.tcp_sequence,
                     owner,
                     dns_check: now,
+                    record,
                 },
             );
             action
         };
+        if let Some(d) = decisions.get_mut(&key) {
+            if !tcp
+                && action == Action::Direct
+                && let Some(old) = &d.record
+                && old.status().finished()
+            {
+                let mut info = old.info();
+                info.stamp = address.timestamp();
+                d.record = stats.activity.start(info, Status::Active);
+            }
+            if let Some(record) = &d.record {
+                if !tcp && action == Action::Direct {
+                    record.touch();
+                }
+                if tcp && packet.tcp_flags & 4 != 0 {
+                    record.finish(Status::Closed, "TCP RST");
+                } else if tcp && packet.tcp_flags & 1 != 0 {
+                    record.closing();
+                } else if tcp && action == Action::Direct && !packet.is_syn() {
+                    record.active();
+                }
+            }
+        }
         match action {
             Action::Direct => device.send(bytes, &address)?,
             Action::Block => {
@@ -584,21 +851,37 @@ fn capture(context: CaptureContext) -> Result<()> {
                 }
                 if !udp.contains_key(&packet.flow) {
                     if udp.len() >= MAX_UDP_FLOWS {
+                        if let Some(c) = decisions.get(&key).and_then(|d| d.record.as_ref()) {
+                            c.finish(Status::Failed, "Лимит UDP-сессий");
+                        }
                         stats.blocked.fetch_add(1, Ordering::Relaxed);
                         continue;
                     }
+                    let record = decisions.get_mut(&key).and_then(|decision| {
+                        if let Some(old) = &decision.record
+                            && old.status().finished()
+                        {
+                            let mut info = old.info();
+                            info.stamp = address.timestamp();
+                            decision.record = stats.activity.start(info, Status::Connecting);
+                        }
+                        decision.record.clone()
+                    });
                     let (tx, rx) = mpsc::channel(16);
                     let task = runtime.spawn(udp_session(
                         packet.flow,
                         id,
                         rx,
-                        config.clone(),
-                        device.clone(),
-                        stats.clone(),
-                        decisions
-                            .get(&key)
-                            .map(|decision| decision.owner.name.clone())
-                            .unwrap_or_else(|| "Неизвестный процесс".into()),
+                        UdpSessionContext {
+                            config: config.clone(),
+                            device: device.clone(),
+                            stats: stats.clone(),
+                            process: decisions
+                                .get(&key)
+                                .map(|decision| decision.owner.name.clone())
+                                .unwrap_or_else(|| "Неизвестный процесс".into()),
+                            record,
+                        },
                     ));
                     udp.insert(packet.flow, UdpFlow { sender: tx, task });
                 }
@@ -675,36 +958,62 @@ async fn tcp_session(
     config: &Config,
     stats: &Arc<Statistics>,
 ) -> Result<()> {
-    local.set_nodelay(true)?;
-    let mut remote = socks::connect(
-        config.proxy(&mapping.proxy_id)?,
-        mapping.original.destination,
-    )
-    .await?;
-    let guard = stats.connection(&mapping.process);
-    crate::transfer::relay_for_process(
-        &mut local,
-        &mut remote,
-        &stats.uploaded,
-        &stats.downloaded,
-        &guard.process.uploaded,
-        &guard.process.downloaded,
-    )
-    .await?;
-    Ok(())
+    let _session = mapping.record.as_ref().map(Connection::session);
+    let result = async {
+        local.set_nodelay(true)?;
+        let mut remote = socks::connect(
+            config.proxy(&mapping.proxy_id)?,
+            mapping.original.destination,
+        )
+        .await?;
+        if let Some(c) = &mapping.record {
+            c.active();
+        }
+        let guard = stats.connection(&mapping.process);
+        crate::transfer::relay_for_process(
+            &mut local,
+            &mut remote,
+            &stats.uploaded,
+            &stats.downloaded,
+            &guard.process.uploaded,
+            &guard.process.downloaded,
+        )
+        .await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = &result
+        && let Some(c) = &mapping.record
+    {
+        c.finish(Status::Failed, &format!("{error:#}"));
+    }
+    result
 }
 
-async fn udp_session(
-    flow: FlowKey,
-    id: String,
-    mut rx: mpsc::Receiver<Datagram>,
+struct UdpSessionContext {
     config: Arc<Config>,
     device: Arc<Device>,
     stats: Arc<Statistics>,
     process: String,
+    record: Option<Connection>,
+}
+async fn udp_session(
+    flow: FlowKey,
+    id: String,
+    mut rx: mpsc::Receiver<Datagram>,
+    context: UdpSessionContext,
 ) {
+    let UdpSessionContext {
+        config,
+        device,
+        stats,
+        process,
+        record,
+    } = context;
+    let _session = record.as_ref().map(Connection::session);
     let result = async {
         let association = socks::associate(config.proxy(&id)?).await?;
+        if let Some(c)=&record {c.active();}
         let guard = stats.connection(&process);
         let mut reply_buffer = vec![0; 65535];
         let mut control = association.control;
@@ -736,6 +1045,9 @@ async fn udp_session(
         Ok::<_, anyhow::Error>(())
     }.await;
     if let Err(error) = result {
+        if let Some(c) = &record {
+            c.finish(Status::Failed, &format!("{error:#}"));
+        }
         stats.log(
             process,
             flow.destination.to_string(),
