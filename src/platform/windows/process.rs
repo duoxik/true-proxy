@@ -2,10 +2,12 @@
 use crate::{config::Protocol, packet::FlowKey};
 use anyhow::{Result, bail, ensure};
 use std::{
+    collections::{HashMap, HashSet},
     ffi::c_void,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ptr,
 };
+
 use windows_sys::Win32::{
     Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
     System::Diagnostics::ToolHelp::{
@@ -44,6 +46,83 @@ pub struct Process {
     pub path: String,
 }
 
+/// One batch owner lookup for idle routing-cache entries. This is core socket
+/// lifetime data, independent of whether the connection journal is observed.
+/// Keep only requested tuples so the returned map remains bounded by the cache.
+pub fn tcp_snapshot(candidates: &HashSet<FlowKey>) -> Result<HashMap<FlowKey, u32>> {
+    let mut owners = HashMap::new();
+    for ipv4 in [true, false] {
+        if !candidates.iter().any(|flow| flow.source.is_ipv4() == ipv4) {
+            continue;
+        }
+        let family = if ipv4 { 2 } else { 23 };
+        let mut size = 0;
+        let status = unsafe { GetExtendedTcpTable(ptr::null_mut(), &mut size, 0, family, 5, 0) };
+        ensure!(
+            status == 0 || status == 122,
+            "Не удалось прочитать размер TCP-таблицы ({status})"
+        );
+        let mut complete = false;
+        for _ in 0..3 {
+            ensure!(
+                (4..=16 * 1024 * 1024).contains(&size),
+                "Некорректный размер TCP-таблицы"
+            );
+            // u32 storage has the alignment required by both MIB owner tables.
+            let mut words = vec![0u32; (size as usize).div_ceil(4)];
+            let status = unsafe {
+                GetExtendedTcpTable(words.as_mut_ptr().cast(), &mut size, 0, family, 5, 0)
+            };
+            if status == 122 {
+                continue;
+            }
+            ensure!(status == 0, "Не удалось прочитать TCP-таблицу ({status})");
+            ensure!(
+                size as usize <= words.len() * 4,
+                "TCP-таблица вышла за границы буфера"
+            );
+            let bytes =
+                unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size as usize) };
+            let count = words[0] as usize;
+            let stride = if ipv4 { 24 } else { 56 };
+            ensure!(4 + count * stride <= bytes.len(), "Обрезанная TCP-таблица");
+            for row in bytes[4..4 + count * stride].chunks_exact(stride) {
+                let (local, local_port, remote, remote_port, state, pid) = if ipv4 {
+                    (4, 8, 12, 16, 0, 20)
+                } else {
+                    (0, 20, 24, 44, 48, 52)
+                };
+                let state = u32::from_ne_bytes(row[state..state + 4].try_into()?);
+                // SYN through half-close are live. LISTEN, TIME_WAIT and DELETE_TCB
+                // do not preserve a former application's routing decision.
+                if !(3..=10).contains(&state) {
+                    continue;
+                }
+                let flow = FlowKey {
+                    source: std::net::SocketAddr::new(
+                        read_ip(row, local, ipv4),
+                        u16::from_be_bytes([row[local_port], row[local_port + 1]]),
+                    ),
+                    destination: std::net::SocketAddr::new(
+                        read_ip(row, remote, ipv4),
+                        u16::from_be_bytes([row[remote_port], row[remote_port + 1]]),
+                    ),
+                };
+                if !candidates.contains(&flow) {
+                    continue;
+                }
+                let pid = u32::from_ne_bytes(row[pid..pid + 4].try_into()?);
+                if let Some(previous) = owners.insert(flow, pid) {
+                    ensure!(previous == pid, "Противоречивые владельцы TCP-соединения");
+                }
+            }
+            complete = true;
+            break;
+        }
+        ensure!(complete, "TCP-таблица меняется слишком быстро");
+    }
+    Ok(owners)
+}
 /// One on-demand snapshot; no polling, memory access, or process injection.
 pub fn running_processes() -> Result<Vec<crate::platform::RunningProcess>> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -248,6 +327,31 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn tcp_snapshot_returns_only_requested_live_tuples_and_their_real_pid() {
+        for address in ["127.0.0.1:0", "[::1]:0"] {
+            let listener = std::net::TcpListener::bind(address).unwrap();
+            let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            let outgoing = FlowKey {
+                source: client.local_addr().unwrap(),
+                destination: client.peer_addr().unwrap(),
+            };
+            let incoming = FlowKey {
+                source: server.local_addr().unwrap(),
+                destination: server.peer_addr().unwrap(),
+            };
+            let missing = FlowKey {
+                source: "192.0.2.254:1".parse().unwrap(),
+                destination: "203.0.113.254:1".parse().unwrap(),
+            };
+            let owners = tcp_snapshot(&HashSet::from([outgoing, incoming, missing])).unwrap();
+            assert_eq!(owners.len(), 2);
+            assert_eq!(owners.get(&outgoing), Some(&std::process::id()));
+            assert_eq!(owners.get(&incoming), Some(&std::process::id()));
+        }
+    }
+
+    #[test]
     fn system_traffic_obeys_direct_block_proxy_priority_and_default_rules() {
         use crate::{
             config::{Action, Config},
@@ -260,13 +364,13 @@ mod snapshot_tests {
             "default_action": {"kind": "block"},
             "rules": [{
                 "id": "nas", "name": "NAS", "enabled": true,
-                "networks": ["192.168.50.1/32", "fd00::1/128"],
+                "networks": ["203.0.113.1/32", "2001:db8::1/128"],
                 "ports": [{"start": 445, "end": 445}], "action": {"kind": "direct"}
             }]
         }))
         .unwrap();
         config.validate().unwrap();
-        for destination in ["192.168.50.1:445", "[fd00::1]:445"] {
+        for destination in ["203.0.113.1:445", "[2001:db8::1]:445"] {
             for protocol in [Protocol::Tcp, Protocol::Udp] {
                 let flow = Flow {
                     process_name: &owner.name,
@@ -303,6 +407,42 @@ mod snapshot_tests {
                     assert_eq!(rules::resolve(&config, &other), action);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn system_owner_has_the_same_fixed_local_priority_as_other_processes() {
+        use crate::{
+            config::Config,
+            rules::{self, Flow},
+        };
+        let owner = identify_pid(4).unwrap();
+        let config = Config {
+            default_action: crate::config::Action::Block,
+            ..Config::default()
+        };
+        for protocol in [Protocol::Tcp, Protocol::Udp] {
+            for destination in ["192.168.50.1:445", "[fd00::1]:445"] {
+                let flow = Flow {
+                    process_name: &owner.name,
+                    process_path: &owner.path,
+                    destination: destination.parse().unwrap(),
+                    protocol,
+                    domains: &[],
+                };
+                assert_eq!(
+                    rules::resolve(&config, &flow),
+                    crate::config::Action::Direct
+                );
+            }
+            let flow = Flow {
+                process_name: &owner.name,
+                process_path: &owner.path,
+                destination: "203.0.113.1:445".parse().unwrap(),
+                protocol,
+                domains: &[],
+            };
+            assert_eq!(rules::resolve(&config, &flow), crate::config::Action::Block);
         }
     }
 }

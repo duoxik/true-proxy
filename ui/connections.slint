@@ -1,0 +1,111 @@
+import { ScrollView, Palette } from "std-widgets.slint";
+import { Theme, ProxyRow, ProcessSummary, ConnectionFilterRow, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+
+export component ConnectionsWindow inherits Window {
+    icon: @image-url("../assets/icon.svg");
+    title: "True Proxy · Соединения";
+    preferred-width: 1040px; preferred-height: 760px; min-width: 800px; min-height: 600px;
+    background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
+    init => { Palette.color-scheme = ColorScheme.dark; }
+    in-out property <bool> surface-fresh: false;
+    in property <[ProxyRow]> proxies;
+    in property <[ProcessSummary]> process-summaries;
+    in property <[string]> expanded-processes;
+    in-out property <string> connection-query;
+    in property <[ConnectionFilterRow]> connection-route-filters;
+    in property <[ConnectionFilterRow]> connection-status-filters;
+    in-out property <bool> connection-routes-all: true;
+    in-out property <[string]> connection-route-selection;
+    in-out property <[string]> connection-status-selection: ["0", "1", "2"];
+    in property <bool> connection-filters-default: true;
+    in property <int> connection-event-count;
+    in property <int> filtered-event-count;
+    in-out property <bool> only-active: true;
+    in property <int> connection-omitted;
+    property <length> route-filter-height: max(28px, min(root.connection-route-filters.length, 3) * 28px);
+    property <length> status-filter-height: max(28px, min(root.connection-status-filters.length, 3) * 28px);
+    callback set-only-active(bool);
+    callback filter-connections;
+    callback sync-connections;
+    callback suspend-connections;
+    callback resume-observation;
+    callback toggle-connection-route(string, bool);
+    callback toggle-connection-status(string, bool);
+    callback reset-connection-filters;
+    callback expand-process(string);
+    callback hide-window;
+
+    // Invalidate the full opaque software surface only on native restore/resize.
+    surface := Rectangle { width: parent.width; height: parent.height; background: root.surface-fresh ? #101219 : Theme.background;
+        VerticalLayout { padding: 24px; spacing: 18px;
+            Text { text: "Соединения"; color: Theme.text; font-size: 23px; font-weight: 600; }
+            VerticalLayout { spacing: 12px;
+                HorizontalLayout { spacing: 10px; height: 40px; padding-right: Theme.scroll-gutter;
+                    Field { placeholder: "Поиск по имени процесса"; value <=> root.connection-query; edited => { root.filter-connections(); } }
+                }
+                VerticalLayout { spacing: 4px; padding-right: Theme.scroll-gutter;
+                    Text { text: "Маршруты"; color: Theme.muted; font-size: 10px; }
+                    route-filters := ScrollView { min-height: root.route-filter-height; max-height: root.route-filter-height; preferred-height: root.route-filter-height; vertical-stretch: 0;
+                        horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: route-filter-content.preferred-height;
+                        route-filter-content := VerticalLayout { spacing: 0px; padding-right: Theme.scroll-gutter; alignment: start;
+                            for row in root.connection-route-filters: HorizontalLayout { height: 28px; spacing: 8px;
+                                for option in row.options: ConnectionFilterCheck { min-width: 0px; horizontal-stretch: 1; option: option; scope: "Маршрут"; toggled(checked) => { root.toggle-connection-route(option.key, checked); } }
+                            }
+                        }
+                    }
+                    Text { text: "Статусы"; color: Theme.muted; font-size: 10px; }
+                    status-filters := ScrollView { min-height: root.status-filter-height; max-height: root.status-filter-height; preferred-height: root.status-filter-height; vertical-stretch: 0;
+                        horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: status-filter-content.preferred-height;
+                        status-filter-content := VerticalLayout { spacing: 0px; padding-right: Theme.scroll-gutter; alignment: start;
+                            for row in root.connection-status-filters: HorizontalLayout { height: 28px; spacing: 8px;
+                                for option in row.options: ConnectionFilterCheck { min-width: 0px; horizontal-stretch: 1; option: option; scope: "Статус"; toggled(checked) => { root.toggle-connection-status(option.key, checked); } }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout { height: 32px; spacing: 12px; padding-right: Theme.scroll-gutter;
+                    Text { text: "По процессам · " + root.filtered-event-count + " из " + root.connection-event-count + " соединений"; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                    if !root.connection-filters-default: ActionButton { label: "Сбросить фильтры"; height: 28px; clicked => { root.reset-connection-filters(); } }
+                }
+                connection-list := ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    content-width: self.visible-width;
+                    content-height: max(self.visible-height, connection-content.preferred-height);
+                    connection-content := VerticalLayout { spacing: 8px; padding-right: Theme.scroll-gutter; padding-bottom: 8px;
+                        if root.process-summaries.length == 0: Text { text: "Нет подключений для выбранного фильтра."; color: Theme.muted; font-size: 12px; horizontal-alignment: center; }
+                        for process in root.process-summaries: VerticalLayout { spacing: 0px;
+                            Rectangle { height: 49px; border-radius: 7px; background: process.expanded ? Theme.accent-soft : Theme.surface; border-width: 1px; border-color: process.expanded ? Theme.accent : Theme.border;
+                                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 12px;
+                                    Rectangle { width: 14px;
+                                        Path { y: (parent.height - 12px) / 2; width: 12px; height: 12px;
+                                            viewbox-width: 12; viewbox-height: 12; stroke: Theme.secondary; stroke-width: 1.5px;
+                                            commands: process.expanded ? "M2 4 L6 8 L10 4" : "M4 2 L8 6 L4 10";
+                                        }
+                                    }
+                                    Text { text: process.name; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; vertical-alignment: center; }
+                                    Text { text: process.active + " активных"; width: 84px; color: process.active > 0 ? Theme.success : Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: "↑ " + process.uploaded + "   ↓ " + process.downloaded; width: 170px; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                                    Text { text: process.events + " соед."; width: 80px; color: Theme.muted; font-size: 10px; vertical-alignment: center; }
+                                }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.expand-process(process.name); } }
+                                accessible-role: button; accessible-label: "Подключения " + process.name; accessible-expanded: process.expanded; accessible-action-default => { root.expand-process(process.name); }
+                            }
+                            if process.expanded: VerticalLayout { spacing: 4px; padding-top: 6px; padding-left: 23px; padding-bottom: 5px;
+                                for log in process.connections: Rectangle { height: 76px; background: Theme.surface; border-radius: 6px;
+                                    HorizontalLayout { padding: 11px; spacing: 12px;
+                                        Text { width: 100px; text: log.route; color: Theme.accent; font-size: 11px; overflow: elide; vertical-alignment: center; }
+                                        VerticalLayout { spacing: 4px; Text { text: log.destination; color: Theme.secondary; font-size: 12px; overflow: elide; } Text { text: process.name == "Другие процессы" ? log.process + " · " + log.source : log.source; color: Theme.muted; font-size: 10px; overflow: elide; } Text { text: log.message; color: Theme.muted; font-size: 10px; overflow: elide; } }
+                                        Text { width: 105px; text: log.status; color: log.state == 1 ? Theme.success : log.state == 0 ? Theme.accent : log.state == 2 ? Theme.warning : (log.state == 4 || log.state == 5) ? #f08080 : Theme.muted; font-size: 11px; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+                if !root.only-active: Text { text: "История: последние 256 завершённых соединений с момента выбора завершённых статусов. Трафик — через SOCKS."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+            }
+            if root.connection-omitted > 0: Text { text: "Лимит отслеживания: 4096 активных соединений. Пропущено: " + root.connection-omitted; color: Theme.warning; font-size: 10px; wrap: word-wrap; }
+        }
+    }
+}

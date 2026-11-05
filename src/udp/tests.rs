@@ -132,6 +132,7 @@ impl Fixture {
         let generation = Arc::new(AtomicU64::new(0));
         let current = generation.clone();
         let stats = Arc::new(Statistics::default());
+        stats.activity.set_tracking(true);
         stats.activity.set_only_active(false);
         let domains = Arc::new(Mutex::new(DomainCache::default()));
         let context = Context {
@@ -192,6 +193,38 @@ fn config(proxies: Vec<Proxy>) -> Config {
         proxies,
         ..Config::default()
     }
+}
+
+#[tokio::test]
+async fn closing_and_reopening_the_journal_preserves_udp_transport_and_does_not_backfill() {
+    let mut mock = Mock::new("p").await;
+    let mut f = Fixture::new(config(vec![mock.proxy.clone()]));
+    f.send("p", "203.0.113.7:3478", b"before").unwrap();
+    let before = mock.frame().await;
+    before.reply("203.0.113.7:3478", b"before reply").await;
+    f.packet("203.0.113.7:3478", b"before reply").await;
+    assert_eq!(f.stats.connections.load(Ordering::Relaxed), 1);
+    f.stats.activity.set_tracking(false);
+    f.stats.activity.set_tracking(true);
+    f.send("p", "203.0.113.7:3478", b"after").unwrap();
+    let after = mock.frame().await;
+    assert_eq!(before.association, after.association);
+    assert_eq!(before.client, after.client);
+    after.reply("203.0.113.7:3478", b"after reply").await;
+    f.packet("203.0.113.7:3478", b"after reply").await;
+    assert_eq!(f.stats.connections.load(Ordering::Relaxed), 1);
+    assert!(f.stats.activity.snapshots().is_empty());
+    f.send("p", "198.51.100.9:3097", b"new peer").unwrap();
+    let new = mock.frame().await;
+    assert_eq!(new.association, after.association);
+    let rows = f.stats.activity.snapshots();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].info.destination,
+        "198.51.100.9:3097".parse().unwrap()
+    );
+    assert_eq!(rows[0].info.action, Action::Proxy("p".into()));
+    assert_eq!(mock.opened.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
@@ -277,6 +310,38 @@ async fn incoming_and_outgoing_cannot_bypass_block_direct_other_proxy_or_dns() {
     q.reply("198.51.100.4:3097", b"Q reply").await;
     f.packet("198.51.100.4:3097", b"Q reply").await;
     assert!(f.stats.blocked.load(Ordering::Relaxed) >= 9);
+}
+
+#[tokio::test]
+async fn fixed_local_peers_never_use_or_enter_a_proxy_association() {
+    for (local, remote, local_peers) in [
+        (
+            "192.0.2.10:3097",
+            "203.0.113.7:3478",
+            ["192.168.50.1:445", "10.1.2.3:3097"],
+        ),
+        (
+            "[2001:db8::10]:3097",
+            "[2001:db8::7]:3478",
+            ["[fd00::1]:445", "[fe80::1]:3097"],
+        ),
+    ] {
+        let mut mock = Mock::new("p").await;
+        let mut f = Fixture::new(config(vec![mock.proxy.clone()]));
+        f.socket.local = local.parse().unwrap();
+        f.send("p", remote, b"public peer").unwrap();
+        let frame = mock.frame().await;
+        for peer in local_peers {
+            assert!(f.send("p", peer, b"must remain direct").is_err());
+            frame.reply(peer, b"must not enter from proxy").await;
+        }
+        frame.reply(remote, b"public still works").await;
+        f.packet(remote, b"public still works").await;
+        assert!(f.packets.try_recv().is_err());
+        assert!(mock.frames.try_recv().is_err());
+        assert!(f.stats.blocked.load(Ordering::Relaxed) >= 4);
+        assert_eq!(mock.opened.load(Ordering::Relaxed), 1);
+    }
 }
 
 #[tokio::test]
@@ -459,6 +524,7 @@ fn peer_limits_and_idle_expiry_release_records_and_slots() {
         protected_password: None,
     };
     let stats = Arc::new(Statistics::default());
+    stats.activity.set_tracking(true);
     let shared = Arc::new(Shared {
         context: Context {
             config: Arc::new(config(vec![proxy])),

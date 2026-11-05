@@ -104,35 +104,6 @@ pub struct Rule {
     pub dns: DnsPolicy,
 }
 
-impl Rule {
-    /// An explicit, editable preset. Loading a profile never adds this rule.
-    pub fn local_network(id: String) -> Self {
-        Self {
-            id,
-            name: "Локальная сеть".into(),
-            enabled: true,
-            process_names: vec![],
-            process_paths: vec![],
-            domains: vec![],
-            domain_suffixes: vec![],
-            networks: [
-                "10.0.0.0/8",
-                "172.16.0.0/12",
-                "192.168.0.0/16",
-                "169.254.0.0/16",
-                "fc00::/7",
-                "fe80::/10",
-            ]
-            .map(|network| network.parse().expect("valid built-in local network"))
-            .to_vec(),
-            ports: vec![],
-            protocol: Protocol::Both,
-            action: Action::Direct,
-            dns: DnsPolicy::Inherit,
-        }
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DnsSettings {

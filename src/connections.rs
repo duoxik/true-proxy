@@ -1,6 +1,6 @@
 //! Bounded connection lifecycle data. Packet paths only touch atomics; the UI
 //! receives snapshots. Completed entries exist only while history is enabled.
-use crate::config::Protocol;
+use crate::config::{Action, Protocol};
 use std::{
     collections::{BTreeMap, VecDeque},
     net::SocketAddr,
@@ -63,7 +63,8 @@ pub struct Info {
     pub protocol: Protocol,
     pub route: String,
     pub detail: String,
-    pub proxied: bool,
+    /// Stable route identity, independent of a proxy's mutable display name.
+    pub action: Action,
     /// Platform monotonic timestamp of the first packet (QPC on Windows); excludes late CLOSE events
     /// from an older socket/PID/tuple. Zero is reserved for isolated fixtures.
     pub stamp: i64,
@@ -106,6 +107,8 @@ impl Close {
 }
 pub struct Connections {
     state: Mutex<State>,
+    /// Even revisions are off; odd revisions identify one observation session.
+    observation: AtomicU64,
     sequence: AtomicU64,
     omitted: AtomicU64,
     epoch: Instant,
@@ -114,6 +117,7 @@ impl Default for Connections {
     fn default() -> Self {
         Self {
             state: Mutex::default(),
+            observation: AtomicU64::new(0),
             sequence: AtomicU64::new(1),
             omitted: AtomicU64::default(),
             epoch: Instant::now(),
@@ -180,12 +184,44 @@ impl Connection {
     }
 }
 impl Connections {
+    pub fn tracking(&self) -> bool {
+        self.observation.load(Ordering::Acquire) & 1 != 0
+    }
+    pub fn set_tracking(&self, enabled: bool) {
+        let mut state = self.state.lock().unwrap();
+        let revision = self.observation.load(Ordering::Relaxed);
+        if (revision & 1 != 0) == enabled {
+            return;
+        }
+        self.observation
+            .store(revision.wrapping_add(1), Ordering::Release);
+        if !enabled {
+            for entry in state.active.values() {
+                entry.status.store(Status::Stopped as u8, Ordering::Release);
+            }
+            state.active.clear();
+            state.completed.clear();
+            state.recent_closes.clear();
+            self.omitted.store(0, Ordering::Relaxed);
+        }
+    }
+    fn revision(&self) -> Option<u64> {
+        let revision = self.observation.load(Ordering::Acquire);
+        (revision & 1 != 0).then_some(revision)
+    }
+    fn same_revision(&self, revision: u64) -> bool {
+        self.observation.load(Ordering::Relaxed) == revision
+    }
     fn tick(&self) -> u64 {
         self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64
     }
     pub fn start(self: &Arc<Self>, info: Info, status: Status) -> Option<Connection> {
         debug_assert!(!status.finished());
+        let revision = self.revision()?;
         let mut state = self.state.lock().unwrap();
+        if !self.same_revision(revision) {
+            return None;
+        }
         // A fast app may close while the first intercepted packet is still
         // being attributed. Remember recent CLOSE events before publishing it.
         let already_closed = info.stamp != 0
@@ -237,7 +273,13 @@ impl Connections {
     }
     pub fn completed(&self, info: Info, status: Status) {
         debug_assert!(status.finished());
+        let Some(revision) = self.revision() else {
+            return;
+        };
         let mut state = self.state.lock().unwrap();
+        if !self.same_revision(revision) {
+            return;
+        }
         if state.history {
             let id = self.sequence.fetch_add(1, Ordering::Relaxed);
             if state.completed.len() == MAX_COMPLETED {
@@ -247,6 +289,9 @@ impl Connections {
         }
     }
     fn finish(&self, id: u64, status: Status, reason: &str) {
+        if !self.tracking() {
+            return;
+        }
         let mut state = self.state.lock().unwrap();
         if let Some(entry) = state.active.remove(&id) {
             entry.status.store(status as u8, Ordering::Release);
@@ -271,7 +316,13 @@ impl Connections {
         }
     }
     pub fn snapshots(&self) -> Vec<Snapshot> {
+        let Some(revision) = self.revision() else {
+            return Vec::new();
+        };
         let state = self.state.lock().unwrap();
+        if !self.same_revision(revision) {
+            return Vec::new();
+        }
         let mut rows = state
             .active
             .iter()
@@ -289,6 +340,9 @@ impl Connections {
         self.omitted.load(Ordering::Relaxed)
     }
     pub fn finish_all(&self, reason: &str) {
+        if !self.tracking() {
+            return;
+        }
         let ids = self
             .state
             .lock()
@@ -309,6 +363,9 @@ impl Connections {
         tcp: bool,
         stamp: i64,
     ) {
+        let Some(revision) = self.revision() else {
+            return;
+        };
         let event = Close {
             pid,
             source,
@@ -317,6 +374,9 @@ impl Connections {
             stamp,
         };
         let mut state = self.state.lock().unwrap();
+        if !self.same_revision(revision) {
+            return;
+        }
         let rows = state
             .active
             .iter()
@@ -341,31 +401,41 @@ impl Connections {
         }
     }
     pub fn expire(&self) {
+        if !self.tracking() {
+            return;
+        }
         self.expire_at(self.tick());
     }
     fn expire_at(&self, now: u64) {
-        let rows = self
-            .state
-            .lock()
-            .unwrap()
-            .active
-            .iter()
-            .filter_map(|(&id, e)| {
-                let status = Status::decode(e.status.load(Ordering::Acquire));
-                if status == Status::Connecting
-                    && now.saturating_sub(e.started) >= Duration::from_secs(30).as_millis() as u64
-                {
-                    Some((id, Status::Failed, "Таймаут подключения"))
-                } else if !e.info.proxied
-                    && e.info.protocol == Protocol::Udp
-                    && now.saturating_sub(e.last.load(Ordering::Relaxed)) >= 90_000
-                {
-                    Some((id, Status::Closed, "90 с без исходящих датаграмм"))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
+        let Some(revision) = self.revision() else {
+            return;
+        };
+        let rows = {
+            let state = self.state.lock().unwrap();
+            if !self.same_revision(revision) {
+                return;
+            }
+            state
+                .active
+                .iter()
+                .filter_map(|(&id, e)| {
+                    let status = Status::decode(e.status.load(Ordering::Acquire));
+                    if status == Status::Connecting
+                        && now.saturating_sub(e.started)
+                            >= Duration::from_secs(30).as_millis() as u64
+                    {
+                        Some((id, Status::Failed, "Таймаут подключения"))
+                    } else if e.info.action == Action::Direct
+                        && e.info.protocol == Protocol::Udp
+                        && now.saturating_sub(e.last.load(Ordering::Relaxed)) >= 90_000
+                    {
+                        Some((id, Status::Closed, "90 с без исходящих датаграмм"))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
         for (id, status, reason) in rows {
             self.finish(id, status, reason);
         }
@@ -376,8 +446,78 @@ impl Connections {
 mod tests {
     use super::*;
     #[test]
+    fn journal_is_off_by_default_and_inactive_entry_points_do_not_wait_for_the_registry() {
+        let store = Arc::new(Connections::default());
+        assert!(!store.tracking());
+        let locked = store.state.lock().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let copy = store.clone();
+        let worker = std::thread::spawn(move || {
+            assert!(copy.start(info(Protocol::Tcp), Status::Active).is_none());
+            copy.completed(info(Protocol::Udp), Status::Blocked);
+            let row = info(Protocol::Tcp);
+            copy.close_socket(row.pid, row.source, row.destination, true, 999);
+            copy.expire();
+            copy.expire_at(999_999);
+            copy.finish_all("View hidden");
+            assert!(copy.snapshots().is_empty());
+            sent.send(()).unwrap();
+        });
+        let result = received.recv_timeout(Duration::from_secs(3));
+        drop(locked);
+        worker.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "Disabled recording must not wait for its registry mutex"
+        );
+        assert!(store.state.lock().unwrap().recent_closes.is_empty());
+        assert_eq!(store.omitted(), 0);
+    }
+
+    #[test]
+    fn leaving_the_view_discards_history_and_old_handles_cannot_repopulate_a_new_session() {
+        let store = Arc::new(Connections::default());
+        store.set_tracking(true);
+        store.set_only_active(false);
+        let old = store.start(info(Protocol::Tcp), Status::Active).unwrap();
+        let old_session = old.session();
+        let completed = store.start(info(Protocol::Udp), Status::Active).unwrap();
+        completed.finish(Status::Closed, "");
+        let row = old.info();
+        store.close_socket(row.pid + 1, row.source, row.destination, true, 999);
+        assert_eq!(store.snapshots().len(), 2);
+        store.set_tracking(false);
+        assert_eq!(old.status(), Status::Stopped);
+        assert!(store.snapshots().is_empty());
+        assert!(store.state.lock().unwrap().recent_closes.is_empty());
+        store.close_socket(row.pid, row.source, row.destination, true, 999);
+        assert!(store.start(info(Protocol::Tcp), Status::Active).is_none());
+        store.completed(info(Protocol::Udp), Status::Blocked);
+        store.set_tracking(true);
+        let fresh = store.start(info(Protocol::Tcp), Status::Active).unwrap();
+        assert_ne!(fresh.id, old.id);
+        old.active();
+        old.closing();
+        old.touch();
+        old.finish(Status::Failed, "Late completion");
+        drop(old_session);
+        assert_eq!(old.status(), Status::Stopped);
+        assert_eq!(fresh.status(), Status::Active);
+        let rows = store.snapshots();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, fresh.id);
+        store.set_tracking(false);
+        store.set_tracking(true);
+        assert!(
+            store.snapshots().is_empty(),
+            "Opening starts with fresh observations"
+        );
+    }
+
+    #[test]
     fn close_before_attribution_is_terminal_but_new_tuple_generation_stays_live() {
         let store = Arc::new(Connections::default());
+        store.set_tracking(true);
         let mut row = info(Protocol::Tcp);
         store.close_socket(row.pid, row.source, row.destination, true, 300);
         let old = store.start(row.clone(), Status::Connecting).unwrap();
@@ -392,6 +532,7 @@ mod tests {
     #[tokio::test]
     async fn cancelled_async_session_finishes_without_a_success_callback() {
         let store = Arc::new(Connections::default());
+        store.set_tracking(true);
         store.set_only_active(false);
         let record = store
             .start(info(Protocol::Udp), Status::Connecting)
@@ -414,6 +555,7 @@ mod tests {
     #[test]
     fn active_capacity_and_terminal_attempts_do_not_invent_live_connections() {
         let store = Arc::new(Connections::default());
+        store.set_tracking(true);
         store.completed(info(Protocol::Tcp), Status::Blocked);
         assert!(store.snapshots().is_empty());
         store.set_only_active(false);
@@ -427,6 +569,8 @@ mod tests {
         store.set_only_active(true);
         store.finish_all("Stop");
         assert!(store.snapshots().is_empty());
+        store.set_tracking(false);
+        assert_eq!(store.omitted(), 0);
     }
     fn info(protocol: Protocol) -> Info {
         Info {
@@ -437,13 +581,14 @@ mod tests {
             protocol,
             route: "VPN".into(),
             detail: "Rule".into(),
-            proxied: true,
+            action: Action::Proxy("vpn".into()),
             stamp: 200,
         }
     }
     #[test]
     fn history_starts_now_and_rechecking_discards_completed_but_keeps_live() {
         let store = Arc::new(Connections::default());
+        store.set_tracking(true);
         let old = store.start(info(Protocol::Tcp), Status::Active).unwrap();
         old.finish(Status::Closed, "");
         assert!(store.snapshots().is_empty());
@@ -467,6 +612,7 @@ mod tests {
     #[test]
     fn completion_is_once_bounded_and_raii_covers_abort() {
         let store = Arc::new(Connections::default());
+        store.set_tracking(true);
         store.set_only_active(false);
         for _ in 0..MAX_COMPLETED + 10 {
             let c = store
@@ -486,6 +632,7 @@ mod tests {
     #[test]
     fn socket_close_rejects_old_generation_and_udp_expiration_is_explicit() {
         let store = Arc::new(Connections::default());
+        store.set_tracking(true);
         store.set_only_active(false);
         let row = info(Protocol::Tcp);
         let c = store.start(row.clone(), Status::Active).unwrap();
@@ -496,7 +643,7 @@ mod tests {
         store.close_socket(10, row.source, row.destination, true, 300);
         assert_eq!(c.status(), Status::Closed);
         let mut row = info(Protocol::Udp);
-        row.proxied = false;
+        row.action = Action::Direct;
         let c = store.start(row, Status::Active).unwrap();
         store.expire_at(120_000);
         assert_eq!(c.status(), Status::Closed);

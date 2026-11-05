@@ -1,4 +1,4 @@
-use super::{Command, State, model};
+use super::{Command, State};
 use crate::{MainWindow, ProxyRow};
 use anyhow::{Context, Result, ensure};
 use slint::{ComponentHandle, Model};
@@ -73,6 +73,58 @@ pub async fn check(proxy: &Proxy) -> Health {
     }
     health
 }
+
+fn result_text(name: &str, health: &Health) -> (String, bool) {
+    if health.tcp {
+        (
+            format!(
+                "{name}: TCP доступен, {} мс · UDP {}",
+                health.latency,
+                if health.udp {
+                    "доступен"
+                } else {
+                    "недоступен"
+                }
+            ),
+            !health.udp,
+        )
+    } else {
+        (
+            format!("{name}: соединение не удалось · {}", health.error),
+            true,
+        )
+    }
+}
+
+fn apply_result(ui: &MainWindow, proxy: &Proxy, health: &Health, token: Option<&str>) {
+    if let Some(token) = token {
+        let current = ui.get_form_probe_token();
+        if current == token {
+            ui.set_probe_busy(false);
+            ui.set_form_probe_status("".into());
+            ui.set_form_probe_health(0);
+            if ui.get_dialog() == 1 {
+                let (message, error) = result_text(&proxy.name, health);
+                super::show_toast(ui, message, error);
+            }
+        } else if current.is_empty() {
+            // Editing or closing invalidates the display token, but the one
+            // in-flight check still needs to release its busy state.
+            ui.set_probe_busy(false);
+        }
+    } else {
+        ui.set_probe_busy(false);
+        if let Some(row) = ui
+            .get_proxies()
+            .iter()
+            .find(|row| row.id == proxy.id && row.key == health.key)
+        {
+            let (message, error) = result_text(&row.name, health);
+            super::show_toast(ui, message, error);
+        }
+    }
+}
+
 pub fn publish(
     weak: slint::Weak<MainWindow>,
     statuses: &Arc<Mutex<Statuses>>,
@@ -89,47 +141,7 @@ pub fn publish(
     }
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
-            if let Some(token) = token {
-                ui.set_probe_busy(false);
-                if ui.get_form_probe_token() == token {
-                    ui.set_form_probe_health(if health.tcp { 2 } else { 3 });
-                    ui.set_form_probe_status(
-                        if health.tcp {
-                            format!(
-                                "Доступен · {} мс{}",
-                                health.latency,
-                                if health.udp {
-                                    ""
-                                } else {
-                                    " · UDP недоступен"
-                                }
-                            )
-                        } else {
-                            health.error
-                        }
-                        .into(),
-                    );
-                }
-            } else {
-                let rows = ui
-                    .get_proxies()
-                    .iter()
-                    .map(|mut row| {
-                        if row.id == proxy.id && row.key == health.key {
-                            row.health = if health.tcp { 2 } else { 3 };
-                            row.udp = health.udp;
-                            row.status = if health.tcp {
-                                format!("{} мс", health.latency)
-                            } else {
-                                health.error.clone()
-                            }
-                            .into();
-                        }
-                        row
-                    })
-                    .collect();
-                ui.set_proxies(model(rows));
-            }
+            apply_result(&ui, &proxy, &health, token.as_deref());
         }
     });
 }
@@ -205,8 +217,9 @@ pub fn wire_form_probe(ui: &MainWindow, state: State, sender: SyncSender<Command
                 Ok(())
             })();
             if let Err(error) = result {
-                ui.set_form_probe_health(3);
-                ui.set_form_probe_status(format!("{error:#}").into());
+                ui.set_form_probe_health(0);
+                ui.set_form_probe_status("".into());
+                super::show_toast(&ui, format!("{error:#}"), true);
             }
         }
     });
@@ -215,6 +228,104 @@ pub fn wire_form_probe(ui: &MainWindow, state: State, sender: SyncSender<Command
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+
+    fn fixture_proxy() -> Proxy {
+        Proxy {
+            id: "test".into(),
+            name: "Proxy".into(),
+            host: "127.0.0.1".into(),
+            port: 1080,
+            username: String::new(),
+            protected_password: None,
+        }
+    }
+
+    #[test]
+    fn manual_saved_results_only_notify_for_the_current_proxy_key() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        let proxy = fixture_proxy();
+        let mut renamed = proxy.clone();
+        renamed.name = "Current name".into();
+        ui.set_proxies(super::super::model(vec![row(&renamed, &Statuses::new())]));
+        let mut health = Health {
+            key: key(&proxy),
+            tcp: true,
+            udp: true,
+            latency: 7,
+            error: String::new(),
+        };
+        apply_result(&ui, &proxy, &health, None);
+        assert!(ui.get_toast().starts_with("Current name:"));
+        assert!(
+            ui.get_toast().contains("TCP доступен")
+                && ui.get_toast().contains("7 мс")
+                && ui.get_toast().contains("UDP доступен")
+        );
+        assert!(!ui.get_toast_error());
+        let previous = ui.get_toast();
+        health.key = "old endpoint".into();
+        health.tcp = false;
+        health.error = "connection refused".into();
+        apply_result(&ui, &proxy, &health, None);
+        assert_eq!(
+            ui.get_toast(),
+            previous,
+            "An edited endpoint must not receive its old result"
+        );
+        health.key = key(&proxy);
+        ui.set_proxies(super::super::model(vec![]));
+        apply_result(&ui, &proxy, &health, None);
+        assert_eq!(ui.get_toast(), previous, "A deleted proxy must not notify");
+        ui.set_proxies(super::super::model(vec![row(&proxy, &Statuses::new())]));
+        apply_result(&ui, &proxy, &health, None);
+        assert!(ui.get_toast_error() && ui.get_toast().contains("connection refused"));
+        health.tcp = true;
+        health.udp = false;
+        apply_result(&ui, &proxy, &health, None);
+        assert!(
+            ui.get_toast_error()
+                && ui.get_toast().contains("TCP доступен")
+                && ui.get_toast().contains("UDP недоступен")
+        );
+    }
+
+    #[test]
+    fn form_result_is_a_toast_and_stale_tokens_do_not_replace_a_newer_check() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        let proxy = fixture_proxy();
+        let health = Health {
+            key: key(&proxy),
+            tcp: true,
+            udp: true,
+            latency: 3,
+            error: String::new(),
+        };
+        ui.set_dialog(1);
+        ui.set_form_probe_token("current".into());
+        ui.set_form_probe_status("Проверяем…".into());
+        ui.set_probe_busy(true);
+        apply_result(&ui, &proxy, &health, Some("old"));
+        assert!(ui.get_toast().is_empty() && ui.get_probe_busy());
+        assert_eq!(ui.get_form_probe_status(), "Проверяем…");
+        apply_result(&ui, &proxy, &health, Some("current"));
+        assert!(!ui.get_toast().is_empty() && !ui.get_probe_busy());
+        assert!(ui.get_form_probe_status().is_empty());
+        assert!(!ui.get_toast_error());
+        let previous = ui.get_toast();
+        ui.set_dialog(0);
+        ui.set_form_probe_token("".into());
+        ui.set_probe_busy(true);
+        apply_result(&ui, &proxy, &health, Some("current"));
+        assert_eq!(
+            ui.get_toast(),
+            previous,
+            "Closing the form invalidates its notification"
+        );
+        assert!(!ui.get_probe_busy());
+    }
+
     #[test]
     fn unsaved_form_uses_current_endpoint_and_preserves_secret_without_saving() {
         i_slint_backend_testing::init_no_event_loop();

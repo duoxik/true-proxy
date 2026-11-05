@@ -1,13 +1,64 @@
 use super::{bytes, model, routing};
-use crate::{LogRow, MainWindow, ProcessSummary};
+use crate::{ConnectionsWindow, LogRow, ProcessSummary};
 use slint::{ComponentHandle, Model, VecModel};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, HashSet},
     sync::Arc,
 };
 use true_proxy::{connections::Snapshot, engine::Statistics};
 
-pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
+mod filters;
+
+/// The journal observes only its own visible window. Core transfer counters keep
+/// running independently; opening the journal does not backfill old sessions.
+pub fn sync_tracking(ui: &ConnectionsWindow, statistics: &Statistics) {
+    let tracking = ui.window().is_visible() && !ui.window().is_minimized();
+    if statistics.activity.tracking() != tracking {
+        statistics.activity.set_tracking(tracking);
+    }
+    let only_active = !filters::history_enabled(ui);
+    ui.set_only_active(only_active);
+    statistics.activity.set_only_active(only_active);
+}
+
+/// UI models contain only public proxy metadata, never stored credentials.
+pub fn refresh_proxy_sources(ui: &ConnectionsWindow, main: &crate::MainWindow) {
+    let proxies = main.get_proxies();
+    if ui.get_proxies() != proxies {
+        ui.set_proxies(proxies);
+    }
+}
+
+pub fn suspend_tracking(ui: &ConnectionsWindow, statistics: &Statistics) {
+    statistics.activity.set_tracking(false);
+    clear(ui);
+    filters::refresh(ui, &[]);
+}
+
+fn clear(ui: &ConnectionsWindow) {
+    if ui.get_process_summaries().row_count() != 0 {
+        ui.set_process_summaries(model(vec![]));
+    }
+    ui.set_connection_event_count(0);
+    ui.set_filtered_event_count(0);
+    ui.set_connection_omitted(0);
+}
+
+pub fn wire(ui: &ConnectionsWindow, statistics: Arc<Statistics>) {
+    let weak = ui.as_weak();
+    let stats = statistics.clone();
+    ui.on_sync_connections(move || {
+        if let Some(ui) = weak.upgrade() {
+            render(&ui, &stats);
+        }
+    });
+    let weak = ui.as_weak();
+    let stats = statistics.clone();
+    ui.on_suspend_connections(move || {
+        if let Some(ui) = weak.upgrade() {
+            suspend_tracking(&ui, &stats);
+        }
+    });
     let weak = ui.as_weak();
     let stats = statistics.clone();
     ui.on_filter_connections(move || {
@@ -18,12 +69,44 @@ pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
     let weak = ui.as_weak();
     let stats = statistics.clone();
     ui.on_set_only_active(move |only_active| {
-        stats.activity.set_only_active(only_active);
         if let Some(ui) = weak.upgrade() {
+            ui.set_connection_status_selection(routing::strings(if only_active {
+                filters::default_statuses()
+            } else {
+                filters::STATUSES
+                    .iter()
+                    .map(|status| filters::status_key(*status))
+                    .collect()
+            }));
             render(&ui, &stats);
         }
     });
     let weak = ui.as_weak();
+    let stats = statistics.clone();
+    ui.on_toggle_connection_route(move |key, checked| {
+        if let Some(ui) = weak.upgrade() {
+            filters::toggle_route(&ui, &key, checked);
+            render(&ui, &stats);
+        }
+    });
+    let weak = ui.as_weak();
+    let stats = statistics.clone();
+    ui.on_toggle_connection_status(move |key, checked| {
+        if let Some(ui) = weak.upgrade() {
+            filters::toggle_status(&ui, &key, checked);
+            render(&ui, &stats);
+        }
+    });
+    let weak = ui.as_weak();
+    let stats = statistics.clone();
+    ui.on_reset_connection_filters(move || {
+        if let Some(ui) = weak.upgrade() {
+            filters::reset(&ui);
+            render(&ui, &stats);
+        }
+    });
+    let weak = ui.as_weak();
+    let stats = statistics.clone();
     ui.on_expand_process(move |name| {
         if let Some(ui) = weak.upgrade() {
             let mut expanded = routing::values(ui.get_expanded_processes());
@@ -36,60 +119,25 @@ pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
                 expanded.push(name.to_string());
             }
             ui.set_expanded_processes(routing::strings(expanded));
-            render(&ui, &statistics);
+            render(&ui, &stats);
         }
     });
+    render(ui, &statistics);
 }
-fn matches_query(row: &Snapshot, query: &str) -> bool {
-    query.is_empty()
-        || [
-            row.info.process.clone(),
-            row.info.source.to_string(),
-            row.info.destination.to_string(),
-            row.info.route.clone(),
-            row.info.detail.clone(),
-            row.status.label().into(),
-            row.info.pid.to_string(),
-        ]
-        .iter()
-        .any(|value| value.to_lowercase().contains(query))
-}
-pub fn render(ui: &MainWindow, statistics: &Statistics) {
-    let selected = ui
-        .get_connection_processes()
-        .row_data(ui.get_connection_process().max(0) as usize)
-        .map(|s| s.to_string())
-        .filter(|_| ui.get_connection_process() > 0);
-    let rows = statistics
-        .activity
-        .snapshots()
+pub fn render(ui: &ConnectionsWindow, statistics: &Statistics) {
+    sync_tracking(ui, statistics);
+    let rows = statistics.activity.snapshots();
+    filters::refresh(ui, &rows);
+    if !statistics.activity.tracking() {
+        clear(ui);
+        return;
+    }
+    let query = ui.get_connection_query().trim().to_lowercase();
+    let all_routes = ui.get_connection_routes_all();
+    let selected_routes = routing::values(ui.get_connection_route_selection())
         .into_iter()
-        .filter(|r| !ui.get_only_active() || !r.status.finished())
-        .collect::<Vec<_>>();
-    let mut names = BTreeSet::new();
-    for row in &rows {
-        names.insert(row.info.process.clone());
-    }
-    // Keep an explicitly selected app while it has no active connections;
-    // otherwise a close event silently switches the user's filter to all apps.
-    if let Some(selected) = &selected
-        && !names.iter().any(|name| name.eq_ignore_ascii_case(selected))
-    {
-        names.insert(selected.clone());
-    }
-    let names = std::iter::once("Все процессы".into())
-        .chain(names)
-        .collect::<Vec<String>>();
-    let index = selected
-        .as_ref()
-        .and_then(|s| names.iter().position(|name| name.eq_ignore_ascii_case(s)))
-        .unwrap_or(0);
-    let selected = (index > 0).then(|| names[index].to_lowercase());
-    if routing::values(ui.get_connection_processes()) != names {
-        ui.set_connection_processes(routing::strings(names));
-    }
-    ui.set_connection_process(index as i32);
-    let query = ui.get_connection_query().to_lowercase();
+        .collect::<HashSet<_>>();
+    let selected_statuses = filters::selected_statuses(ui);
     let expanded = routing::values(ui.get_expanded_processes())
         .into_iter()
         .map(|s| s.to_lowercase())
@@ -102,7 +150,10 @@ pub fn render(ui: &MainWindow, statistics: &Statistics) {
     let mut groups = BTreeMap::<String, Vec<Snapshot>>::new();
     for row in &rows {
         let mut key = row.info.process.to_lowercase();
-        if selected.as_ref().is_some_and(|name| name != &key) || !matches_query(row, &query) {
+        if (!query.is_empty() && !key.contains(&query))
+            || (!all_routes && !selected_routes.contains(&filters::route_key(&row.info.action)))
+            || !selected_statuses.contains(&filters::status_key(row.status))
+        {
             continue;
         }
         if groups.len() >= 511 && !groups.contains_key(&key) {
@@ -190,11 +241,44 @@ pub fn render(ui: &MainWindow, statistics: &Statistics) {
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+    use crate::ProxyRow;
+    use i_slint_backend_testing::ElementHandle;
     use true_proxy::{
-        config::Protocol,
+        config::{Action, Protocol},
         connections::{Connection, Info, Status},
     };
-    fn start(stats: &Statistics, name: &str, port: u16) -> Connection {
+    fn window(proxies: &[(&str, &str)]) -> (ConnectionsWindow, Arc<Statistics>) {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = ConnectionsWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1120., 780.));
+        ui.set_proxies(model(
+            proxies
+                .iter()
+                .map(|(id, name)| ProxyRow {
+                    id: (*id).into(),
+                    name: (*name).into(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        ui.show().unwrap();
+        let stats = Arc::new(Statistics::default());
+        wire(&ui, stats.clone());
+        assert!(stats.activity.tracking());
+        (ui, stats)
+    }
+    fn start(
+        stats: &Statistics,
+        name: &str,
+        port: u16,
+        action: Action,
+        status: Status,
+    ) -> Connection {
+        let route = match &action {
+            Action::Direct => "Напрямую",
+            Action::Block => "Блокировка",
+            Action::Proxy(_) => "VPN",
+        };
         stats
             .activity
             .start(
@@ -204,93 +288,295 @@ mod tests {
                     source: format!("192.0.2.1:{port}").parse().unwrap(),
                     destination: "203.0.113.1:443".parse().unwrap(),
                     protocol: Protocol::Tcp,
-                    route: "VPN".into(),
+                    route: route.into(),
                     detail: "Rule".into(),
-                    proxied: true,
+                    action,
                     stamp: 0,
                 },
-                Status::Active,
+                status,
             )
             .unwrap()
     }
+    fn click(ui: &ConnectionsWindow, label: &str, index: usize) {
+        ElementHandle::find_by_accessible_label(ui, label)
+            .nth(index)
+            .unwrap_or_else(|| panic!("Missing checkbox {label} #{index}"))
+            .mock_single_click(slint::platform::PointerEventButton::Left);
+    }
+    fn query(ui: &ConnectionsWindow, query: &str) {
+        ui.set_connection_query(query.into());
+        ui.invoke_filter_connections();
+    }
+
     #[test]
-    fn active_default_history_toggle_filters_and_accordion_use_connection_lifetimes() {
-        i_slint_backend_testing::init_no_event_loop();
-        let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(1120., 780.));
-        ui.set_page(3);
-        ui.show().unwrap();
-        let stats = Arc::new(Statistics::default());
-        wire(&ui, stats.clone());
-        let old = start(&stats, "old.exe", 1000);
-        old.finish(Status::Closed, "");
-        let game = start(&stats, "game.exe", 1001);
-        let chat = start(&stats, "chat.exe", 1002);
+    fn process_search_and_route_checkboxes_preserve_ids_expansion_and_stable_models() {
+        let (ui, stats) = window(&[("p1", "VPN"), ("p2", "VPN")]);
+        let _game = start(
+            &stats,
+            "Game.exe",
+            1001,
+            Action::Proxy("p1".into()),
+            Status::Active,
+        );
+        let _game2 = start(
+            &stats,
+            "Game.exe",
+            1002,
+            Action::Proxy("p2".into()),
+            Status::Active,
+        );
+        let _chat = start(&stats, "chat.exe", 1003, Action::Direct, Status::Connecting);
         render(&ui, &stats);
         let stable = ui.get_process_summaries();
         let children = stable.row_data(0).unwrap().connections;
+        let route_models = ui.get_connection_route_filters();
+        let route_children = route_models.row_data(0).unwrap().options;
         render(&ui, &stats);
         assert!(stable == ui.get_process_summaries());
         assert!(children == ui.get_process_summaries().row_data(0).unwrap().connections);
-        assert!(ui.get_only_active());
-        assert_eq!(ui.get_filtered_event_count(), 2);
-        i_slint_backend_testing::ElementHandle::find_by_accessible_label(
-            &ui,
-            "Подключения game.exe",
-        )
-        .next()
-        .unwrap()
-        .mock_single_click(slint::platform::PointerEventButton::Left);
+        assert!(route_models == ui.get_connection_route_filters());
         assert!(
-            ui.get_process_summaries()
-                .iter()
-                .find(|r| r.name == "game.exe")
-                .unwrap()
-                .expanded
+            route_children
+                == ui
+                    .get_connection_route_filters()
+                    .row_data(0)
+                    .unwrap()
+                    .options
         );
-        let checkbox = || {
-            i_slint_backend_testing::ElementHandle::find_by_accessible_label(
-                &ui,
-                "Только активные соединения",
-            )
-            .next()
-            .unwrap()
-        };
-        checkbox().mock_single_click(slint::platform::PointerEventButton::Left);
-        assert!(!ui.get_only_active());
-        game.finish(Status::Closed, "");
+        assert!(ui.get_only_active());
+        assert_eq!(ui.get_filtered_event_count(), 3);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Только активные соединения").count(),
+            0
+        );
+        click(&ui, "Подключения Game.exe", 0);
+        query(&ui, "gAmE");
+        assert_eq!(ui.get_filtered_event_count(), 2);
+        assert!(ui.get_process_summaries().row_data(0).unwrap().expanded);
+        for text in ["203.0.113", "VPN", "Rule", "10"] {
+            query(&ui, text);
+            assert_eq!(
+                ui.get_filtered_event_count(),
+                0,
+                "Search must match only process names"
+            );
+        }
+        query(&ui, "");
+        click(&ui, "Маршрут: Все", 0);
+        assert_eq!(ui.get_filtered_event_count(), 0);
+        click(&ui, "Маршрут: VPN", 0);
+        assert_eq!(ui.get_filtered_event_count(), 1);
+        assert_eq!(
+            routing::values(ui.get_connection_route_selection()),
+            ["proxy:p1"]
+        );
+        click(&ui, "Маршрут: VPN", 1);
+        assert_eq!(ui.get_filtered_event_count(), 2);
+        ui.set_proxies(model(vec![
+            ProxyRow {
+                id: "p1".into(),
+                name: "Renamed".into(),
+                ..Default::default()
+            },
+            ProxyRow {
+                id: "p2".into(),
+                name: "VPN".into(),
+                ..Default::default()
+            },
+            ProxyRow {
+                id: "new".into(),
+                name: "New".into(),
+                ..Default::default()
+            },
+        ]));
+        let _new = start(
+            &stats,
+            "Game.exe",
+            1004,
+            Action::Proxy("new".into()),
+            Status::Active,
+        );
         render(&ui, &stats);
-        assert_eq!(ui.get_filtered_event_count(), 2);
-        assert!(
-            ui.get_process_summaries()
-                .iter()
-                .any(|r| r.name == "game.exe"
-                    && r.active == 0
-                    && r.connections.row_data(0).unwrap().status == "Завершено"
-                    && r.expanded)
-        );
-        ui.set_connection_query("game.exe".into());
-        ui.invoke_filter_connections();
-        assert_eq!(ui.get_filtered_event_count(), 1);
-        ui.set_connection_query("".into());
-        checkbox().mock_single_click(slint::platform::PointerEventButton::Left);
-        assert!(ui.get_only_active());
-        assert_eq!(ui.get_filtered_event_count(), 1);
-        checkbox().mock_single_click(slint::platform::PointerEventButton::Left);
         assert_eq!(
             ui.get_filtered_event_count(),
-            1,
-            "Old completions must not return"
+            2,
+            "A newly saved proxy must not expand an explicit subset"
         );
-        chat.finish(Status::Failed, "error");
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Маршрут: Renamed")
+                .next()
+                .unwrap()
+                .accessible_checked(),
+            Some(true)
+        );
+        ui.set_proxies(model(vec![ProxyRow {
+            id: "p2".into(),
+            name: "VPN".into(),
+            ..Default::default()
+        }]));
+        render(&ui, &stats);
+        assert_eq!(ui.get_filtered_event_count(), 2);
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Маршрут: VPN (из журнала)").count(),
+            2,
+            "Deleted/pending proxy IDs must remain distinct choices"
+        );
+        query(&ui, "GAME");
+        assert!(ui.get_process_summaries().row_data(0).unwrap().expanded);
+        click(&ui, "Маршрут: Все", 0);
+        assert_eq!(ui.get_filtered_event_count(), 3);
+        click(&ui, "Маршрут: Все", 0);
+        assert_eq!(ui.get_filtered_event_count(), 0);
+    }
+
+    #[test]
+    fn terminal_statuses_start_history_now_and_failed_proxy_is_not_blocked() {
+        let (ui, stats) = window(&[("p1", "VPN")]);
+        let old = start(&stats, "old.exe", 1000, Action::Direct, Status::Active);
+        old.finish(Status::Closed, "");
+        let game = start(
+            &stats,
+            "game.exe",
+            1001,
+            Action::Proxy("p1".into()),
+            Status::Active,
+        );
+        let direct = start(&stats, "direct.exe", 1002, Action::Direct, Status::Active);
+        render(&ui, &stats);
+        click(&ui, "Статус: Все", 0);
+        assert!(!ui.get_only_active());
+        game.finish(Status::Failed, "SOCKS rejected");
+        direct.finish(Status::Closed, "");
+        let blocked = start(&stats, "block.exe", 1003, Action::Block, Status::Connecting);
+        blocked.finish(Status::Blocked, "rule");
+        let _active = start(&stats, "active.exe", 1004, Action::Direct, Status::Active);
+        render(&ui, &stats);
+        assert_eq!(ui.get_filtered_event_count(), 4);
+        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Маршрут: Заблокированные", 0);
+        assert_eq!(ui.get_filtered_event_count(), 1);
+        assert_eq!(
+            ui.get_process_summaries().row_data(0).unwrap().name,
+            "block.exe"
+        );
+        click(&ui, "Маршрут: Заблокированные", 0);
+        click(&ui, "Маршрут: VPN", 0);
+        assert_eq!(ui.get_filtered_event_count(), 1);
+        assert_eq!(
+            ui.get_process_summaries().row_data(0).unwrap().name,
+            "game.exe"
+        );
+        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Статус: Подключение", 0);
+        assert!(!ui.get_only_active());
+        assert_eq!(
+            stats.activity.snapshots().len(),
+            4,
+            "Changing a nonterminal filter must not clear history"
+        );
+        click(&ui, "Статус: Все", 0); // Some unchecked -> select all.
+        click(&ui, "Статус: Все", 0); // All checked -> select none, clear history.
+        assert!(ui.get_only_active());
+        assert_eq!(ui.get_filtered_event_count(), 0);
+        assert_eq!(stats.activity.snapshots().len(), 1);
+        click(&ui, "Статус: Ошибка", 0);
+        assert_eq!(
+            ui.get_filtered_event_count(),
+            0,
+            "Old history must not return"
+        );
+        click(&ui, "Статус: Активно", 0);
+        assert_eq!(ui.get_filtered_event_count(), 1);
+    }
+
+    #[test]
+    fn independent_journal_window_keeps_filters_and_core_counters_across_hide() {
+        use std::sync::atomic::Ordering;
+        let (ui, stats) = window(&[]);
+        let game = start(&stats, "game.exe", 1001, Action::Direct, Status::Active);
+        let _counter = stats.connection("game.exe");
+        stats.uploaded.store(42, Ordering::Relaxed);
+        render(&ui, &stats);
+        click(&ui, "Подключения game.exe", 0);
+        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Маршрут: Прямые", 0);
+        click(&ui, "Статус: Ошибка", 0);
+        query(&ui, "GAME");
+        // Hiding/navigating the separate tray popup must not stop this journal.
+        let main = crate::MainWindow::new().unwrap();
+        main.show().unwrap();
+        main.hide().unwrap();
+        render(&ui, &stats);
+        assert!(stats.activity.tracking());
+        assert_eq!(ui.get_filtered_event_count(), 1);
+        ui.hide().unwrap();
+        ui.invoke_sync_connections();
+        assert!(!stats.activity.tracking());
+        assert!(stats.activity.snapshots().is_empty());
+        assert_eq!(ui.get_process_summaries().row_count(), 0);
+        assert_eq!(stats.uploaded.load(Ordering::Relaxed), 42);
+        assert_eq!(stats.connections.load(Ordering::Relaxed), 1);
+        assert!(stats.activity.start(game.info(), Status::Active).is_none());
+        game.finish(Status::Failed, "late error");
+        ui.show().unwrap();
+        ui.invoke_sync_connections();
+        assert!(stats.activity.tracking());
+        assert!(stats.activity.snapshots().is_empty());
+        assert_eq!(ui.get_connection_query(), "GAME");
+        assert!(!ui.get_connection_routes_all());
+        assert!(!ui.get_only_active());
+        let _new_game = start(&stats, "game.exe", 1002, Action::Direct, Status::Active);
         render(&ui, &stats);
         assert_eq!(ui.get_filtered_event_count(), 1);
-        ui.set_connection_process(1);
-        checkbox().mock_single_click(slint::platform::PointerEventButton::Left);
+        assert!(ui.get_process_summaries().row_data(0).unwrap().expanded);
+        suspend_tracking(&ui, &stats); // Close-request fires before native hide.
+        assert!(!stats.activity.tracking());
+        ui.hide().unwrap();
+        ui.invoke_sync_connections();
+        assert!(!stats.activity.tracking());
         assert_eq!(ui.get_process_summaries().row_count(), 0);
+        ui.show().unwrap();
+        ui.invoke_sync_connections();
+        assert!(stats.activity.tracking());
+        assert!(stats.activity.snapshots().is_empty());
+    }
+
+    #[test]
+    fn separate_window_keeps_many_route_filters_compact_at_minimum_size() {
+        let (ui, stats) = window(&[]);
+        ui.set_proxies(model(
+            (0..64)
+                .map(|index| ProxyRow {
+                    id: format!("proxy-{index}").into(),
+                    name: format!("Очень длинное название подключения номер {index}").into(),
+                    ..Default::default()
+                })
+                .collect(),
+        ));
+        ui.window().set_size(slint::LogicalSize::new(800., 600.));
+        render(&ui, &stats);
+        assert_eq!(ui.get_connection_route_filters().row_count(), 17);
+        assert_eq!(ui.get_connection_status_filters().row_count(), 2);
+        let list = ElementHandle::find_by_element_id(&ui, "ConnectionsWindow::connection-list")
+            .next()
+            .unwrap();
         assert!(
-            ui.get_connection_process() > 0,
-            "A selected process must not reset when its last connection finishes"
+            list.size().height >= 180.,
+            "Filters must leave room for connection rows at the minimum window size"
         );
+        for label in ["Маршрут: Все", "Статус: Все", "Статус: Ошибка"]
+        {
+            let checkbox = ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap();
+            let position = checkbox.absolute_position();
+            let size = checkbox.size();
+            assert!(position.x >= 0. && position.x + size.width <= 800.);
+            assert!(position.y >= 0. && position.y + size.height <= 600.);
+        }
+        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Статус: Ошибка", 0);
+        assert!(!ui.get_connection_routes_all());
+        assert!(!ui.get_only_active());
     }
 }

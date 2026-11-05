@@ -139,27 +139,16 @@ fn wire_copy(
 ) {
     let document = Rc::new(RefCell::new(Document::default()));
     let timer = Rc::new(slint::Timer::default());
-    let toast = Rc::new(slint::Timer::default());
     let weak = ui.as_weak();
     let export_state = state.clone();
     ui.on_export_config(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.set_toast("".into());
+            super::clear_toast(&ui);
             let result = (|| {
                 let json = Profile::export(&export_state.borrow())?;
                 copy(&ui, &json)?;
                 ui.set_notice("".into());
-                ui.set_toast("Конфигурация скопирована в буфер обмена".into());
-                let weak = ui.as_weak();
-                toast.start(
-                    slint::TimerMode::SingleShot,
-                    Duration::from_secs(4),
-                    move || {
-                        if let Some(ui) = weak.upgrade() {
-                            ui.set_toast("".into());
-                        }
-                    },
-                );
+                super::show_toast(&ui, "Конфигурация скопирована в буфер обмена".into(), false);
                 Ok(())
             })();
             report(&ui, result);

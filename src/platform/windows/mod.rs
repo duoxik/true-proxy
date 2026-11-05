@@ -4,6 +4,7 @@ pub mod divert;
 pub mod http;
 pub mod monitor;
 pub mod network;
+pub mod panel;
 pub mod picker;
 pub mod presentation;
 pub mod process;

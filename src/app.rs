@@ -1,7 +1,7 @@
 mod activity;
 mod appearance;
+mod fallback;
 mod json_highlight;
-mod local_routes;
 mod pending;
 mod proxies;
 mod routing;
@@ -9,16 +9,16 @@ mod transfer;
 mod updating;
 #[cfg(not(windows))]
 use crate::Tray;
-use crate::{MainWindow, RuleRow};
+use crate::{ConnectionsWindow, MainWindow, RuleRow};
 use anyhow::{Context, Result, ensure};
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel, winit_030::WinitWindowAccessor};
 use std::{
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::Ordering,
         mpsc::{self, SyncSender},
     },
     thread,
@@ -36,7 +36,6 @@ enum Command {
     Start(Config),
     Stop,
     Probe(Proxy, Option<String>),
-    CheckProxies(Vec<Proxy>),
     Failed { generation: u64, error: String },
     Processes,
     Autostart(Option<bool>),
@@ -84,6 +83,7 @@ fn index_of(config: &Config, id: Option<&str>) -> i32 {
 }
 
 fn refresh(ui: &MainWindow, config: &Config, statuses: &proxies::Statuses) {
+    ui.set_local_networks(true_proxy::local_network::NETWORKS.join(", ").into());
     ui.set_proxy_names(model(
         config
             .proxies
@@ -102,62 +102,41 @@ fn refresh(ui: &MainWindow, config: &Config, statuses: &proxies::Statuses) {
         config
             .rules
             .iter()
-            .map(|r| {
-                let processes = if r.process_names.is_empty() && r.process_paths.is_empty() {
-                    "Все процессы".into()
-                } else {
-                    r.process_names
-                        .iter()
-                        .chain(&r.process_paths)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                let protocol = match r.protocol {
-                    Protocol::Both => "TCP + UDP",
-                    Protocol::Tcp => "TCP",
-                    Protocol::Udp => "UDP",
-                };
-                let mut conditions = vec![protocol.to_string()];
-                if !r.domains.is_empty() || !r.domain_suffixes.is_empty() {
-                    conditions.push("домены".into());
-                }
-                if !r.networks.is_empty() {
-                    conditions.push("IP/CIDR".into());
-                }
-                if !r.ports.is_empty() {
-                    conditions.push("порты".into());
-                }
-                RuleRow {
-                    id: r.id.clone().into(),
-                    name: r.name.clone().into(),
-                    process: processes.into(),
-                    conditions: conditions.join(" · ").into(),
-                    route: route_name(config, &r.action).into(),
-                    enabled: r.enabled,
-                }
+            .map(|r| RuleRow {
+                id: r.id.clone().into(),
+                name: r.name.clone().into(),
+                route: route_name(config, &r.action).into(),
+                enabled: r.enabled,
             })
             .collect(),
     ));
-    ui.set_fallback_action(match config.default_action {
-        Action::Direct => 0,
-        Action::Block => 1,
-        Action::Proxy(_) => 2,
-    });
-    ui.set_fallback_proxy(index_of(
-        config,
-        if let Action::Proxy(id) = &config.default_action {
-            Some(id)
-        } else {
-            None
-        },
-    ));
+    ui.set_fallback_label(fallback::label(config).into());
 }
 
 fn report(ui: &MainWindow, result: Result<()>) {
     if let Err(error) = result {
         ui.set_notice(format!("{error:#}").into());
     }
+}
+
+fn clear_toast(ui: &MainWindow) {
+    ui.set_toast_token(id().into());
+    ui.set_toast("".into());
+}
+
+fn show_toast(ui: &MainWindow, message: String, error: bool) {
+    let token = id();
+    ui.set_toast_token(token.clone().into());
+    ui.set_toast_error(error);
+    ui.set_toast(message.into());
+    let weak = ui.as_weak();
+    slint::Timer::single_shot(Duration::from_secs(5), move || {
+        if let Some(ui) = weak.upgrade()
+            && ui.get_toast_token() == token
+        {
+            ui.set_toast("".into());
+        }
+    });
 }
 
 fn remember_routing(state: &State, path: &std::path::Path, enabled: bool) -> Result<()> {
@@ -191,6 +170,132 @@ fn sync_tray(tray: &Tray, active: bool, status: &str) {
         tray.set_tray_image(icon(active, false));
     }
 }
+
+fn focus_window(ui: &impl ComponentHandle) {
+    ui.window()
+        .with_winit_window(|window| window.focus_window());
+}
+
+fn show_panel(ui: &MainWindow, tray: &Tray) -> Result<()> {
+    #[cfg(windows)]
+    if let Some(bounds) = tray.popup_geometry(420, 720) {
+        ui.window()
+            .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
+        ui.window()
+            .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
+    }
+    #[cfg(not(windows))]
+    let _ = tray;
+    ui.window().set_minimized(false);
+    ui.show()?;
+    #[cfg(windows)]
+    ui.window().with_winit_window(|window| {
+        use slint::winit_030::winit::platform::windows::WindowExtWindows;
+        window.set_skip_taskbar(true);
+    });
+    focus_window(ui);
+    appearance::refresh(ui);
+    Ok(())
+}
+
+/// The connection journal belongs to its own window, independent of the panel.
+fn wire_connection_window(
+    main: &MainWindow,
+    view: &ConnectionsWindow,
+    statistics: Arc<Statistics>,
+) -> Rc<slint::Timer> {
+    activity::wire(view, statistics.clone());
+    appearance::wire_connections(view);
+    let timer = Rc::new(slint::Timer::default());
+    let resume = {
+        let main = main.as_weak();
+        let weak = view.as_weak();
+        let statistics = statistics.clone();
+        let timer = timer.clone();
+        Rc::new(move || {
+            let Some(view) = weak.upgrade() else {
+                return;
+            };
+            if !view.window().is_visible() || view.window().is_minimized() {
+                activity::suspend_tracking(&view, &statistics);
+                return;
+            }
+            if let Some(main) = main.upgrade() {
+                activity::refresh_proxy_sources(&view, &main);
+            }
+            activity::render(&view, &statistics);
+            let main = main.clone();
+            let weak = weak.clone();
+            let statistics = statistics.clone();
+            let weak_timer = Rc::downgrade(&timer);
+            timer.start(
+                slint::TimerMode::Repeated,
+                Duration::from_secs(1),
+                move || {
+                    let Some(view) = weak.upgrade() else {
+                        return;
+                    };
+                    if !view.window().is_visible() || view.window().is_minimized() {
+                        activity::suspend_tracking(&view, &statistics);
+                        if let Some(timer) = weak_timer.upgrade() {
+                            timer.stop();
+                        }
+                        return;
+                    }
+                    if let Some(main) = main.upgrade() {
+                        activity::refresh_proxy_sources(&view, &main);
+                    }
+                    activity::render(&view, &statistics);
+                },
+            );
+        })
+    };
+    {
+        let resume = resume.clone();
+        view.on_resume_observation(move || resume());
+    }
+    {
+        let weak = view.as_weak();
+        let timer = timer.clone();
+        let statistics = statistics.clone();
+        view.window().on_close_requested(move || {
+            timer.stop();
+            if let Some(view) = weak.upgrade() {
+                activity::suspend_tracking(&view, &statistics);
+            }
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+    {
+        let weak = view.as_weak();
+        let timer = timer.clone();
+        let statistics = statistics.clone();
+        view.on_hide_window(move || {
+            timer.stop();
+            if let Some(view) = weak.upgrade() {
+                let _ = view.hide();
+                activity::suspend_tracking(&view, &statistics);
+            }
+        });
+    }
+    {
+        let weak = view.as_weak();
+        let main_weak = main.as_weak();
+        main.on_open_connections(move || {
+            if let Some(view) = weak.upgrade() {
+                view.window().set_minimized(false);
+                if view.show().is_ok() {
+                    focus_window(&view);
+                    view.invoke_resume_observation();
+                    if let Some(main) = main_weak.upgrade() {
+                        main.invoke_hide_window();
+                    }
+                }
+            }
+        });
+    }
+    timer
+}
 fn update_status(
     ui: slint::Weak<MainWindow>,
     active: bool,
@@ -205,13 +310,6 @@ fn update_status(
             ui.set_status(message.clone().into());
             pending::on_status(&ui, busy);
             ui.invoke_sync_tray(active, message.clone().into());
-            if !busy
-                && ui.window().is_visible()
-                && !ui.window().is_minimized()
-                && ui.get_page() == 3
-            {
-                ui.invoke_filter_connections();
-            }
             if error {
                 ui.set_notice(message.clone().into());
             }
@@ -232,7 +330,6 @@ fn worker(
 ) {
     let mut engine: Option<Engine> = None;
     let mut generation = 0_u64;
-    let sweeping = Arc::new(AtomicBool::new(false));
     while let Ok(command) = rx.recv() {
         match command {
             Command::Start(config) => {
@@ -330,63 +427,6 @@ fn worker(
                             ui.set_notice(format!("Не удалось запустить проверку: {error}").into());
                         }
                     });
-                }
-            }
-            Command::CheckProxies(profiles) => {
-                if sweeping.swap(true, Ordering::AcqRel) {
-                    continue;
-                }
-                statuses
-                    .lock()
-                    .unwrap()
-                    .retain(|id, _| profiles.iter().any(|p| &p.id == id));
-                let sweep = sweeping.clone();
-                let weak = ui.clone();
-                let statuses = statuses.clone();
-                let result = thread::Builder::new()
-                    .name("proxy-health".into())
-                    .spawn(move || {
-                        struct Reset(Arc<AtomicBool>);
-                        impl Drop for Reset {
-                            fn drop(&mut self) {
-                                self.0.store(false, Ordering::Release);
-                            }
-                        }
-                        let _reset = Reset(sweep);
-                        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                        {
-                            rt.block_on(async move {
-                                let mut tasks = tokio::task::JoinSet::new();
-                                let mut remaining = profiles.into_iter();
-                                loop {
-                                    while tasks.len() < 4 {
-                                        let Some(proxy) = remaining.next() else {
-                                            break;
-                                        };
-                                        tasks.spawn(async move {
-                                            let health = proxies::check(&proxy).await;
-                                            (proxy, health)
-                                        });
-                                    }
-                                    match tasks.join_next().await {
-                                        Some(Ok((proxy, health))) => proxies::publish(
-                                            weak.clone(),
-                                            &statuses,
-                                            proxy,
-                                            health,
-                                            None,
-                                        ),
-                                        Some(Err(_)) => {}
-                                        None => break,
-                                    }
-                                }
-                            });
-                        }
-                    });
-                if result.is_err() {
-                    sweeping.store(false, Ordering::Release);
                 }
             }
             Command::Processes => {
@@ -501,7 +541,8 @@ pub fn run() -> Result<()> {
         remember_routing(&state, &path, false)?;
     }
     let ui = MainWindow::new()?;
-    appearance::wire(&ui);
+    let connections = ConnectionsWindow::new()?;
+    appearance::wire(&ui, &connections, preview.is_some());
     let _updates = match updating::wire(&ui, path.with_file_name("updates.json"), preview.is_some())
     {
         Ok(controller) => controller,
@@ -559,8 +600,7 @@ pub fn run() -> Result<()> {
         preview.is_some(),
     );
     proxies::wire_form_probe(&ui, state.clone(), sender.clone(), preview.is_some());
-    activity::wire(&ui, stats.clone());
-    activity::render(&ui, &stats);
+    let connections_timer = wire_connection_window(&ui, &connections, stats.clone());
     {
         let weak = ui.as_weak();
         let state = state.clone();
@@ -593,20 +633,6 @@ pub fn run() -> Result<()> {
         sender.send(Command::Autostart(None))?;
     }
 
-    let health_timer = slint::Timer::default();
-    if preview.is_none() {
-        let health_sender = sender.clone();
-        let health_state = state.clone();
-        let check = move || {
-            let profiles = health_state.borrow().proxies.clone();
-            if !profiles.is_empty() {
-                let _ = health_sender.try_send(Command::CheckProxies(profiles));
-            }
-        };
-        check();
-        health_timer.start(slint::TimerMode::Repeated, Duration::from_secs(30), check);
-    }
-
     // Only the visible window refreshes aggregated statistics; there is no UI polling in the tray.
     let stats_timer = Rc::new(slint::Timer::default());
     let restart_stats = {
@@ -616,9 +642,6 @@ pub fn run() -> Result<()> {
         move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_uptime(uptime(stats.uptime()).into());
-                if ui.get_page() == 3 {
-                    activity::render(&ui, &stats);
-                }
             }
             let weak = weak.clone();
             let stats = stats.clone();
@@ -639,9 +662,6 @@ pub fn run() -> Result<()> {
                         ui.set_blocked_count(
                             stats.blocked.load(Ordering::Relaxed).to_string().into(),
                         );
-                        if ui.get_page() == 3 {
-                            activity::render(&ui, &stats);
-                        }
                     }
                 },
             );
@@ -669,11 +689,10 @@ pub fn run() -> Result<()> {
     {
         let weak = ui.as_weak();
         let restart = restart_stats.clone();
+        let placement_tray = tray.clone();
         tray.on_open(move || {
             if let Some(ui) = weak.upgrade() {
-                appearance::refresh(&ui);
-                ui.window().set_minimized(false);
-                let _ = ui.show();
+                let _ = show_panel(&ui, &placement_tray);
                 restart();
             }
         });
@@ -852,7 +871,6 @@ pub fn run() -> Result<()> {
             }
         });
     }
-    local_routes::wire(&ui);
     {
         let weak = ui.as_weak();
         let state = state.clone();
@@ -966,7 +984,11 @@ pub fn run() -> Result<()> {
                         dns: DnsPolicy::Inherit,
                     };
                     pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
-                        local_routes::put(c, rule, ui.get_form_prepend_rule());
+                        if let Some(old) = c.rules.iter_mut().find(|r| r.id == rule.id) {
+                            *old = rule;
+                        } else {
+                            c.rules.push(rule);
+                        }
                         Ok(())
                     })?;
                     ui.set_dialog(0);
@@ -1035,27 +1057,7 @@ pub fn run() -> Result<()> {
             }
         });
     }
-    {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        let path = path.clone();
-        let statuses = statuses.clone();
-        ui.on_save_fallback(move || {
-            if let Some(ui) = weak.upgrade() {
-                report(
-                    &ui,
-                    pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
-                        c.default_action = match ui.get_fallback_action() {
-                            1 => Action::Block,
-                            2 => Action::Proxy(selected_proxy(c, ui.get_fallback_proxy())?),
-                            _ => Action::Direct,
-                        };
-                        Ok(())
-                    }),
-                );
-            }
-        });
-    }
+    fallback::wire(&ui, state.clone(), path.clone(), statuses.clone());
 
     if auto_start {
         ui.set_busy(true);
@@ -1065,27 +1067,27 @@ pub fn run() -> Result<()> {
         stats_timer.stop();
         ui.hide()?;
     } else {
-        ui.show()?;
+        show_panel(&ui, &tray)?;
     }
     let preview_timer = slint::Timer::default();
     if let Some(dir) = preview {
         if arguments.iter().any(|a| a == "--benchmark-ui") {
             benchmark_ui(&ui, &preview_timer, dir);
         } else {
-            smoke_ui(&ui, &tray, &preview_timer, dir, stats.clone());
+            smoke_ui(&ui, &connections, &tray, &preview_timer, dir, stats.clone());
         }
     }
     let result = slint::run_event_loop_until_quit();
+    stats.activity.set_tracking(false);
     stats_timer.stop();
+    connections_timer.stop();
     preview_timer.stop();
-    health_timer.stop();
     let _ = sender.send(Command::Quit);
     let _ = worker.join();
     result.context("Ошибка цикла интерфейса")
 }
 
 fn reset_rule(ui: &MainWindow) {
-    ui.set_form_prepend_rule(false);
     ui.set_form_manual(false);
     ui.set_form_new_process("".into());
     ui.set_form_new_path("".into());
@@ -1131,12 +1133,14 @@ fn bytes(value: u64) -> String {
 
 fn smoke_ui(
     ui: &MainWindow,
+    connections: &ConnectionsWindow,
     tray: &Rc<Tray>,
     timer: &slint::Timer,
     dir: PathBuf,
     stats: Arc<Statistics>,
 ) {
     let weak = ui.as_weak();
+    let weak_connections = connections.as_weak();
     let weak_tray = Rc::downgrade(tray);
     let mut step = 0;
     let mut fixture_records = Vec::new();
@@ -1223,30 +1227,34 @@ fn smoke_ui(
                     ensure!(!ui.get_import_valid() && !ui.get_import_error().is_empty(), "Нет ошибки некорректного JSON");
                     snapshot(&ui,&dir.join("06b-json-error.png"))?;
                     ui.invoke_cancel_import();
-                    ui.invoke_save_fallback(); ui.set_page(3);
+                    ui.invoke_select_fallback(0, "".into()); ui.invoke_open_connections();
                 }
                 6 => {
+                    let view = weak_connections.upgrade().context("Окно соединений исчезло")?;
+                    activity::sync_tracking(&view, &stats);
+                        let fixture_proxy = ui.get_proxies().row_data(0).context("Нет тестового прокси")?.id.to_string();
                     for (index,(process,destination,protocol)) in [("firefox.exe","203.0.113.1:443",Protocol::Tcp),("firefox.exe","203.0.113.2:443",Protocol::Udp),("steam.exe","203.0.113.3:443",Protocol::Tcp)].into_iter().enumerate() {
-                        if let Some(record)=stats.activity.start(true_proxy::connections::Info {pid:100,process:process.into(),source:format!("192.0.2.1:{}",5000+index).parse()?,destination:destination.parse()?,protocol,route:"Локальный VPN".into(),detail:"Тестовое соединение".into(),proxied:true,stamp:0},true_proxy::connections::Status::Active) {fixture_records.push(record);}
+                        if let Some(record)=stats.activity.start(true_proxy::connections::Info {pid:100,process:process.into(),source:format!("192.0.2.1:{}",5000+index).parse()?,destination:destination.parse()?,protocol,route:"Локальный VPN".into(),detail:"Тестовое соединение".into(),action:Action::Proxy(fixture_proxy.clone()),stamp:0},true_proxy::connections::Status::Active) {fixture_records.push(record);}
                     }
-                    activity::render(&ui, &stats);
-                    ui.set_connection_process(ui.get_connection_processes().iter().position(|name| name == "firefox.exe").unwrap() as i32); ui.invoke_filter_connections(); ensure!(ui.get_filtered_event_count() == 2, "Не работает фильтр процесса");
-                    ui.set_connection_query("203.0.113.2".into()); ui.invoke_filter_connections(); ensure!(ui.get_filtered_event_count() == 1, "Не работает поиск соединений");
-                    ui.set_connection_query("".into()); ui.set_connection_process(0); ui.invoke_filter_connections();
-                    ui.invoke_expand_process("firefox.exe".into());
+                    activity::render(&view, &stats);
+                    view.set_connection_query("FIREFOX".into()); view.invoke_filter_connections(); ensure!(view.get_filtered_event_count() == 2, "Не работает поиск процесса");
+                    view.set_connection_query("steam".into()); view.invoke_filter_connections(); ensure!(view.get_filtered_event_count() == 1, "Не работает поиск процесса по подстроке");
+                    view.set_connection_query("".into()); view.invoke_filter_connections();
+                    view.invoke_expand_process("firefox.exe".into());
                     ui.set_notice("Проверка UI: тестовые события, перехват отключён".into());
-                    snapshot(&ui, &dir.join("07-connections.png"))?;
-                    ui.set_only_active(false);ui.invoke_set_only_active(false);
+                    snapshot(&view, &dir.join("07-connections.png"))?;
+                    view.set_only_active(false);view.invoke_set_only_active(false);
                     fixture_records[0].finish(true_proxy::connections::Status::Closed,"Тестовое завершение");
                     fixture_records[1].finish(true_proxy::connections::Status::Failed,"Тестовый отказ SOCKS");
-                    activity::render(&ui,&stats);snapshot(&ui,&dir.join("07b-history.png"))?;
-                    ui.set_only_active(true);ui.invoke_set_only_active(true);ensure!(ui.get_filtered_event_count()==1,"Завершённые соединения не очищены");
-                    ui.set_only_active(false);ui.invoke_set_only_active(false);ensure!(ui.get_filtered_event_count()==1,"Старая история вернулась");
-                    ui.set_only_active(true);ui.invoke_set_only_active(true);
+                    activity::render(&view,&stats);snapshot(&view,&dir.join("07b-history.png"))?;
+                    view.set_only_active(true);view.invoke_set_only_active(true);ensure!(view.get_filtered_event_count()==1,"Завершённые соединения не очищены");
+                    view.set_only_active(false);view.invoke_set_only_active(false);ensure!(view.get_filtered_event_count()==1,"Старая история вернулась");
+                    view.set_only_active(true);view.invoke_set_only_active(true);
                     let config = Config::load(&dir.join("config.json"))?;
                     ensure!(config.proxies.len() == 1 && config.rules.len() == 1, "Не пройдена проверка сохранения UI");
                     ensure!(config.rules[0].process_names.iter().any(|name| name == "steam.exe"), "Не сохранён незавершённый ввод списка");
                     ensure!(config.rules[0].domains == ["exact.example.com"] && config.rules[0].domain_suffixes.len() == 3, "Неверная семантика явных доменных масок");
+                    view.invoke_hide_window();
                     ui.invoke_toggle();
                 }
                 7 => {
@@ -1281,7 +1289,7 @@ fn smoke_ui(
     });
 }
 
-fn snapshot(ui: &MainWindow, path: &std::path::Path) -> Result<()> {
+fn snapshot(ui: &impl ComponentHandle, path: &std::path::Path) -> Result<()> {
     let pixels = ui.window().take_snapshot()?;
     let file = std::fs::File::create(path)?;
     let mut encoder = png::Encoder::new(file, pixels.width(), pixels.height());
@@ -1325,6 +1333,53 @@ fn benchmark_ui(ui: &MainWindow, timer: &slint::Timer, dir: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opening_connections_hides_only_the_panel_and_close_stops_its_journal() {
+        i_slint_backend_testing::init_no_event_loop();
+        let main = MainWindow::new().unwrap();
+        let view = ConnectionsWindow::new().unwrap();
+        let statistics = Arc::new(Statistics::default());
+        let timer = wire_connection_window(&main, &view, statistics.clone());
+        let weak = main.as_weak();
+        main.on_hide_window(move || {
+            weak.unwrap().hide().unwrap();
+        });
+        main.show().unwrap();
+        assert!(!statistics.activity.tracking());
+        main.invoke_open_connections();
+        assert!(!main.window().is_visible());
+        assert!(view.window().is_visible() && statistics.activity.tracking());
+        assert!(timer.running());
+        let record = statistics
+            .activity
+            .start(
+                true_proxy::connections::Info {
+                    pid: 10,
+                    process: "game.exe".into(),
+                    source: "192.0.2.1:5000".parse().unwrap(),
+                    destination: "203.0.113.1:443".parse().unwrap(),
+                    protocol: Protocol::Tcp,
+                    route: "Direct".into(),
+                    detail: String::new(),
+                    action: Action::Direct,
+                    stamp: 0,
+                },
+                true_proxy::connections::Status::Active,
+            )
+            .unwrap();
+        assert_eq!(statistics.activity.snapshots().len(), 1);
+        view.invoke_hide_window();
+        assert!(!view.window().is_visible() && !statistics.activity.tracking());
+        assert!(!timer.running() && statistics.activity.snapshots().is_empty());
+        assert_eq!(record.status(), true_proxy::connections::Status::Stopped);
+        main.show().unwrap();
+        main.invoke_open_connections();
+        assert!(statistics.activity.tracking() && statistics.activity.snapshots().is_empty());
+        view.window()
+            .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+        assert!(!statistics.activity.tracking() && !timer.running());
+    }
 
     #[test]
     fn pause_and_enable_survive_restart_without_opening_the_network() {

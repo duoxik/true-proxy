@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('check', 'test', 'build', 'run', 'package', 'fmt', 'clippy', 'smoke', 'dns-probe')]
+    [ValidateSet('check', 'test', 'build', 'run', 'package', 'fmt', 'clippy', 'smoke', 'snapshot', 'dns-probe')]
     [string]$Task = 'check',
     [string]$PackageDirectory = 'dist\TrueProxy',
     [string]$PackageArchive = 'dist\TrueProxy-windows-x64.zip'
@@ -30,6 +30,7 @@ try {
         'run' { cargo run --locked -- --paused }
         'fmt' { cargo fmt --all }
         'clippy' { cargo clippy --locked --all-targets -- -D warnings }
+        'snapshot' { cargo run --locked --example ui_snapshot -- .tools/ui-headless }
         'dns-probe' {
             cargo build --locked --example dns-route-client --example dns-route-probe
             if ($LASTEXITCODE -ne 0) { throw 'DNS probe build failed' }

@@ -15,7 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -31,6 +31,8 @@ use tokio::{
 };
 
 const MAX_FLOWS: usize = 4096;
+const MAX_LOCAL_MISSES: usize = 256;
+const LOCAL_MISS_TTL: Duration = Duration::from_secs(2);
 type NatTable = Arc<Mutex<NatMaps>>;
 
 #[derive(Default)]
@@ -43,8 +45,175 @@ struct NatMaps {
 mod tests {
     use super::*;
     #[test]
-    fn idle_direct_tcp_keeps_one_decision_until_closed_with_a_tail_packet_grace_period() {
+    fn fixed_local_admission_preserves_tracking_and_survives_unknown_owner_or_full_cache() {
+        let mut misses = LocalAttributionMisses::default();
+        let now = Instant::now();
+        for destination in ["192.168.50.1:445", "[fd00::1]:443"] {
+            let source = if destination.starts_with('[') {
+                "[2001:db8::30]:5000"
+            } else {
+                "192.0.2.30:5000"
+            };
+            let flow = FlowKey {
+                source: source.parse().unwrap(),
+                destination: destination.parse().unwrap(),
+            };
+            let known = misses.classify(flow, true, false, now, |attempts| {
+                assert_eq!(attempts, 1, "Local attribution must not sleep or retry");
+                Some(process::Process {
+                    pid: 4,
+                    name: "System".into(),
+                    path: String::new(),
+                })
+            });
+            assert!(
+                matches!(
+                    known,
+                    NewFlowOwner::Identified(process::Process { pid: 4, .. })
+                ),
+                "Known local flows retain normal connection tracking"
+            );
+            assert!(matches!(
+                misses.classify(flow, true, false, now, |_| None),
+                NewFlowOwner::FixedLocal
+            ));
+            assert!(matches!(
+                misses.classify(flow, true, true, now, |_| panic!(
+                    "A full cache must not query ownership"
+                )),
+                NewFlowOwner::FixedLocal
+            ));
+        }
+        for destination in ["203.0.113.1:445", "[2001:db8::1]:443"] {
+            let flow = FlowKey {
+                source: "192.0.2.30:5000".parse().unwrap(),
+                destination: destination.parse().unwrap(),
+            };
+            assert!(matches!(
+                misses.classify(flow, true, false, now, |attempts| {
+                    assert_eq!(
+                        attempts, 3,
+                        "Non-local attribution retains its retry policy"
+                    );
+                    None
+                }),
+                NewFlowOwner::Unknown
+            ));
+            assert!(matches!(
+                misses.classify(flow, true, true, now, |_| panic!(
+                    "A full cache must not query ownership"
+                )),
+                NewFlowOwner::Capacity
+            ));
+            assert!(matches!(
+                misses.classify(flow, true, false, now, |_| Some(process::Process {
+                    pid: 4,
+                    name: "System".into(),
+                    path: String::new()
+                })),
+                NewFlowOwner::Identified(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn local_attribution_misses_skip_repeated_queries_until_ttl_then_restore_tracking() {
+        let mut misses = LocalAttributionMisses::default();
+        let now = Instant::now();
+        let flow = FlowKey {
+            source: "192.0.2.30:5000".parse().unwrap(),
+            destination: "192.168.50.1:445".parse().unwrap(),
+        };
+        assert!(matches!(
+            misses.classify(flow, true, false, now, |attempts| {
+                assert_eq!(attempts, 1);
+                None
+            }),
+            NewFlowOwner::FixedLocal
+        ));
+        for _ in 0..100 {
+            assert!(matches!(
+                misses.classify(flow, true, false, now + Duration::from_secs(1), |_| panic!(
+                    "Repeated local packets must not query IP Helper"
+                )),
+                NewFlowOwner::FixedLocal
+            ));
+        }
+        // TCP and UDP sharing an endpoint/peer have independent attribution.
+        assert!(matches!(
+            misses.classify(flow, false, false, now, |attempts| {
+                assert_eq!(attempts, 1);
+                None
+            }),
+            NewFlowOwner::FixedLocal
+        ));
+        let retried = misses.classify(flow, true, false, now + LOCAL_MISS_TTL, |attempts| {
+            assert_eq!(attempts, 1);
+            Some(process::Process {
+                pid: 42,
+                name: "app.exe".into(),
+                path: String::new(),
+            })
+        });
+        assert!(matches!(
+            retried,
+            NewFlowOwner::Identified(process::Process { pid: 42, .. })
+        ));
+        assert!(!misses.expires.contains_key(&(flow, true)));
+    }
+
+    #[test]
+    fn local_attribution_miss_cache_is_bounded_expires_and_never_caches_public_addresses() {
+        let mut misses = LocalAttributionMisses::default();
+        let now = Instant::now();
+        let mut flow = FlowKey {
+            source: "192.0.2.30:5000".parse().unwrap(),
+            destination: "192.168.50.1:445".parse().unwrap(),
+        };
+        for port in 10000..10000 + MAX_LOCAL_MISSES as u16 + 1 {
+            flow.source.set_port(port);
+            assert!(matches!(
+                misses.classify(flow, true, false, now, |_| None),
+                NewFlowOwner::FixedLocal
+            ));
+            assert!(misses.expires.len() <= MAX_LOCAL_MISSES);
+        }
+        assert_eq!(misses.expires.len(), MAX_LOCAL_MISSES);
+        assert!(matches!(
+            misses.classify(flow, true, false, now, |_| panic!(
+                "Most recent miss stays cached"
+            )),
+            NewFlowOwner::FixedLocal
+        ));
+        flow.source.set_port(20000);
+        assert!(matches!(
+            misses.classify(flow, true, false, now + LOCAL_MISS_TTL, |_| None),
+            NewFlowOwner::FixedLocal
+        ));
+        assert_eq!(misses.expires.len(), 1);
+        flow.destination = "203.0.113.1:445".parse().unwrap();
+        for _ in 0..2 {
+            assert!(matches!(
+                misses.classify(flow, true, false, now, |attempts| {
+                    assert_eq!(attempts, 3);
+                    None
+                }),
+                NewFlowOwner::Unknown
+            ));
+        }
+        assert_eq!(misses.expires.len(), 1);
+        assert!(
+            misses
+                .expires
+                .keys()
+                .all(|(flow, _)| crate::local_network::contains(flow.destination.ip()))
+        );
+    }
+
+    #[test]
+    fn idle_direct_tcp_lifetime_uses_socket_owners_independently_of_the_journal() {
         let stats = Arc::new(Statistics::default());
+        stats.activity.set_tracking(true);
         let flow = FlowKey {
             source: "192.0.2.1:5000".parse().unwrap(),
             destination: "203.0.113.1:443".parse().unwrap(),
@@ -60,7 +229,7 @@ mod tests {
                     protocol: Protocol::Tcp,
                     route: "Direct".into(),
                     detail: String::new(),
-                    proxied: false,
+                    action: Action::Direct,
                     stamp: 0,
                 },
                 Status::Active,
@@ -80,24 +249,71 @@ mod tests {
             dns_check: now,
             record: Some(record.clone()),
         };
+        let live = HashMap::from([(flow, 10)]);
+        let closed = HashMap::new();
         assert!(decision.keep(
             flow,
             true,
             &NatMaps::default(),
-            now + Duration::from_secs(3600)
+            now + Duration::from_secs(3600),
+            Some(&live)
         ));
-        record.finish(Status::Closed, "");
+        record.finish(Status::Stopped, "Journal hidden");
+        assert!(
+            decision.keep(
+                flow,
+                true,
+                &NatMaps::default(),
+                now + Duration::from_secs(3600),
+                Some(&live)
+            ),
+            "Hiding the journal must not change routing lifetime"
+        );
+        let mut decision = decision;
+        decision.record = None;
+        assert!(
+            decision.keep(
+                flow,
+                true,
+                &NatMaps::default(),
+                now + Duration::from_secs(3600),
+                Some(&live)
+            ),
+            "Recording was never enabled for this live socket"
+        );
         assert!(!decision.keep(
             flow,
             true,
             &NatMaps::default(),
-            now + Duration::from_secs(3600)
+            now + Duration::from_secs(3600),
+            Some(&closed)
         ));
+        assert!(
+            !decision.keep(
+                flow,
+                true,
+                &NatMaps::default(),
+                now + Duration::from_secs(3600),
+                Some(&HashMap::from([(flow, 11)]))
+            ),
+            "A reused tuple belongs to a different process"
+        );
+        assert!(
+            decision.keep(
+                flow,
+                true,
+                &NatMaps::default(),
+                now + Duration::from_secs(3600),
+                None
+            ),
+            "Failed IP Helper snapshots preserve established routing"
+        );
         assert!(decision.keep(
             flow,
             true,
             &NatMaps::default(),
-            now + Duration::from_secs(10)
+            now + Duration::from_secs(10),
+            Some(&closed)
         ));
     }
     #[tokio::test]
@@ -132,6 +348,7 @@ mod tests {
                 .unwrap();
             let (local, _) = listener.accept().await.unwrap();
             let stats = Arc::new(Statistics::default());
+            stats.activity.set_tracking(true);
             stats.activity.set_only_active(false);
             let flow = FlowKey {
                 source: client.local_addr().unwrap(),
@@ -148,7 +365,7 @@ mod tests {
                         protocol: Protocol::Tcp,
                         route: "VPN".into(),
                         detail: "Rule".into(),
-                        proxied: true,
+                        action: Action::Proxy("p".into()),
                         stamp: 0,
                     },
                     Status::Connecting,
@@ -277,15 +494,90 @@ struct Decision {
     record: Option<Connection>,
 }
 impl Decision {
-    fn keep(&self, flow: FlowKey, tcp: bool, table: &NatMaps, now: Instant) -> bool {
+    fn active_mapping(flow: FlowKey, table: &NatMaps) -> bool {
+        table
+            .original
+            .get(&flow)
+            .and_then(|key| table.reflected.get(key))
+            .is_some_and(|n| n.active.load(Ordering::Relaxed))
+    }
+    fn keep(
+        &self,
+        flow: FlowKey,
+        tcp: bool,
+        table: &NatMaps,
+        now: Instant,
+        owners: Option<&HashMap<FlowKey, u32>>,
+    ) -> bool {
         now.duration_since(self.last) < Duration::from_secs(900)
-            || (tcp && self.record.as_ref().is_some_and(|c| !c.status().finished()))
             || (tcp
-                && table
-                    .original
-                    .get(&flow)
-                    .and_then(|key| table.reflected.get(key))
-                    .is_some_and(|n| n.active.load(Ordering::Relaxed)))
+                && (Self::active_mapping(flow, table)
+                    // A failed owner-table query must not reroute an established
+                    // connection. Journal visibility is never socket lifetime.
+                    || owners.is_none_or(|owners| owners.get(&flow) == Some(&self.owner.pid))))
+    }
+}
+
+enum NewFlowOwner {
+    Identified(process::Process),
+    FixedLocal,
+    Capacity,
+    Unknown,
+}
+
+#[derive(Default)]
+struct LocalAttributionMisses {
+    expires: HashMap<(FlowKey, bool), Instant>,
+}
+
+impl LocalAttributionMisses {
+    /// Preserve normal tracking when possible. A short, bounded negative cache
+    /// prevents unowned local UDP from querying IP Helper on every datagram.
+    fn classify(
+        &mut self,
+        flow: FlowKey,
+        tcp: bool,
+        cache_full: bool,
+        now: Instant,
+        identify: impl FnOnce(usize) -> Option<process::Process>,
+    ) -> NewFlowOwner {
+        let local = crate::local_network::contains(flow.destination.ip());
+        if cache_full {
+            return if local {
+                NewFlowOwner::FixedLocal
+            } else {
+                NewFlowOwner::Capacity
+            };
+        }
+        let key = (flow, tcp);
+        if local {
+            if self.expires.get(&key).is_some_and(|expires| now < *expires) {
+                return NewFlowOwner::FixedLocal;
+            }
+            self.expires.remove(&key);
+        }
+        // Direct local traffic need not wait/retry for attribution; retry later
+        // only to restore observability if its owner becomes available.
+        match identify(if local { 1 } else { 3 }) {
+            Some(owner) => NewFlowOwner::Identified(owner),
+            None if local => {
+                if self.expires.len() >= MAX_LOCAL_MISSES {
+                    self.expires.retain(|_, expires| now < *expires);
+                    if self.expires.len() >= MAX_LOCAL_MISSES
+                        && let Some(oldest) = self
+                            .expires
+                            .iter()
+                            .min_by_key(|(_, expires)| **expires)
+                            .map(|(key, _)| *key)
+                    {
+                        self.expires.remove(&oldest);
+                    }
+                }
+                self.expires.insert(key, now + LOCAL_MISS_TTL);
+                NewFlowOwner::FixedLocal
+            }
+            None => NewFlowOwner::Unknown,
+        }
     }
 }
 
@@ -438,6 +730,7 @@ fn capture(context: CaptureContext) -> Result<()> {
     } = context;
     let mut buffer = vec![0u8; 65575];
     let mut decisions: HashMap<(FlowKey, bool), Decision> = HashMap::new();
+    let mut local_misses = LocalAttributionMisses::default();
     let inject_device = device.clone();
     let socket_generations = generations.clone();
     let mut udp = Pool::new(
@@ -555,10 +848,32 @@ fn capture(context: CaptureContext) -> Result<()> {
         }
         let now = Instant::now();
         if cleanup.elapsed() > Duration::from_secs(15) {
-            let mut table = nat.lock().unwrap();
-            table.cleanup(now);
-            decisions.retain(|(flow, tcp), decision| decision.keep(*flow, *tcp, &table, now));
-            drop(table);
+            let idle_tcp: HashSet<_> = {
+                let mut table = nat.lock().unwrap();
+                table.cleanup(now);
+                decisions
+                    .iter()
+                    .filter_map(|((flow, tcp), decision)| {
+                        (*tcp
+                            && now.duration_since(decision.last) >= Duration::from_secs(900)
+                            && !Decision::active_mapping(*flow, &table))
+                        .then_some(*flow)
+                    })
+                    .collect()
+            };
+            // One batch per address family only when idle TCP decisions need
+            // pruning. Do not hold NAT's mutex across IP Helper calls.
+            let tcp_owners = if idle_tcp.is_empty() {
+                None
+            } else {
+                process::tcp_snapshot(&idle_tcp).ok()
+            };
+            {
+                let table = nat.lock().unwrap();
+                decisions.retain(|(flow, tcp), decision| {
+                    decision.keep(*flow, *tcp, &table, now, tcp_owners.as_ref())
+                });
+            }
             udp.cleanup();
             dns_flows.retain(|_, last| now.duration_since(*last) < Duration::from_secs(120));
             tcp_dns.retain(|flow, _| dns_flows.contains_key(&(*flow, true)));
@@ -617,67 +932,83 @@ fn capture(context: CaptureContext) -> Result<()> {
                         },
                         packet.flow.destination,
                     );
-                    let route = match &action {
-                        Action::Direct => "Напрямую".into(),
-                        Action::Block => "Блокировка".into(),
-                        Action::Proxy(id) => config
-                            .proxy(id)
-                            .map(|proxy| proxy.name.clone())
-                            .unwrap_or_else(|_| "Прокси отсутствует".into()),
-                    };
-                    stats.log(
-                        &d.owner.name,
-                        packet.flow.destination.to_string(),
-                        route.clone(),
-                        format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
-                    );
-                    if let Some(old) = d.record.take() {
-                        old.finish(Status::Closed, "Маршрут изменён");
-                    }
-                    let info = Info {
-                        pid: d.owner.pid,
-                        process: d.owner.name.clone(),
-                        source: packet.flow.source,
-                        destination: packet.flow.destination,
-                        protocol: Protocol::Udp,
-                        route,
-                        detail: format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
-                        proxied: matches!(action, Action::Proxy(_)),
-                        stamp: address.timestamp(),
-                    };
-                    if action == Action::Block {
-                        stats.activity.completed(info, Status::Blocked);
-                    } else if action == Action::Direct {
-                        d.record = stats.activity.start(info, Status::Active);
+                    if stats.activity.tracking() {
+                        let route = match &action {
+                            Action::Direct => "Напрямую".into(),
+                            Action::Block => "Блокировка".into(),
+                            Action::Proxy(id) => config
+                                .proxy(id)
+                                .map(|proxy| proxy.name.clone())
+                                .unwrap_or_else(|_| "Прокси отсутствует".into()),
+                        };
+                        stats.log(
+                            &d.owner.name,
+                            packet.flow.destination.to_string(),
+                            route.clone(),
+                            format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
+                        );
+                        if let Some(old) = d.record.take() {
+                            old.finish(Status::Closed, "Маршрут изменён");
+                        }
+                        let info = Info {
+                            pid: d.owner.pid,
+                            process: d.owner.name.clone(),
+                            source: packet.flow.source,
+                            destination: packet.flow.destination,
+                            protocol: Protocol::Udp,
+                            route,
+                            detail: format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
+                            action: action.clone(),
+                            stamp: address.timestamp(),
+                        };
+                        if action == Action::Block {
+                            stats.activity.completed(info, Status::Blocked);
+                        } else if action == Action::Direct {
+                            d.record = stats.activity.start(info, Status::Active);
+                        }
                     }
                     d.action = action;
                 }
             }
             d.action.clone()
         } else {
-            if decisions.len() >= MAX_FLOWS {
-                stats.blocked.fetch_add(1, Ordering::Relaxed);
-                continue;
-            }
-            let owner = (0..3).find_map(|attempt| {
-                let result = process::identify(packet.flow, packet.protocol).ok();
-                if result.is_none() && attempt < 2 {
-                    thread::sleep(Duration::from_millis(1));
+            let owner = match local_misses.classify(
+                packet.flow,
+                tcp,
+                decisions.len() >= MAX_FLOWS,
+                now,
+                |attempts| {
+                    (0..attempts).find_map(|attempt| {
+                        let result = process::identify(packet.flow, packet.protocol).ok();
+                        if result.is_none() && attempt + 1 < attempts {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        result
+                    })
+                },
+            ) {
+                NewFlowOwner::Identified(owner) => owner,
+                NewFlowOwner::FixedLocal => {
+                    device.send(bytes, &address)?;
+                    continue;
                 }
-                result
-            });
-            let Some(owner) = owner else {
-                stats.blocked.fetch_add(1, Ordering::Relaxed);
-                if last_lookup_error.elapsed() > Duration::from_secs(5) {
-                    stats.log(
-                        "Неизвестный процесс",
-                        packet.flow.destination.to_string(),
-                        "Блокировка",
-                        "Не удалось надежно определить владельца соединения",
-                    );
-                    last_lookup_error = now;
+                NewFlowOwner::Capacity => {
+                    stats.blocked.fetch_add(1, Ordering::Relaxed);
+                    continue;
                 }
-                continue;
+                NewFlowOwner::Unknown => {
+                    stats.blocked.fetch_add(1, Ordering::Relaxed);
+                    if last_lookup_error.elapsed() > Duration::from_secs(5) {
+                        stats.log(
+                            "Неизвестный процесс",
+                            packet.flow.destination.to_string(),
+                            "Блокировка",
+                            "Не удалось надежно определить владельца соединения",
+                        );
+                        last_lookup_error = now;
+                    }
+                    continue;
+                }
             };
             if !tcp {
                 stamp = generations.stamp(owner.pid, packet.flow, false);
@@ -698,7 +1029,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 )
             };
             let mut record = None;
-            if owner.pid != std::process::id() {
+            if owner.pid != std::process::id() && stats.activity.tracking() {
                 let route = match &action {
                     Action::Direct => "Напрямую".into(),
                     Action::Block => "Блокировка".into(),
@@ -732,7 +1063,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                     protocol: packet.protocol,
                     route,
                     detail: explanation,
-                    proxied: matches!(action, Action::Proxy(_)),
+                    action: action.clone(),
                     stamp: address.timestamp(),
                 };
                 if action == Action::Block {
@@ -817,6 +1148,13 @@ fn capture(context: CaptureContext) -> Result<()> {
             action
         };
         if let Some(d) = decisions.get_mut(&key) {
+            if !stats.activity.tracking()
+                || d.record
+                    .as_ref()
+                    .is_some_and(|record| record.status() == Status::Stopped)
+            {
+                d.record = None;
+            }
             if !tcp
                 && action == Action::Direct
                 && let Some(old) = &d.record

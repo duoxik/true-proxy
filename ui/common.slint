@@ -1,0 +1,91 @@
+// Shared theme, models and controls for the tray panel and Connections window.
+export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, health: int, udp: bool }
+export struct RuleRow { id: string, name: string, route: string, enabled: bool }
+export struct LogRow { id: string, process: string, destination: string, route: string, message: string, source: string, status: string, state: int }
+export struct ProcessChoice { key: string, name: string, path: string, pids: string, instances: int, selected: bool }
+export struct ProcessSummary { name: string, active: int, events: int, uploaded: string, downloaded: string, expanded: bool, connections: [LogRow] }
+export struct ConnectionFilterOption { key: string, label: string, checked: bool }
+export struct ConnectionFilterRow { options: [ConnectionFilterOption] }
+
+export global Theme {
+    out property <color> background: #101218;
+    out property <color> sidebar: #14161e;
+    out property <color> surface: #1a1d27;
+    out property <color> surface-hover: #242938;
+    out property <color> field: #131620;
+    out property <color> border: #2b3040;
+    out property <color> text: #edf0f8;
+    out property <color> secondary: #a5afc5;
+    out property <color> muted: #818da5;
+    out property <color> accent: #9aaaff;
+    out property <color> accent-hover: #b0bdff;
+    out property <color> accent-soft: #252e49;
+    out property <color> primary-text: #141a30;
+    out property <color> disabled: #202431;
+    out property <color> success: #79dcb4;
+    out property <color> warning: #f2c57c;
+    out property <color> warning-surface: #32291f;
+    out property <color> switch-off: #3b4357;
+    // Fluent scrollbars overlay the viewport; reserve the same space in toolbars.
+    out property <length> scroll-gutter: 15px;
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    min-width: max(38px, label-text.preferred-width + 30px); max-width: self.min-width;
+    height: 38px; horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 8px; border-width: 1px;
+    border-color: focus.has-focus ? Theme.accent : root.primary ? transparent : touch.has-hover ? #485570 : Theme.border;
+    background: !root.enabled ? Theme.disabled : root.primary ? (touch.pressed ? #7e90eb : touch.has-hover ? Theme.accent-hover : Theme.accent) : touch.pressed ? #30394d : touch.has-hover ? Theme.surface-hover : Theme.surface;
+    animate background, border-color { duration: 100ms; }
+    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    label-text := Text { text: root.label; color: !root.enabled ? #626d85 : root.primary ? Theme.primary-text : Theme.text; font-size: 12px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+    // Like Slint's standard Button: keyboard focus must not cover the pointer target.
+    focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
+}
+
+export component Field inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in-out property <string> value;
+    spacing: 6px;
+    alignment: start;
+    min-width: 0px;
+    vertical-stretch: 0;
+    callback edited;
+    callback accepted;
+    if root.label != "": Text { text: root.label; font-size: 11px; font-weight: 600; color: Theme.secondary; }
+    Rectangle { height: 40px; border-radius: 7px; border-width: 1px; border-color: input.has-focus ? Theme.accent : Theme.border; background: Theme.field;
+        if root.value == "": Text { x: 11px; width: parent.width - 22px; text: root.placeholder; font-size: 12px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
+        input := TextInput { x: 11px; width: parent.width - 22px; height: parent.height; text <=> root.value; font-size: 12px; color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
+    }
+}
+
+export component ConnectionFilterCheck inherits Rectangle {
+    in property <ConnectionFilterOption> option;
+    in property <string> scope;
+    callback toggled(bool);
+    height: 28px; min-width: 0px; horizontal-stretch: 0;
+    border-radius: 5px;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+    accessible-role: checkbox; accessible-label: root.scope + ": " + root.option.label; accessible-checked: root.option.checked;
+    accessible-action-default => { root.toggled(!root.option.checked); }
+    forward-focus: focus;
+    HorizontalLayout { padding-left: 5px; padding-right: 5px; spacing: 7px;
+        Rectangle { width: 15px;
+            Rectangle { y: (parent.height - 15px) / 2; width: 15px; height: 15px; border-radius: 3px; border-width: 1px; border-color: focus.has-focus ? Theme.text : root.option.checked ? Theme.accent : Theme.muted; background: root.option.checked ? Theme.accent : transparent;
+                if root.option.checked: Path { x: 3px; y: 3px; width: 9px; height: 9px; viewbox-width: 10; viewbox-height: 10; stroke: Theme.primary-text; stroke-width: 1.6px; commands: "M1 5 L4 8 L9 2"; }
+            }
+        }
+        Text { text: root.option.label; color: Theme.secondary; font-size: 11px; min-width: 0px; overflow: elide; vertical-alignment: center; accessible-role: none; }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(!root.option.checked); } }
+    focus := FocusScope { width: 0px; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(!root.option.checked); return accept; } return reject; } }
+}

@@ -159,7 +159,7 @@ fn main() {
 mod ui_tests {
     use super::*;
     use i_slint_backend_testing::{AccessibleRole, ElementHandle};
-    use slint::{ComponentHandle, platform::PointerEventButton};
+    use slint::{ComponentHandle, Model, platform::PointerEventButton};
     use std::{cell::Cell, rc::Rc};
 
     fn click(ui: &MainWindow, label: &str) {
@@ -180,10 +180,55 @@ mod ui_tests {
     }
 
     #[test]
+    fn compact_panel_navigation_fits_small_work_areas_and_opens_connections_separately() {
+        i_slint_backend_testing::init_no_event_loop();
+        for (width, height) in [(320., 480.), (420., 720.)] {
+            let ui = MainWindow::new().unwrap();
+            ui.window().set_size(slint::LogicalSize::new(width, height));
+            let connections = Rc::new(Cell::new(0));
+            let calls = connections.clone();
+            ui.on_open_connections(move || calls.set(calls.get() + 1));
+            let hides = Rc::new(Cell::new(0));
+            let calls = hides.clone();
+            ui.on_hide_window(move || calls.set(calls.get() + 1));
+            ui.show().unwrap();
+            for (label, page) in [
+                ("Обзор", 0),
+                ("Правила", 1),
+                ("Прокси", 2),
+                ("Настройки", 4),
+            ] {
+                let button = ElementHandle::find_by_accessible_label(&ui, label)
+                    .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                    .unwrap();
+                let position = button.absolute_position();
+                let size = button.size();
+                assert!(position.x >= 0. && position.y >= 0.);
+                assert!(position.x + size.width <= width + 0.1);
+                assert!(position.y + size.height <= height + 0.1);
+                button.mock_single_click(PointerEventButton::Left);
+                assert_eq!(ui.get_page(), page);
+            }
+            click(&ui, "Соединения");
+            assert_eq!(connections.get(), 1);
+            assert_eq!(
+                ui.get_page(),
+                4,
+                "Connections opens outside the compact panel"
+            );
+            click(&ui, "Скрыть приложение");
+            assert_eq!(hides.get(), 1);
+            assert!(ui.window().size().width <= width as u32);
+            assert!(ui.window().size().height <= height as u32);
+            ui.hide().unwrap();
+        }
+    }
+
+    #[test]
     fn first_click_activates_buttons_navigation_and_dialog_without_focus_interception() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(1120., 780.));
+        ui.window().set_size(slint::LogicalSize::new(420., 720.));
         ui.show().unwrap();
         let calls = Rc::new(Cell::new(0));
         ui.on_add_proxy({
@@ -238,19 +283,6 @@ mod ui_tests {
         assert_eq!(ui.get_dialog(), 0);
         click(&ui, "Правила");
         assert_eq!(ui.get_page(), 1);
-        let local_rules = Rc::new(Cell::new(0));
-        let count = local_rules.clone();
-        ui.on_add_local_rule(move || count.set(count.get() + 1));
-        click(&ui, "Локальная сеть");
-        assert_eq!(
-            local_rules.get(),
-            1,
-            "The first click must open the local route preset"
-        );
-        ui.set_busy(true);
-        click(&ui, "Локальная сеть");
-        assert_eq!(local_rules.get(), 1);
-        ui.set_busy(false);
         click(&ui, "Прокси");
         assert_eq!(ui.get_page(), 2);
         click(&ui, "Обзор");
@@ -262,10 +294,87 @@ mod ui_tests {
     }
 
     #[test]
+    fn local_network_card_is_always_first_and_contains_no_mutation_controls() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(420., 720.));
+        ui.set_local_networks(true_proxy::local_network::NETWORKS.join(", ").into());
+        ui.set_page(1);
+        ui.show().unwrap();
+        let card = ElementHandle::find_by_element_id(&ui, "MainWindow::local-network-card")
+            .next()
+            .expect("The fixed local route must exist even with an empty profile");
+        let labels = card.query_descendants().find_all();
+        assert!(
+            labels
+                .iter()
+                .any(|element| element.accessible_label().as_deref() == Some("1. Локальная сеть"))
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|element| element.accessible_label().as_deref() == Some("Напрямую"))
+        );
+        assert!(
+            labels.iter().all(|element| !matches!(
+                element.accessible_role(),
+                Some(
+                    AccessibleRole::Button
+                        | AccessibleRole::Switch
+                        | AccessibleRole::Checkbox
+                        | AccessibleRole::TextInput
+                )
+            )),
+            "The fixed route must have no edit, delete, toggle, save or move control"
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Локальная сеть")
+                .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                .count(),
+            0,
+            "There must be no old editable preset button"
+        );
+        assert!(ui.get_local_networks().contains("192.168.0.0/16"));
+        assert!(ui.get_local_networks().contains("fc00::/7"));
+
+        ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
+            crate::RuleRow {
+                id: "game".into(),
+                name: "Game".into(),
+                enabled: true,
+                ..Default::default()
+            },
+        ])));
+        let game = ElementHandle::find_by_accessible_label(&ui, "2. Game")
+            .next()
+            .unwrap();
+        let fallback = ElementHandle::find_by_element_id(&ui, "MainWindow::fallback-card")
+            .next()
+            .unwrap();
+        assert!(card.absolute_position().y + card.size().height <= game.absolute_position().y);
+        assert!(game.absolute_position().y < fallback.absolute_position().y);
+        let first_up = ElementHandle::find_by_accessible_label(&ui, "↑")
+            .next()
+            .unwrap();
+        assert_eq!(
+            first_up.accessible_enabled(),
+            Some(false),
+            "An ordinary rule cannot move above the fixed route"
+        );
+        ui.set_busy(true);
+        assert!(
+            ElementHandle::find_by_element_id(&ui, "MainWindow::local-network-card")
+                .next()
+                .is_some()
+        );
+        assert_eq!(ui.get_dialog(), 0);
+    }
+
+    #[test]
     fn rule_switch_disclosure_and_application_menu_activate_on_first_click() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(1120., 780.));
+        ui.window().set_size(slint::LogicalSize::new(420., 720.));
         ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
             crate::RuleRow {
                 id: "one".into(),
@@ -330,44 +439,147 @@ mod ui_tests {
         let calls = Rc::new(Cell::new(0));
         let count = calls.clone();
         ui.on_set_autostart(move |_| count.set(count.get() + 1));
+        let settings = ElementHandle::find_by_element_id(&ui, "MainWindow::settings-scroll")
+            .next()
+            .unwrap();
+        let startup = ElementHandle::find_by_accessible_label(&ui, "Запускать при входе в Windows")
+            .find(|element| element.accessible_role() == Some(AccessibleRole::Checkbox))
+            .unwrap();
+        let bottom = startup.absolute_position().y + startup.size().height;
+        let viewport_bottom = settings.absolute_position().y + settings.size().height;
+        if bottom > viewport_bottom {
+            settings.scroll(0., viewport_bottom - bottom - 8.);
+        }
         click(&ui, "Запускать при входе в Windows");
         assert_eq!(calls.get(), 1);
         assert!(ui.get_autostart_enabled());
     }
 
     #[test]
+    fn every_condition_list_has_a_separate_remove_button_with_an_eight_pixel_gap() {
+        i_slint_backend_testing::init_no_event_loop();
+        for (kind, value) in [
+            (0, "DeleteMe.exe"),
+            (1, "C:\\Games\\DeleteMe.exe"),
+            (2, "*.delete.test"),
+            (3, "192.0.2.0/24"),
+            (4, "4242"),
+        ] {
+            let ui = MainWindow::new().unwrap();
+            ui.window().set_size(slint::LogicalSize::new(420., 720.));
+            ui.set_dialog(2);
+            ui.set_form_show_paths(kind == 1);
+            ui.set_form_advanced(kind >= 2);
+            let rows = slint::ModelRc::new(slint::VecModel::from(vec![slint::SharedString::from(
+                value,
+            )]));
+            match kind {
+                0 => ui.set_form_processes(rows),
+                1 => ui.set_form_paths(rows),
+                2 => ui.set_form_domains(rows),
+                3 => ui.set_form_networks(rows),
+                _ => ui.set_form_ports(rows),
+            }
+            let calls = Rc::new(Cell::new(0));
+            let count = calls.clone();
+            let weak = ui.as_weak();
+            ui.on_remove_condition(move |actual, index| {
+                assert_eq!((actual, index), (kind, 0));
+                count.set(count.get() + 1);
+                let ui = weak.unwrap();
+                let empty = slint::ModelRc::new(slint::VecModel::<slint::SharedString>::default());
+                match actual {
+                    0 => ui.set_form_processes(empty),
+                    1 => ui.set_form_paths(empty),
+                    2 => ui.set_form_domains(empty),
+                    3 => ui.set_form_networks(empty),
+                    _ => ui.set_form_ports(empty),
+                }
+            });
+            ui.show().unwrap();
+            let scroll = ElementHandle::find_by_element_id(&ui, "MainWindow::rule-scroll")
+                .next()
+                .unwrap();
+            let remove_label = format!("Удалить {value}");
+            let remove = ElementHandle::find_by_accessible_label(&ui, &remove_label)
+                .next()
+                .unwrap();
+            let scroll_bottom = scroll.absolute_position().y + scroll.size().height;
+            let button_bottom = remove.absolute_position().y + remove.size().height;
+            if button_bottom > scroll_bottom {
+                scroll.scroll(0., scroll_bottom - button_bottom - 8.);
+            }
+            let field = ElementHandle::find_by_element_id(&ui, "ListEditor::value-field")
+                .find(|field| {
+                    field
+                        .query_descendants()
+                        .find_all()
+                        .iter()
+                        .any(|text| text.accessible_value().as_deref() == Some(value))
+                })
+                .expect("Missing condition value field");
+            let field_right = field.absolute_position().x + field.size().width;
+            assert!(
+                remove.absolute_position().x - field_right >= 7.9,
+                "Delete button overlaps field for kind {kind}"
+            );
+            remove.mock_single_click(PointerEventButton::Left);
+            assert_eq!(
+                calls.get(),
+                1,
+                "Delete must work on the first click for kind {kind}"
+            );
+            assert_eq!(
+                ElementHandle::find_by_accessible_label(&ui, &remove_label).count(),
+                0
+            );
+            ui.hide().unwrap();
+        }
+    }
+
+    #[test]
     fn long_rule_form_scrolls_to_a_fully_visible_clickable_last_control() {
         i_slint_backend_testing::init_no_event_loop();
-        let ui = MainWindow::new().unwrap();
-        ui.set_dialog(2);
-        let rows = |values: &[&str]| {
-            slint::ModelRc::new(slint::VecModel::from(
-                values
-                    .iter()
-                    .map(|value| slint::SharedString::from(*value))
-                    .collect::<Vec<_>>(),
-            ))
-        };
-        ui.set_form_processes(rows(&["destiny2.exe", "destiny2launcher.exe", "steam.exe"]));
-        ui.set_form_domains(rows(&[
-            "*.steamserver.net",
-            "*.deadorbit.net",
-            "*.gravityshavings.net",
-        ]));
-        ui.set_form_show_paths(true);
-        ui.set_form_paths(rows(&["C:\\Games\\Destiny 2\\destiny2.exe"]));
-        ui.set_form_advanced(true);
-        ui.set_form_networks(rows(&["192.0.2.0/24", "2001:db8::/32"]));
-        ui.set_form_ports(rows(&["80", "443", "8000-9000"]));
-        ui.show().unwrap();
-        for (width, height) in [(960., 700.), (1120., 780.), (1280., 900.)] {
+        for (width, height) in [(320., 480.), (380., 600.), (420., 720.)] {
+            let ui = MainWindow::new().unwrap();
             ui.window().set_size(slint::LogicalSize::new(width, height));
+            ui.set_dialog(2);
+            let rows = |values: &[&str]| {
+                slint::ModelRc::new(slint::VecModel::from(
+                    values
+                        .iter()
+                        .map(|value| slint::SharedString::from(*value))
+                        .collect::<Vec<_>>(),
+                ))
+            };
+            ui.set_form_processes(rows(&["destiny2.exe", "destiny2launcher.exe", "steam.exe"]));
+            ui.set_form_domains(rows(&[
+                "*.steamserver.net",
+                "*.deadorbit.net",
+                "*.gravityshavings.net",
+            ]));
+            ui.set_form_show_paths(true);
+            ui.set_form_paths(rows(&["C:\\Games\\Destiny 2\\destiny2.exe"]));
+            ui.set_form_advanced(true);
+            ui.set_form_networks(rows(&["192.0.2.0/24", "2001:db8::/32"]));
+            ui.set_form_ports(rows(&["80", "443", ""]));
+            let weak = ui.as_weak();
+            ui.on_edit_condition(move |kind, index, text| {
+                assert_eq!(kind, 4);
+                let ports = weak.unwrap().get_form_ports();
+                ports
+                    .as_any()
+                    .downcast_ref::<slint::VecModel<slint::SharedString>>()
+                    .unwrap()
+                    .set_row_data(index as usize, text);
+            });
+            ui.show().unwrap();
             let scroll = ElementHandle::find_by_element_id(&ui, "MainWindow::rule-scroll")
                 .next()
                 .unwrap();
             scroll.scroll(0., -10000.);
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
-            let field = ElementHandle::find_by_accessible_label(&ui, "443 или 8000-9000")
+            let field = ElementHandle::find_by_accessible_label(&ui, "Порты · строка 3")
                 .next()
                 .unwrap();
             let bounds = (scroll.absolute_position(), scroll.size());
@@ -376,16 +588,16 @@ mod ui_tests {
                 field.absolute_position().y >= bounds.0.y && bottom <= bounds.0.y + bounds.1.height,
                 "Last control clipped at {width}x{height}: {bottom} outside {bounds:?}"
             );
-            ui.set_form_new_port("".into());
             field.mock_single_click(PointerEventButton::Left);
             ui.window()
                 .dispatch_event(slint::platform::WindowEvent::KeyPressed {
                     text: "12345".into(),
                 });
             assert!(
-                ui.get_form_new_port() == "12345",
+                ui.get_form_ports().row_data(2).as_deref() == Some("12345"),
                 "Last field must focus on the first click"
             );
+            ui.hide().unwrap();
         }
     }
 
@@ -393,7 +605,7 @@ mod ui_tests {
     fn update_banner_clicks_once_and_installation_requires_pause() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(1120., 780.));
+        ui.window().set_size(slint::LogicalSize::new(420., 720.));
         ui.set_update_available(true);
         ui.set_update_version(true_proxy::updates::VERSION.into());
         ui.show().unwrap();

@@ -315,6 +315,20 @@ impl Tray {
     pub fn registered(&self) -> bool {
         self.state.registered.get()
     }
+    /// Position and size a logical popup next to this icon using its monitor's
+    /// physical work area and DPI, including the initial hidden-window launch.
+    pub fn popup_geometry(
+        &self,
+        logical_width: u32,
+        logical_height: u32,
+    ) -> Option<super::panel::PopupGeometry> {
+        super::panel::from_tray(
+            self.state.hwnd.get(),
+            ICON_ID,
+            logical_width,
+            logical_height,
+        )
+    }
 }
 impl Drop for Tray {
     fn drop(&mut self) {
