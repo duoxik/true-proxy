@@ -1,6 +1,7 @@
 mod activity;
 mod appearance;
 mod json_highlight;
+mod local_routes;
 mod pending;
 mod proxies;
 mod routing;
@@ -851,6 +852,7 @@ pub fn run() -> Result<()> {
             }
         });
     }
+    local_routes::wire(&ui);
     {
         let weak = ui.as_weak();
         let state = state.clone();
@@ -964,11 +966,7 @@ pub fn run() -> Result<()> {
                         dns: DnsPolicy::Inherit,
                     };
                     pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
-                        if let Some(old) = c.rules.iter_mut().find(|r| r.id == rule.id) {
-                            *old = rule;
-                        } else {
-                            c.rules.push(rule);
-                        }
+                        local_routes::put(c, rule, ui.get_form_prepend_rule());
                         Ok(())
                     })?;
                     ui.set_dialog(0);
@@ -1087,6 +1085,7 @@ pub fn run() -> Result<()> {
 }
 
 fn reset_rule(ui: &MainWindow) {
+    ui.set_form_prepend_rule(false);
     ui.set_form_manual(false);
     ui.set_form_new_process("".into());
     ui.set_form_new_path("".into());

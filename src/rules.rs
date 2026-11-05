@@ -193,4 +193,94 @@ mod tests {
         c.rules[0].action = Action::Block;
         assert_eq!(resolve(&c, &f), Action::Direct);
     }
+
+    #[test]
+    fn local_network_preset_is_explicit_and_respects_priority_toggle_and_edits() {
+        let mut config = Config {
+            default_action: Action::Proxy("vpn".into()),
+            ..Config::default()
+        };
+        let mut f = flow(&[]);
+        f.destination = "192.168.50.1:445".parse().unwrap();
+        // Old profiles have no implicit LAN exception, including System/SMB.
+        f.process_name = "System";
+        assert_eq!(resolve(&config, &f), Action::Proxy("vpn".into()));
+        config.rules.push(Rule::local_network("local".into()));
+        for protocol in [Protocol::Tcp, Protocol::Udp] {
+            f.protocol = protocol;
+            for address in [
+                "10.255.255.255:443",
+                "172.16.0.1:443",
+                "172.31.255.255:445",
+                "192.168.50.1:445",
+                "169.254.1.1:443",
+                "[fc00::1]:443",
+                "[fdff::1]:443",
+                "[fe80::1]:443",
+                "[febf::1]:443",
+            ] {
+                f.destination = address.parse().unwrap();
+                assert_eq!(resolve(&config, &f), Action::Direct, "{address}");
+            }
+            for address in [
+                "11.0.0.1:443",
+                "172.15.255.255:443",
+                "172.32.0.0:443",
+                "192.169.0.1:443",
+                "100.64.0.1:443",
+                "[fec0::1]:443",
+                "[2001:db8::1]:443",
+            ] {
+                f.destination = address.parse().unwrap();
+                assert_eq!(
+                    resolve(&config, &f),
+                    Action::Proxy("vpn".into()),
+                    "{address}"
+                );
+            }
+        }
+        f.destination = "192.168.50.1:445".parse().unwrap();
+        config.rules[0].enabled = false;
+        assert_eq!(resolve(&config, &f), Action::Proxy("vpn".into()));
+        config.rules[0].enabled = true;
+        config.rules[0].networks = vec!["192.168.60.0/24".parse().unwrap()];
+        assert_eq!(resolve(&config, &f), Action::Proxy("vpn".into()));
+        f.destination = "192.168.60.1:445".parse().unwrap();
+        assert_eq!(resolve(&config, &f), Action::Direct);
+        config.rules[0].action = Action::Block;
+        assert_eq!(resolve(&config, &f), Action::Block);
+        config.rules[0].action = Action::Proxy("other".into());
+        assert_eq!(resolve(&config, &f), Action::Proxy("other".into()));
+        let mut first = Rule::local_network("first".into());
+        first.action = Action::Direct;
+        config.rules.insert(0, first);
+        assert_eq!(resolve(&config, &f), Action::Direct);
+    }
+
+    #[test]
+    fn local_network_rule_survives_profile_export_import_without_hidden_state() {
+        let config = Config {
+            routing_enabled: false,
+            rules: vec![Rule::local_network("local".into())],
+            default_action: Action::Block,
+            ..Config::default()
+        };
+        config.validate().unwrap();
+        let json = crate::profile::Profile::export(&config).unwrap();
+        let mut imported = Config::default();
+        crate::profile::Profile::parse(&json)
+            .unwrap()
+            .apply(&mut imported)
+            .unwrap();
+        assert_eq!(imported.rules, config.rules);
+        assert_eq!(imported.default_action, Action::Block);
+        assert!(
+            imported.routing_enabled,
+            "Import must not change lifecycle preferences"
+        );
+        imported.rules[0].enabled = false;
+        let encoded = serde_json::to_vec(&imported).unwrap();
+        let reloaded: Config = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(reloaded.rules, imported.rules);
+    }
 }

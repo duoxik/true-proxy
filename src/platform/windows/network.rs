@@ -1,5 +1,5 @@
 use super::{
-    divert::{Address, Device, Driver},
+    divert::{Device, Driver},
     monitor::{SocketGenerations, SocketMonitor},
     process,
 };
@@ -8,11 +8,12 @@ use crate::{
     connections::{Connection, Info, Status},
     dns::{self, DomainCache},
     engine::{FailureHandler, Statistics},
-    packet::{FlowKey, Packet, udp_reply},
+    packet::{FlowKey, Packet},
     rules::{self, Flow},
     socks,
+    udp::{self, Outgoing, Owner, Pool, SocketId},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -24,16 +25,12 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::AsyncReadExt,
     net::{TcpListener, TcpStream},
     runtime::Runtime,
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
     time::timeout,
 };
 
 const MAX_FLOWS: usize = 4096;
-const MAX_UDP_FLOWS: usize = 512;
-const UDP_IDLE: Duration = Duration::from_secs(90);
 type NatTable = Arc<Mutex<NatMaps>>;
 
 #[derive(Default)]
@@ -291,20 +288,6 @@ impl Decision {
                     .is_some_and(|n| n.active.load(Ordering::Relaxed)))
     }
 }
-struct Datagram {
-    payload: Vec<u8>,
-    address: Address,
-    _memory: OwnedSemaphorePermit,
-}
-struct UdpFlow {
-    sender: mpsc::Sender<Datagram>,
-    task: tokio::task::JoinHandle<()>,
-}
-impl Drop for UdpFlow {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
 
 pub struct Network {
     runtime: Option<Runtime>,
@@ -455,7 +438,28 @@ fn capture(context: CaptureContext) -> Result<()> {
     } = context;
     let mut buffer = vec![0u8; 65575];
     let mut decisions: HashMap<(FlowKey, bool), Decision> = HashMap::new();
-    let mut udp: HashMap<FlowKey, UdpFlow> = HashMap::new();
+    let inject_device = device.clone();
+    let socket_generations = generations.clone();
+    let mut udp = Pool::new(
+        udp::Context {
+            config: config.clone(),
+            domains: domains.clone(),
+            stats: stats.clone(),
+            inject: Arc::new(move |bytes, address| inject_device.inject(bytes, address)),
+            valid: Arc::new(move |socket, birth| {
+                socket_generations.valid(
+                    socket.pid,
+                    FlowKey {
+                        source: socket.local,
+                        destination: socket.local,
+                    },
+                    birth,
+                    socket.generation,
+                )
+            }),
+        },
+        runtime.clone(),
+    );
     let mut dns_flows = HashMap::<(FlowKey, bool), Instant>::new();
     let mut tcp_dns = HashMap::<FlowKey, dns::TcpDnsBuffer>::new();
     let has_domain_rules = config
@@ -465,7 +469,6 @@ fn capture(context: CaptureContext) -> Result<()> {
     let mut synthetic = 10000u16;
     let mut cleanup = Instant::now();
     let mut last_lookup_error = Instant::now() - Duration::from_secs(10);
-    let queue_memory = Arc::new(Semaphore::new(4 * 1024 * 1024));
     loop {
         let (length, mut address) = match device.recv(&mut buffer) {
             Ok(value) => value,
@@ -505,6 +508,14 @@ fn capture(context: CaptureContext) -> Result<()> {
                     }
                 }
             }
+            device.send(bytes, &address)?;
+            continue;
+        }
+        if packet.is_dhcp_client_request(bytes) {
+            // Interface configuration must work before the client has an IP or
+            // an IP Helper owner, even when the ordinary flow cache is full.
+            // Keep this narrow: validated DHCP client messages, never all LAN,
+            // all System traffic, or every UDP datagram to a DHCP server port.
             device.send(bytes, &address)?;
             continue;
         }
@@ -548,17 +559,20 @@ fn capture(context: CaptureContext) -> Result<()> {
             table.cleanup(now);
             decisions.retain(|(flow, tcp), decision| decision.keep(*flow, *tcp, &table, now));
             drop(table);
-            udp.retain(|_, flow| !flow.sender.is_closed());
+            udp.cleanup();
             dns_flows.retain(|_, last| now.duration_since(*last) < Duration::from_secs(120));
             tcp_dns.retain(|flow, _| dns_flows.contains_key(&(*flow, true)));
             cleanup = now;
         }
         let tcp = packet.protocol == Protocol::Tcp;
         let key = (packet.flow, tcp);
-        let stamp = if tcp {
+        let mut stamp = if tcp {
             (0, 0, 0)
         } else {
-            generations.stamp(packet.flow, false)
+            decisions
+                .get(&key)
+                .map(|d| generations.stamp(d.owner.pid, packet.flow, false))
+                .unwrap_or((0, 0, 0))
         };
         if decisions.get(&key).is_some_and(|d| {
             d.stamp != stamp
@@ -569,7 +583,7 @@ fn capture(context: CaptureContext) -> Result<()> {
             {
                 record.finish(Status::Closed, "Новый экземпляр соединения");
             }
-            udp.remove(&packet.flow);
+            udp.cleanup();
             let mut table = nat.lock().unwrap();
             if let Some(reflected) = table.original.remove(&packet.flow) {
                 table.reflected.remove(&reflected);
@@ -579,7 +593,6 @@ fn capture(context: CaptureContext) -> Result<()> {
             d.last = now;
             if !tcp
                 && has_domain_rules
-                && d.action == Action::Direct
                 && d.owner.pid != std::process::id()
                 && now.duration_since(d.dns_check) >= Duration::from_secs(1)
             {
@@ -596,7 +609,14 @@ fn capture(context: CaptureContext) -> Result<()> {
                     },
                 );
                 if d.action != action {
-                    udp.remove(&packet.flow);
+                    udp.forget(
+                        SocketId {
+                            pid: d.owner.pid,
+                            local: packet.flow.source,
+                            generation: d.stamp,
+                        },
+                        packet.flow.destination,
+                    );
                     let route = match &action {
                         Action::Direct => "Напрямую".into(),
                         Action::Block => "Блокировка".into(),
@@ -612,24 +632,23 @@ fn capture(context: CaptureContext) -> Result<()> {
                         format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
                     );
                     if let Some(old) = d.record.take() {
-                        let mut info = old.info();
                         old.finish(Status::Closed, "Маршрут изменён");
-                        info.route = route;
-                        info.detail = format!("UDP · маршрут уточнён по DNS: {}", names.join(", "));
-                        info.proxied = matches!(action, Action::Proxy(_));
-                        info.stamp = address.timestamp();
-                        if action == Action::Block {
-                            stats.activity.completed(info, Status::Blocked);
-                        } else {
-                            d.record = stats.activity.start(
-                                info,
-                                if action == Action::Direct {
-                                    Status::Active
-                                } else {
-                                    Status::Connecting
-                                },
-                            );
-                        }
+                    }
+                    let info = Info {
+                        pid: d.owner.pid,
+                        process: d.owner.name.clone(),
+                        source: packet.flow.source,
+                        destination: packet.flow.destination,
+                        protocol: Protocol::Udp,
+                        route,
+                        detail: format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
+                        proxied: matches!(action, Action::Proxy(_)),
+                        stamp: address.timestamp(),
+                    };
+                    if action == Action::Block {
+                        stats.activity.completed(info, Status::Blocked);
+                    } else if action == Action::Direct {
+                        d.record = stats.activity.start(info, Status::Active);
                     }
                     d.action = action;
                 }
@@ -660,6 +679,9 @@ fn capture(context: CaptureContext) -> Result<()> {
                 }
                 continue;
             };
+            if !tcp {
+                stamp = generations.stamp(owner.pid, packet.flow, false);
+            }
             let action = if owner.pid == std::process::id() {
                 Action::Direct
             } else {
@@ -715,7 +737,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 };
                 if action == Action::Block {
                     stats.activity.completed(info, Status::Blocked);
-                } else {
+                } else if tcp || action == Action::Direct {
                     record = stats.activity.start(
                         info,
                         if action == Action::Direct && (!tcp || !packet.is_syn()) {
@@ -846,64 +868,25 @@ fn capture(context: CaptureContext) -> Result<()> {
                 let _ = id;
             }
             Action::Proxy(id) => {
-                if udp.get(&packet.flow).is_some_and(|s| s.sender.is_closed()) {
-                    udp.remove(&packet.flow);
-                }
-                if !udp.contains_key(&packet.flow) {
-                    if udp.len() >= MAX_UDP_FLOWS {
-                        if let Some(c) = decisions.get(&key).and_then(|d| d.record.as_ref()) {
-                            c.finish(Status::Failed, "Лимит UDP-сессий");
-                        }
-                        stats.blocked.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    }
-                    let record = decisions.get_mut(&key).and_then(|decision| {
-                        if let Some(old) = &decision.record
-                            && old.status().finished()
-                        {
-                            let mut info = old.info();
-                            info.stamp = address.timestamp();
-                            decision.record = stats.activity.start(info, Status::Connecting);
-                        }
-                        decision.record.clone()
-                    });
-                    let (tx, rx) = mpsc::channel(16);
-                    let task = runtime.spawn(udp_session(
-                        packet.flow,
-                        id,
-                        rx,
-                        UdpSessionContext {
-                            config: config.clone(),
-                            device: device.clone(),
-                            stats: stats.clone(),
-                            process: decisions
-                                .get(&key)
-                                .map(|decision| decision.owner.name.clone())
-                                .unwrap_or_else(|| "Неизвестный процесс".into()),
-                            record,
+                if let Some(decision) = decisions.get(&key) {
+                    let _ = udp.send(
+                        SocketId {
+                            pid: decision.owner.pid,
+                            local: packet.flow.source,
+                            generation: decision.stamp,
                         },
-                    ));
-                    udp.insert(packet.flow, UdpFlow { sender: tx, task });
-                }
-                if let Some(sender) = udp.get(&packet.flow) {
-                    let Ok(memory) = queue_memory
-                        .clone()
-                        .try_acquire_many_owned(packet.payload(bytes).len() as u32)
-                    else {
-                        stats.blocked.fetch_add(1, Ordering::Relaxed);
-                        continue;
-                    };
-                    if sender
-                        .sender
-                        .try_send(Datagram {
-                            payload: packet.payload(bytes).to_vec(),
+                        Owner {
+                            name: &decision.owner.name,
+                            path: &decision.owner.path,
+                        },
+                        &id,
+                        Outgoing {
+                            destination: packet.flow.destination,
+                            payload: packet.payload(bytes),
                             address,
-                            _memory: memory,
-                        })
-                        .is_err()
-                    {
-                        stats.blocked.fetch_add(1, Ordering::Relaxed);
-                    }
+                            stamp: address.timestamp(),
+                        },
+                    );
                 }
             }
         }
@@ -988,72 +971,4 @@ async fn tcp_session(
         c.finish(Status::Failed, &format!("{error:#}"));
     }
     result
-}
-
-struct UdpSessionContext {
-    config: Arc<Config>,
-    device: Arc<Device>,
-    stats: Arc<Statistics>,
-    process: String,
-    record: Option<Connection>,
-}
-async fn udp_session(
-    flow: FlowKey,
-    id: String,
-    mut rx: mpsc::Receiver<Datagram>,
-    context: UdpSessionContext,
-) {
-    let UdpSessionContext {
-        config,
-        device,
-        stats,
-        process,
-        record,
-    } = context;
-    let _session = record.as_ref().map(Connection::session);
-    let result = async {
-        let association = socks::associate(config.proxy(&id)?).await?;
-        if let Some(c)=&record {c.active();}
-        let guard = stats.connection(&process);
-        let mut reply_buffer = vec![0; 65535];
-        let mut control = association.control;
-        let mut control_buffer = [0; 1];
-        let mut last_address = None;
-        loop { tokio::select! {
-            query = timeout(UDP_IDLE, rx.recv()) => {
-                let Ok(Some(query)) = query else { break; };
-                let mut packet = vec![0, 0, 0];
-                socks::encode_address(flow.destination, &mut packet);
-                packet.extend_from_slice(&query.payload);
-                association.socket.send(&packet).await?;
-                stats.uploaded.fetch_add(query.payload.len() as u64, Ordering::Relaxed);
-                guard.process.uploaded.fetch_add(query.payload.len() as u64, Ordering::Relaxed);
-                last_address = Some(query.address);
-            },
-            reply = association.socket.recv(&mut reply_buffer) => {
-                let len = reply?;
-                let (source, payload) = socks::udp_payload(&reply_buffer[..len])?;
-                ensure!(source == flow.destination, "UDP relay вернул ответ от неожиданного узла");
-                if let Some(address) = last_address {
-                    device.inject(udp_reply(flow, payload)?, address)?;
-                    stats.downloaded.fetch_add(payload.len() as u64, Ordering::Relaxed);
-                    guard.process.downloaded.fetch_add(payload.len() as u64, Ordering::Relaxed);
-                }
-            },
-            _ = control.read(&mut control_buffer) => { anyhow::bail!("SOCKS5-сервер закрыл UDP ASSOCIATE"); }
-        }}
-        Ok::<_, anyhow::Error>(())
-    }.await;
-    if let Err(error) = result {
-        if let Some(c) = &record {
-            c.finish(Status::Failed, &format!("{error:#}"));
-        }
-        stats.log(
-            process,
-            flow.destination.to_string(),
-            "Ошибка",
-            format!("{error:#}"),
-        );
-        stats.blocked.fetch_add(1, Ordering::Relaxed);
-    }
 }

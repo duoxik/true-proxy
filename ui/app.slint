@@ -260,6 +260,7 @@ export component MainWindow inherits Window {
     in-out property <int> form-action: 0;
     in-out property <int> form-proxy: 0;
     in-out property <bool> form-enabled: true;
+    in-out property <bool> form-prepend-rule: false;
     in-out property <int> fallback-action: 0;
     in-out property <int> fallback-proxy: 0;
     callback toggle;
@@ -272,6 +273,7 @@ export component MainWindow inherits Window {
     callback proxy-form-edited;
     callback add-application(int);
     callback add-rule;
+    callback add-local-rule;
     callback edit-rule(string);
     callback save-rule;
     callback delete-rule(string);
@@ -394,7 +396,10 @@ export component MainWindow inherits Window {
             } }
 
             if root.page == 1: VerticalLayout { spacing: 14px;
-                HorizontalLayout { height: 40px; alignment: end; padding-right: Theme.scroll-gutter; ActionButton { label: "+ Создать правило"; primary: true; clicked => { root.add-rule(); } } }
+                HorizontalLayout { height: 40px; alignment: end; spacing: 10px; padding-right: Theme.scroll-gutter;
+                    ActionButton { label: "Локальная сеть"; enabled: !root.busy; clicked => { root.add-local-rule(); } }
+                    ActionButton { label: "+ Создать правило"; primary: true; clicked => { root.add-rule(); } }
+                }
                 rule-list := ScrollView {
                     horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                     content-height: max(self.visible-height, rules-content.preferred-height);

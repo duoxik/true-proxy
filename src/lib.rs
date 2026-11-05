@@ -10,4 +10,6 @@ pub mod profile;
 pub mod rules;
 pub mod socks;
 pub mod transfer;
+#[cfg(any(windows, test))]
+mod udp;
 pub mod updates;

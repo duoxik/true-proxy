@@ -238,6 +238,19 @@ mod ui_tests {
         assert_eq!(ui.get_dialog(), 0);
         click(&ui, "Правила");
         assert_eq!(ui.get_page(), 1);
+        let local_rules = Rc::new(Cell::new(0));
+        let count = local_rules.clone();
+        ui.on_add_local_rule(move || count.set(count.get() + 1));
+        click(&ui, "Локальная сеть");
+        assert_eq!(
+            local_rules.get(),
+            1,
+            "The first click must open the local route preset"
+        );
+        ui.set_busy(true);
+        click(&ui, "Локальная сеть");
+        assert_eq!(local_rules.get(), 1);
+        ui.set_busy(false);
         click(&ui, "Прокси");
         assert_eq!(ui.get_page(), 2);
         click(&ui, "Обзор");

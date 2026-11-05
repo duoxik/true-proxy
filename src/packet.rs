@@ -3,6 +3,8 @@ use crate::config::Protocol;
 use anyhow::{Result, bail, ensure};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+mod dhcp;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FlowKey {
     pub source: SocketAddr,
@@ -127,6 +129,12 @@ impl Packet {
     }
     pub fn is_syn(&self) -> bool {
         self.tcp_flags & 0x12 == 0x02
+    }
+
+    /// DHCP configures the interface itself, before an application owner may
+    /// appear in IP Helper. Recognize complete client messages, not just ports.
+    pub fn is_dhcp_client_request(&self, bytes: &[u8]) -> bool {
+        dhcp::client_request(self, bytes)
     }
 
     pub fn reflect_tcp(&self, bytes: &mut [u8], source_port: u16, destination_port: u16) {
