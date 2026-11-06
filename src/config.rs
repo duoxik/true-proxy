@@ -130,6 +130,11 @@ pub struct Config {
     pub proxies: Vec<Proxy>,
     pub rules: Vec<Rule>,
     pub default_action: Action,
+    #[serde(
+        default = "crate::local_network::default_networks",
+        skip_serializing_if = "crate::local_network::is_default"
+    )]
+    pub local_networks: Vec<IpNet>,
     // Read legacy profiles without retaining obsolete DNS proxy controls on save.
     #[serde(default, skip_serializing)]
     pub dns: DnsSettings,
@@ -147,6 +152,7 @@ impl Default for Config {
             proxies: vec![],
             rules: vec![],
             default_action: Action::Direct,
+            local_networks: crate::local_network::default_networks(),
             dns: DnsSettings::default(),
         }
     }
@@ -163,6 +169,17 @@ impl Config {
             self.proxies.len() <= 64 && self.rules.len() <= 1024,
             "Too many proxies or rules"
         );
+        ensure!(
+            (1..=64).contains(&self.local_networks.len()),
+            "Enter 1–64 local network CIDRs"
+        );
+        let mut networks = HashSet::new();
+        for network in &self.local_networks {
+            ensure!(
+                *network == network.trunc() && networks.insert(network),
+                "Enter distinct canonical local network CIDRs"
+            );
+        }
         let mut ids = HashSet::new();
         for proxy in &self.proxies {
             ensure!(
@@ -355,6 +372,39 @@ mod tests {
         let c = Config::default();
         c.validate().unwrap();
         assert!(c.proxies.is_empty());
+    }
+    #[test]
+    fn local_network_ranges_default_for_existing_profiles_and_round_trip_when_edited() {
+        let original = serde_json::json!({
+            "version": 2,
+            "proxies": [],
+            "rules": [],
+            "default_action": {"kind": "direct"}
+        });
+        let mut config: Config = serde_json::from_value(original).unwrap();
+        assert_eq!(
+            config.local_networks,
+            crate::local_network::default_networks()
+        );
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("local_networks")
+                .is_none()
+        );
+        config.local_networks = ["192.0.2.0/24", "2001:db8::/32"]
+            .map(|network| network.parse().unwrap())
+            .into();
+        config.validate().unwrap();
+        let reloaded: Config =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(reloaded.local_networks, config.local_networks);
+        config.local_networks.push("192.0.2.0/24".parse().unwrap());
+        assert!(config.validate().is_err());
+        config.local_networks = vec!["192.0.2.1/24".parse().unwrap()];
+        assert!(config.validate().is_err());
+        config.local_networks.clear();
+        assert!(config.validate().is_err());
     }
     #[test]
     fn validates_ports() {

@@ -7,13 +7,14 @@ use crate::{
     config::{Action, Config, Protocol},
     connections::{Connection, Info, Status},
     dns::{self, DomainCache},
-    engine::{FailureHandler, Statistics},
+    engine::{FailureHandler, LogLevel, LogSource, Statistics},
     packet::{FlowKey, Packet},
     rules::{self, Flow},
     socks,
     udp::{self, Outgoing, Owner, Pool, SocketId},
 };
 use anyhow::{Context, Result};
+use ipnet::IpNet;
 use std::{
     collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
@@ -45,10 +46,11 @@ struct NatMaps {
 mod tests {
     use super::*;
     #[test]
-    fn fixed_local_admission_preserves_tracking_and_survives_unknown_owner_or_full_cache() {
-        let mut misses = LocalAttributionMisses::default();
+    fn configured_local_admission_preserves_tracking_and_survives_unknown_owner_or_full_cache() {
+        let networks = ["198.51.100.0/24", "2001:db8:10::/48"].map(|range| range.parse().unwrap());
+        let mut misses = LocalAttributionMisses::new(&networks);
         let now = Instant::now();
-        for destination in ["192.168.50.1:445", "[fd00::1]:443"] {
+        for destination in ["198.51.100.1:445", "[2001:db8:10::1]:443"] {
             let source = if destination.starts_with('[') {
                 "[2001:db8::30]:5000"
             } else {
@@ -73,18 +75,25 @@ mod tests {
                 ),
                 "Known local flows retain normal connection tracking"
             );
-            assert!(matches!(
-                misses.classify(flow, true, false, now, |_| None),
-                NewFlowOwner::FixedLocal
-            ));
-            assert!(matches!(
-                misses.classify(flow, true, true, now, |_| panic!(
-                    "A full cache must not query ownership"
-                )),
-                NewFlowOwner::FixedLocal
-            ));
+            for tcp in [true, false] {
+                assert!(matches!(
+                    misses.classify(flow, tcp, false, now, |_| None),
+                    NewFlowOwner::LocalDirect
+                ));
+                assert!(matches!(
+                    misses.classify(flow, tcp, true, now, |_| panic!(
+                        "A full cache must not query ownership"
+                    )),
+                    NewFlowOwner::LocalDirect
+                ));
+            }
         }
-        for destination in ["203.0.113.1:445", "[2001:db8::1]:443"] {
+        for destination in [
+            "192.168.50.1:445",
+            "[fd00::1]:443",
+            "203.0.113.1:445",
+            "[2001:db8::1]:443",
+        ] {
             let flow = FlowKey {
                 source: "192.0.2.30:5000".parse().unwrap(),
                 destination: destination.parse().unwrap(),
@@ -118,7 +127,8 @@ mod tests {
 
     #[test]
     fn local_attribution_misses_skip_repeated_queries_until_ttl_then_restore_tracking() {
-        let mut misses = LocalAttributionMisses::default();
+        let networks = crate::local_network::default_networks();
+        let mut misses = LocalAttributionMisses::new(&networks);
         let now = Instant::now();
         let flow = FlowKey {
             source: "192.0.2.30:5000".parse().unwrap(),
@@ -129,14 +139,14 @@ mod tests {
                 assert_eq!(attempts, 1);
                 None
             }),
-            NewFlowOwner::FixedLocal
+            NewFlowOwner::LocalDirect
         ));
         for _ in 0..100 {
             assert!(matches!(
                 misses.classify(flow, true, false, now + Duration::from_secs(1), |_| panic!(
                     "Repeated local packets must not query IP Helper"
                 )),
-                NewFlowOwner::FixedLocal
+                NewFlowOwner::LocalDirect
             ));
         }
         // TCP and UDP sharing an endpoint/peer have independent attribution.
@@ -145,7 +155,7 @@ mod tests {
                 assert_eq!(attempts, 1);
                 None
             }),
-            NewFlowOwner::FixedLocal
+            NewFlowOwner::LocalDirect
         ));
         let retried = misses.classify(flow, true, false, now + LOCAL_MISS_TTL, |attempts| {
             assert_eq!(attempts, 1);
@@ -164,7 +174,8 @@ mod tests {
 
     #[test]
     fn local_attribution_miss_cache_is_bounded_expires_and_never_caches_public_addresses() {
-        let mut misses = LocalAttributionMisses::default();
+        let networks = crate::local_network::default_networks();
+        let mut misses = LocalAttributionMisses::new(&networks);
         let now = Instant::now();
         let mut flow = FlowKey {
             source: "192.0.2.30:5000".parse().unwrap(),
@@ -174,7 +185,7 @@ mod tests {
             flow.source.set_port(port);
             assert!(matches!(
                 misses.classify(flow, true, false, now, |_| None),
-                NewFlowOwner::FixedLocal
+                NewFlowOwner::LocalDirect
             ));
             assert!(misses.expires.len() <= MAX_LOCAL_MISSES);
         }
@@ -183,12 +194,12 @@ mod tests {
             misses.classify(flow, true, false, now, |_| panic!(
                 "Most recent miss stays cached"
             )),
-            NewFlowOwner::FixedLocal
+            NewFlowOwner::LocalDirect
         ));
         flow.source.set_port(20000);
         assert!(matches!(
             misses.classify(flow, true, false, now + LOCAL_MISS_TTL, |_| None),
-            NewFlowOwner::FixedLocal
+            NewFlowOwner::LocalDirect
         ));
         assert_eq!(misses.expires.len(), 1);
         flow.destination = "203.0.113.1:445".parse().unwrap();
@@ -206,7 +217,7 @@ mod tests {
             misses
                 .expires
                 .keys()
-                .all(|(flow, _)| crate::local_network::contains(flow.destination.ip()))
+                .all(|(flow, _)| crate::local_network::contains(&networks, flow.destination.ip()))
         );
     }
 
@@ -520,17 +531,24 @@ impl Decision {
 
 enum NewFlowOwner {
     Identified(process::Process),
-    FixedLocal,
+    LocalDirect,
     Capacity,
     Unknown,
 }
 
-#[derive(Default)]
-struct LocalAttributionMisses {
+struct LocalAttributionMisses<'a> {
+    networks: &'a [IpNet],
     expires: HashMap<(FlowKey, bool), Instant>,
 }
 
-impl LocalAttributionMisses {
+impl<'a> LocalAttributionMisses<'a> {
+    fn new(networks: &'a [IpNet]) -> Self {
+        Self {
+            networks,
+            expires: HashMap::new(),
+        }
+    }
+
     /// Preserve normal tracking when possible. A short, bounded negative cache
     /// prevents unowned local UDP from querying IP Helper on every datagram.
     fn classify(
@@ -541,10 +559,10 @@ impl LocalAttributionMisses {
         now: Instant,
         identify: impl FnOnce(usize) -> Option<process::Process>,
     ) -> NewFlowOwner {
-        let local = crate::local_network::contains(flow.destination.ip());
+        let local = crate::local_network::contains(self.networks, flow.destination.ip());
         if cache_full {
             return if local {
-                NewFlowOwner::FixedLocal
+                NewFlowOwner::LocalDirect
             } else {
                 NewFlowOwner::Capacity
             };
@@ -552,7 +570,7 @@ impl LocalAttributionMisses {
         let key = (flow, tcp);
         if local {
             if self.expires.get(&key).is_some_and(|expires| now < *expires) {
-                return NewFlowOwner::FixedLocal;
+                return NewFlowOwner::LocalDirect;
             }
             self.expires.remove(&key);
         }
@@ -574,7 +592,7 @@ impl LocalAttributionMisses {
                     }
                 }
                 self.expires.insert(key, now + LOCAL_MISS_TTL);
-                NewFlowOwner::FixedLocal
+                NewFlowOwner::LocalDirect
             }
             None => NewFlowOwner::Unknown,
         }
@@ -672,7 +690,14 @@ impl Network {
                 if let Err(error) = result
                     && !worker_stopping.load(Ordering::Acquire)
                 {
-                    worker_stats.log("System", "", "Error", format!("{error:#}"));
+                    worker_stats.log(
+                        LogSource::Backend,
+                        LogLevel::Error,
+                        "",
+                        "",
+                        "",
+                        format!("{error:#}"),
+                    );
                     failure(format!("Traffic interception stopped: {error:#}"));
                 }
             })?;
@@ -730,7 +755,7 @@ fn capture(context: CaptureContext) -> Result<()> {
     } = context;
     let mut buffer = vec![0u8; 65575];
     let mut decisions: HashMap<(FlowKey, bool), Decision> = HashMap::new();
-    let mut local_misses = LocalAttributionMisses::default();
+    let mut local_misses = LocalAttributionMisses::new(&config.local_networks);
     let inject_device = device.clone();
     let socket_generations = generations.clone();
     let mut udp = Pool::new(
@@ -932,7 +957,8 @@ fn capture(context: CaptureContext) -> Result<()> {
                         },
                         packet.flow.destination,
                     );
-                    if stats.activity.tracking() {
+                    let tracking = stats.activity.tracking();
+                    if tracking || stats.log_tracking() {
                         let route = match &action {
                             Action::Direct => "Direct".into(),
                             Action::Block => "Block".into(),
@@ -941,30 +967,35 @@ fn capture(context: CaptureContext) -> Result<()> {
                                 .map(|proxy| proxy.name.clone())
                                 .unwrap_or_else(|_| "Proxy not found".into()),
                         };
+                        let detail = format!("UDP · Route updated using DNS: {}", names.join(", "));
                         stats.log(
+                            LogSource::Connections,
+                            LogLevel::Verbose,
                             &d.owner.name,
                             packet.flow.destination.to_string(),
-                            route.clone(),
-                            format!("UDP · Route updated using DNS: {}", names.join(", ")),
+                            &route,
+                            &detail,
                         );
-                        if let Some(old) = d.record.take() {
-                            old.finish(Status::Closed, "Route changed");
-                        }
-                        let info = Info {
-                            pid: d.owner.pid,
-                            process: d.owner.name.clone(),
-                            source: packet.flow.source,
-                            destination: packet.flow.destination,
-                            protocol: Protocol::Udp,
-                            route,
-                            detail: format!("UDP · Route updated using DNS: {}", names.join(", ")),
-                            action: action.clone(),
-                            stamp: address.timestamp(),
-                        };
-                        if action == Action::Block {
-                            stats.activity.completed(info, Status::Blocked);
-                        } else if action == Action::Direct {
-                            d.record = stats.activity.start(info, Status::Active);
+                        if tracking {
+                            if let Some(old) = d.record.take() {
+                                old.finish(Status::Closed, "Route changed");
+                            }
+                            let info = Info {
+                                pid: d.owner.pid,
+                                process: d.owner.name.clone(),
+                                source: packet.flow.source,
+                                destination: packet.flow.destination,
+                                protocol: Protocol::Udp,
+                                route,
+                                detail,
+                                action: action.clone(),
+                                stamp: address.timestamp(),
+                            };
+                            if action == Action::Block {
+                                stats.activity.completed(info, Status::Blocked);
+                            } else if action == Action::Direct {
+                                d.record = stats.activity.start(info, Status::Active);
+                            }
                         }
                     }
                     d.action = action;
@@ -988,7 +1019,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 },
             ) {
                 NewFlowOwner::Identified(owner) => owner,
-                NewFlowOwner::FixedLocal => {
+                NewFlowOwner::LocalDirect => {
                     device.send(bytes, &address)?;
                     continue;
                 }
@@ -1000,6 +1031,8 @@ fn capture(context: CaptureContext) -> Result<()> {
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     if last_lookup_error.elapsed() > Duration::from_secs(5) {
                         stats.log(
+                            LogSource::Connections,
+                            LogLevel::Error,
                             "Unknown process",
                             packet.flow.destination.to_string(),
                             "Block",
@@ -1029,7 +1062,8 @@ fn capture(context: CaptureContext) -> Result<()> {
                 )
             };
             let mut record = None;
-            if owner.pid != std::process::id() && stats.activity.tracking() {
+            let tracking = stats.activity.tracking();
+            if owner.pid != std::process::id() && (tracking || stats.log_tracking()) {
                 let route = match &action {
                     Action::Direct => "Direct".into(),
                     Action::Block => "Block".into(),
@@ -1050,33 +1084,37 @@ fn capture(context: CaptureContext) -> Result<()> {
                     },
                 );
                 stats.log(
+                    LogSource::Connections,
+                    LogLevel::Info,
                     &owner.name,
                     packet.flow.destination.to_string(),
-                    route.clone(),
-                    explanation.clone(),
+                    &route,
+                    &explanation,
                 );
-                let info = Info {
-                    pid: owner.pid,
-                    process: owner.name.clone(),
-                    source: packet.flow.source,
-                    destination: packet.flow.destination,
-                    protocol: packet.protocol,
-                    route,
-                    detail: explanation,
-                    action: action.clone(),
-                    stamp: address.timestamp(),
-                };
-                if action == Action::Block {
-                    stats.activity.completed(info, Status::Blocked);
-                } else if tcp || action == Action::Direct {
-                    record = stats.activity.start(
-                        info,
-                        if action == Action::Direct && (!tcp || !packet.is_syn()) {
-                            Status::Active
-                        } else {
-                            Status::Connecting
-                        },
-                    );
+                if tracking {
+                    let info = Info {
+                        pid: owner.pid,
+                        process: owner.name.clone(),
+                        source: packet.flow.source,
+                        destination: packet.flow.destination,
+                        protocol: packet.protocol,
+                        route,
+                        detail: explanation,
+                        action: action.clone(),
+                        stamp: address.timestamp(),
+                    };
+                    if action == Action::Block {
+                        stats.activity.completed(info, Status::Blocked);
+                    } else if tcp || action == Action::Direct {
+                        record = stats.activity.start(
+                            info,
+                            if action == Action::Direct && (!tcp || !packet.is_syn()) {
+                                Status::Active
+                            } else {
+                                Status::Connecting
+                            },
+                        );
+                    }
                 }
             }
             if let Action::Proxy(id) = &action
@@ -1262,10 +1300,12 @@ async fn accept_loop(
                 let result = tcp_session(stream, &mapping, &config, &stats).await;
                 if let Err(error) = result {
                     stats.log(
+                        LogSource::Connections,
+                        LogLevel::Error,
                         mapping.process,
                         mapping.original.destination.to_string(),
-                        "Error",
-                        format!("{error:#}"),
+                        "",
+                        format!("TCP · {error:#}"),
                     );
                 }
             });

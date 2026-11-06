@@ -1,11 +1,13 @@
 import { DialogHeader, DialogActions } from "common.slint";
-import { ScrollView, Palette } from "std-widgets.slint";
+import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
-import { Theme, UiIcon, ActionButton, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption, ConnectionFilterRow } from "common.slint";
-export { ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption, ConnectionFilterRow }
-import { ConnectionsWindow } from "connections.slint";
-export { ConnectionsWindow }
+import { Theme, UiIcon, ActionButton, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption } from "common.slint";
+export { ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption }
+import { ConnectionsView, ConnectionMonitor } from "connections.slint";
+export { ConnectionMonitor }
+import { LogsView, TechnicalLogs, TechnicalLogRow } from "logs.slint";
+export { TechnicalLogs, TechnicalLogRow }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -42,10 +44,11 @@ component RuleSwitch inherits Rectangle {
     in property <bool> checked;
     in property <bool> enabled: true;
     in property <string> label;
+    in property <color> checked-color: Theme.primary;
     callback toggled;
     width: 44px; height: 38px;
     opacity: root.enabled ? 1 : 0.45;
-    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked ? Theme.primary : Theme.switch-off;
+    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked ? root.checked-color : Theme.switch-off;
         border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
         Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: Theme.primary-text; animate x { duration: 100ms; } }
     }
@@ -199,14 +202,18 @@ component StatCard inherits Rectangle {
     in property <bool> transfer;
     in property <string> uploaded;
     in property <string> downloaded;
+    in property <string> upload-rate;
+    in property <string> download-rate;
+    in property <float> upload-share;
+    in property <bool> has-transfer;
     min-width: 0px;
     preferred-width: 0px;
-    horizontal-stretch: 1;
+    horizontal-stretch: root.transfer ? 1.35 : 1;
     background: Theme.surface;
     border-radius: Theme.radius-medium;
     border-width: 1px;
     border-color: Theme.border;
-    Rectangle {
+    if !root.transfer: Rectangle {
         x: 0px;
         y: 12px;
         width: 4px;
@@ -216,15 +223,46 @@ component StatCard inherits Rectangle {
     }
     VerticalLayout {
         padding: 13px;
-        padding-left: 16px;
+        padding-left: root.transfer ? 13px : 16px;
         spacing: 5px;
         alignment: start;
         Text { text: root.label; font-size: 10px; font-weight: 600; color: Theme.secondary; overflow: elide; min-width: 0px; }
         if !root.transfer: Text { text: root.value; font-size: 23px; font-weight: 700; color: Theme.text; overflow: elide; min-width: 0px; }
         if root.transfer: VerticalLayout {
-            spacing: 2px;
-            Text { text: "↑ " + root.uploaded; font-size: 14px; font-weight: 600; color: Theme.success; overflow: elide; min-width: 0px; }
-            Text { text: "↓ " + root.downloaded; font-size: 14px; font-weight: 600; color: Theme.blue; overflow: elide; min-width: 0px; }
+            spacing: 5px;
+            HorizontalLayout {
+                spacing: 6px;
+                VerticalLayout {
+                    spacing: 2px;
+                    min-width: 0px;
+                    preferred-width: 0px;
+                    horizontal-stretch: 1;
+                    Text { text: "↑ " + root.uploaded; font-size: 12px; font-weight: 700; color: Theme.success; overflow: elide; min-width: 0px; }
+                    Text { text: root.upload-rate; font-size: 10px; color: Theme.muted; overflow: elide; min-width: 0px; }
+                }
+                Rectangle { width: 1px; background: Theme.border; }
+                VerticalLayout {
+                    spacing: 2px;
+                    min-width: 0px;
+                    preferred-width: 0px;
+                    horizontal-stretch: 1;
+                    Text { text: "↓ " + root.downloaded; font-size: 12px; font-weight: 700; color: Theme.blue; overflow: elide; min-width: 0px; horizontal-alignment: right; }
+                    Text { text: root.download-rate; font-size: 10px; color: Theme.muted; overflow: elide; min-width: 0px; horizontal-alignment: right; }
+                }
+            }
+            Rectangle {
+                height: 6px;
+                border-radius: 3px;
+                clip: true;
+                background: root.has-transfer ? Theme.blue : Theme.border;
+                if root.has-transfer: Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width * min(max(root.upload-share, 0), 1);
+                    height: parent.height;
+                    background: Theme.success;
+                }
+            }
         }
         if root.note != "": Text { text: root.note; font-size: 11px; color: Theme.muted; overflow: elide; min-width: 0px; }
     }
@@ -241,14 +279,21 @@ component CountPill inherits Rectangle {
 
 component RouteBadge inherits Rectangle {
     in property <string> value;
-    width: 132px;
+    in property <string> icon;
+    in property <bool> compact;
+    private property <color> ink: root.value == "Direct" ? Theme.success : root.value == "Block" ? Theme.danger : Theme.accent;
+    width: root.compact ? min(210px, badge-text.preferred-width + 16px) : 132px;
     height: 26px;
     border-radius: Theme.radius-small;
     background: root.value == "Direct" ? Theme.success-soft : root.value == "Block" ? Theme.danger-soft : Theme.accent-soft;
-    Text {
-        x: 8px; width: parent.width - 16px;
+    if root.icon != "": UiIcon {
+        name: root.icon; ink: root.ink; x: 7px; y: (parent.height - self.height) / 2;
+        width: 15px; height: 15px;
+    }
+    badge-text := Text {
+        x: root.icon == "" ? 8px : 24px; width: parent.width - self.x - 8px;
         text: root.value;
-        color: root.value == "Direct" ? Theme.success : root.value == "Block" ? Theme.danger : Theme.accent;
+        color: root.ink;
         font-size: 11px;
         font-weight: 600;
         overflow: elide;
@@ -257,59 +302,363 @@ component RouteBadge inherits Rectangle {
     }
 }
 
-component ProxyPreview inherits Rectangle {
-    in property <ProxyRow> proxy;
-    min-width: 0px;
-    preferred-width: 0px;
-    horizontal-stretch: 1;
-    height: 70px;
-    border-radius: Theme.radius-small;
+component RulePriority inherits Rectangle {
+    in property <int> number;
+    width: 35px;
+    height: 36px;
+    Rectangle {
+        y: (parent.height - self.height) / 2;
+        height: 30px;
+        border-radius: Theme.radius-small;
+        border-width: 1px;
+        border-color: Theme.selection;
+        background: Theme.accent-soft;
+        Text {
+            text: "#" + root.number; color: Theme.accent; font-size: 12px; font-weight: 700;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+}
+
+component RuleCondition inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    height: 27px;
+    preferred-width: chip-text.preferred-width + 16px;
+    horizontal-stretch: 0;
+    border-radius: 8px;
     border-width: 1px;
     border-color: Theme.border;
     background: Theme.field;
+    chip-text := Text {
+        x: 8px; width: parent.width - 16px;
+        text: root.label + "  " + root.value;
+        color: Theme.secondary; font-size: 11px; font-weight: 500;
+        vertical-alignment: center; overflow: elide;
+    }
+}
+
+component RuleCard inherits Rectangle {
+    in property <bool> enabled: true;
+    height: content.preferred-height;
+    min-width: 0px;
+    border-radius: Theme.radius-medium;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: root.enabled ? Theme.surface : Theme.field;
+    content := VerticalLayout {
+        padding: 12px;
+        spacing: 9px;
+        alignment: start;
+        @children
+    }
+}
+
+component ProxyPreview inherits Rectangle {
+    in property <ProxyRow> proxy;
+    private property <bool> measured: root.proxy.health == 2 && root.proxy.status != "";
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    height: 80px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: root.measured ? Theme.selection : Theme.border;
+    background: Theme.field;
+    if root.measured: Rectangle {
+        x: 5px;
+        y: 9px;
+        width: 3px;
+        height: parent.height - 18px;
+        border-radius: 2px;
+        background: Theme.success;
+    }
     HorizontalLayout {
-        padding: 10px;
+        padding: 9px;
+        padding-left: 15px;
         spacing: 10px;
         Rectangle {
-            width: 38px;
-            border-radius: Theme.radius-small;
-            background: Theme.accent-soft;
-            UiIcon { name: "server"; ink: Theme.accent; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+            width: 36px;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 36px;
+                border-radius: Theme.radius-small;
+                background: Theme.accent-soft;
+                UiIcon { name: "server"; ink: Theme.accent; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+            }
         }
-        VerticalLayout { alignment: center; spacing: 4px; min-width: 0px;
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            min-width: 0px;
             Text { text: root.proxy.name; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; min-width: 0px; }
-            Text { text: "SOCKS5  ·  " + root.proxy.address; color: Theme.secondary; font-size: 12px; overflow: elide; min-width: 0px; }
+            HorizontalLayout {
+                spacing: 7px;
+                RouteBadge { value: "SOCKS5"; width: 58px; height: 18px; }
+                Text {
+                    text: root.proxy.address;
+                    color: Theme.secondary;
+                    font-family: "Consolas";
+                    font-size: 11px;
+                    overflow: elide;
+                    min-width: 0px;
+                    vertical-alignment: center;
+                }
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text {
+                    text: "Latency  " + (root.measured ? root.proxy.status : "—");
+                    color: root.measured ? Theme.success : Theme.muted;
+                    font-size: 11px;
+                    horizontal-stretch: 0;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Location  " + (root.proxy.location == "" ? "—" : root.proxy.location);
+                    color: Theme.secondary;
+                    font-size: 11px;
+                    min-width: 0px;
+                    horizontal-stretch: 0;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
         }
     }
 }
 
 component RulePreview inherits Rectangle {
-    in property <string> name;
-    in property <string> route;
-    in property <bool> enabled: true;
+    in property <RuleRow> rule;
+    in property <string> name: root.rule.name;
+    in property <string> route: root.rule.route;
+    in property <bool> active: root.rule.enabled;
+    in property <bool> fixed-route: false;
+    in property <bool> busy: false;
+    callback toggled;
     min-width: 0px;
-    preferred-width: 0px;
-    horizontal-stretch: 1;
-    height: 72px;
+    height: 38px;
     border-radius: Theme.radius-small;
     border-width: 1px;
     border-color: Theme.border;
-    background: Theme.field;
-    VerticalLayout { padding: 9px; spacing: 5px;
-        HorizontalLayout { spacing: 8px;
-            Text { text: root.name; color: root.enabled ? Theme.text : Theme.muted; font-size: 13px; font-weight: 600; overflow: elide; min-width: 0px; }
-            Text { text: root.enabled ? "Enabled" : "Disabled"; color: root.enabled ? Theme.success : Theme.muted; font-size: 11px; horizontal-alignment: right; }
+    background: root.active ? Theme.surface : Theme.field;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+        Text {
+            text: root.name;
+            color: root.active ? Theme.text : Theme.muted;
+            font-size: 13px;
+            font-weight: 600;
+            overflow: elide;
+            width: 128px;
+            vertical-alignment: center;
         }
-        HorizontalLayout { alignment: start; RouteBadge { value: root.route; } }
+        Rectangle {
+            width: route-badge.width;
+            route-badge := RouteBadge {
+                value: root.route;
+                y: (parent.height - self.height) / 2;
+                compact: true;
+                height: 24px;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            width: 44px;
+            if root.fixed-route: Text {
+                text: "On"; color: Theme.success; font-size: 11px;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            if !root.fixed-route: RuleSwitch {
+                label: "Rule " + root.name;
+                checked: root.active;
+                checked-color: Theme.success;
+                enabled: !root.busy;
+                toggled => { root.toggled(); }
+            }
+        }
+    }
+}
+
+component ProxySelectionCheck inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked;
+    in property <bool> mixed;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    width: 22px;
+    height: 26px;
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checked: root.checked;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.toggled(!root.checked); } }
+    forward-focus: focus;
+
+    Rectangle {
+        x: 2px;
+        y: 4px;
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        border-width: 1px;
+        border-color: focus.has-focus ? Theme.accent-hover : root.checked || root.mixed ? Theme.primary : Theme.border;
+        background: root.checked || root.mixed ? Theme.primary : Theme.surface;
+        if root.checked: UiIcon {
+            name: "check"; ink: Theme.primary-text;
+            x: 2px; y: 2px; width: 14px; height: 14px;
+        }
+        if root.mixed: Rectangle {
+            x: 4px; y: 8px; width: 10px; height: 2px;
+            border-radius: 1px; background: Theme.primary-text;
+        }
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { focus.focus(); root.toggled(!root.checked); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggled(!root.checked);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+component ProxyTableColumns inherits HorizontalLayout {
+    in property <bool> heading;
+    in property <ProxyRow> proxy;
+    in property <bool> selected;
+    in property <bool> partially-selected;
+    in property <bool> selection-enabled: true;
+    in property <bool> test-enabled: true;
+    callback select(bool);
+    callback test-proxy;
+    callback edit-proxy;
+    callback delete-proxy;
+    padding-left: 16px;
+    padding-right: 16px;
+    spacing: 10px;
+
+    Rectangle {
+        width: 22px;
+        ProxySelectionCheck {
+            y: (parent.height - self.height) / 2;
+            label: root.heading ? "Select all proxies" : "Select proxy " + root.proxy.name;
+            checked: root.selected;
+            mixed: root.partially-selected;
+            enabled: root.selection-enabled;
+            toggled(value) => { root.select(value); }
+        }
+    }
+    Text {
+        text: root.heading ? "NAME" : root.proxy.name;
+        color: root.heading ? Theme.secondary : Theme.text;
+        font-size: root.heading ? 10px : 13px;
+        font-weight: 600;
+        min-width: 0px;
+        preferred-width: 0px;
+        horizontal-stretch: 1;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        width: 78px;
+        if root.heading: Text { width: parent.width; text: "PROTOCOL"; color: Theme.secondary; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        if !root.heading: RouteBadge { value: "SOCKS5"; width: 58px; height: 22px; y: (parent.height - self.height) / 2; }
+    }
+    Text {
+        text: root.heading ? "ADDRESS" : root.proxy.address;
+        color: Theme.secondary;
+        font-family: root.heading ? "Segoe UI" : "Consolas";
+        font-size: root.heading ? 10px : 12px;
+        font-weight: root.heading ? 600 : 400;
+        min-width: 0px;
+        preferred-width: 0px;
+        horizontal-stretch: 2;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.heading ? "LOCATION" : root.proxy.location == "" ? "—" : root.proxy.location;
+        color: root.heading || root.proxy.location != "" ? Theme.secondary : Theme.muted;
+        font-size: root.heading ? 10px : 12px;
+        font-weight: root.heading ? 600 : 400;
+        min-width: 0px;
+        preferred-width: 0px;
+        horizontal-stretch: 1.2;
+        overflow: elide;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        width: 76px;
+        if root.heading: Text { width: parent.width; text: "LATENCY"; color: Theme.secondary; font-size: 10px; font-weight: 600; vertical-alignment: center; }
+        if !root.heading: HorizontalLayout {
+            spacing: 5px;
+            if root.proxy.health == 2 && root.proxy.status != "": Rectangle {
+                width: 6px;
+                Rectangle { y: (parent.height - 6px) / 2; width: 6px; height: 6px; border-radius: 3px; background: Theme.success; }
+            }
+            Text {
+                text: root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "—";
+                color: root.proxy.health == 2 && root.proxy.status != "" ? Theme.success : Theme.muted;
+                font-size: 12px;
+                overflow: elide;
+                min-width: 0px;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Rectangle {
+        width: 102px;
+        if !root.heading: HorizontalLayout {
+            y: (parent.height - self.height) / 2;
+            height: 30px;
+            spacing: 6px;
+            ActionButton {
+                label: "Test proxy " + root.proxy.name;
+                icon: "check"; icon-only: true;
+                height: 30px; min-width: 30px; max-width: 30px;
+                enabled: root.test-enabled;
+                background: root.test-enabled ? Theme.success-soft : Theme.disabled;
+                ink: root.test-enabled ? Theme.success : Theme.disabled-text;
+                clicked => { root.test-proxy(); }
+            }
+            ActionButton {
+                label: "Edit proxy " + root.proxy.name;
+                icon: "edit"; icon-only: true;
+                height: 30px; min-width: 30px; max-width: 30px;
+                clicked => { root.edit-proxy(); }
+            }
+            ActionButton {
+                label: "Delete proxy " + root.proxy.name;
+                icon: "trash"; icon-only: true;
+                height: 30px; min-width: 30px; max-width: 30px;
+                ink: Theme.muted;
+                clicked => { root.delete-proxy(); }
+            }
+        }
     }
 }
 
 export component MainWindow inherits Window {
     icon: @image-url("../assets/icon.svg");
-    title: "True Proxy"; preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
+    title: root.preview-ui ? (root.page == 3 ? "True Proxy · Connections UI Preview" : "True Proxy · UI Preview") : "True Proxy";
+    preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
     init => { Palette.color-scheme = ColorScheme.light; }
     in-out property <int> page: 0;
+    changed page => { root.sync-connection-observation(); }
+    in property <bool> preview-ui: false;
     property <int> settings-section: 0;
     in-out property <int> dialog: 0;
     in property <bool> active: false;
@@ -341,13 +690,24 @@ export component MainWindow inherits Window {
     in-out property <string> notice;
     in property <string> uploaded: "0 B";
     in property <string> downloaded: "0 B";
+    in property <string> upload-rate: "0 B/s";
+    in property <string> download-rate: "0 B/s";
+    in property <float> upload-share: 0;
+    in property <bool> has-transfer: false;
     in property <string> connection-count: "0";
     in property <string> uptime: "00:00:00";
     in property <string> blocked-count: "0";
     in property <[ProxyRow]> proxies;
+    in-out property <string> proxy-query;
+    in property <[ProxyRow]> visible-proxies: root.proxies;
+    in property <[string]> selected-proxy-ids;
+    in property <[bool]> proxy-selection;
+    in property <int> proxy-selection-state;
     in property <[RuleRow]> rules;
+    in-out property <string> rule-query;
+    in property <[RuleRow]> visible-rules: root.rules;
     in property <int> enabled-rule-count;
-    in property <string> local-networks;
+    in-out property <string> local-network-draft;
     in property <[string]> proxy-names;
     in-out property <bool> surface-fresh: false;
     in property <[ProcessChoice]> all-processes;
@@ -391,6 +751,10 @@ export component MainWindow inherits Window {
     callback save-proxy;
     callback delete-proxy(string);
     callback probe-proxy(string);
+    callback filter-proxies;
+    callback toggle-proxy-selection(string, bool);
+    callback select-visible-proxies(bool);
+    callback delete-selected-proxies;
     callback probe-proxy-form;
     callback proxy-form-edited;
     callback add-application(int);
@@ -400,10 +764,14 @@ export component MainWindow inherits Window {
     callback delete-rule(string);
     callback toggle-rule(string);
     callback move-rule(string, int);
+    callback filter-rules;
+    callback edit-local-network;
+    callback save-local-network;
     callback select-fallback(int, string);
     callback set-autostart(bool);
     callback hide-window;
-    callback open-connections;
+    callback sync-connection-observation;
+    callback suspend-connection-observation;
     callback close-dialog;
     callback add-condition(int, string);
     callback new-condition(int);
@@ -475,7 +843,8 @@ export component MainWindow inherits Window {
                         NavItem { label: "Rules"; icon: "rules"; selected: root.page == 1; clicked => { root.page = 1; } }
                         Rectangle { height: 12px; }
                         Text { text: "NETWORK"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                        NavItem { label: "Connections"; icon: "activity"; clicked => { root.open-connections(); } }
+                        NavItem { label: "Connections"; icon: "activity"; selected: root.page == 3; clicked => { root.page = 3; } }
+                        NavItem { label: "Logs"; icon: "file"; selected: root.page == 5; clicked => { root.page = 5; } }
                         Rectangle { height: 12px; }
                         Text { text: "SYSTEM"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
                         NavItem { label: "Settings"; icon: "settings"; selected: root.page == 4; clicked => { root.page = 4; } }
@@ -497,7 +866,7 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 padding: 26px;
                 spacing: 16px;
-                HorizontalLayout {
+                if root.page != 3: HorizontalLayout {
                     height: 58px;
                     spacing: 14px;
                     VerticalLayout {
@@ -505,7 +874,7 @@ export component MainWindow inherits Window {
                         alignment: center;
                         spacing: 4px;
                         Text {
-                            text: ["Dashboard", "Routing Rules", "Proxies", "Dashboard", "Settings"][root.page];
+                            text: ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
                             color: Theme.text;
                             font-size: 28px;
                             font-weight: 600;
@@ -516,6 +885,7 @@ export component MainWindow inherits Window {
                             text: root.page == 1 ? root.rules.length + " configured rules · Use arrows to reorder priority"
                                 : root.page == 2 ? root.proxies.length + " configured proxy servers"
                                 : root.page == 4 ? "Manage your configuration and application preferences"
+                                : root.page == 5 ? "Backend and connection events"
                                 : "Real-time proxy network monitoring";
                             color: Theme.muted;
                             font-size: 13px;
@@ -530,7 +900,7 @@ export component MainWindow inherits Window {
                             label: root.page == 1 ? "Add Rule" : root.page == 2 ? "Add Proxy" : root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing";
                             icon: root.page == 1 || root.page == 2 ? "plus" : root.active ? "stop" : "play";
                             accessible-label: root.page == 1 ? "Add Routing Rule" : root.page == 2 ? "Add Proxy" : "Routing";
-                            visible: root.page != 4;
+                            visible: root.page != 4 && root.page != 5;
                             enabled: root.page != 0 || !root.busy;
                             primary: root.page != 0 || !root.active;
                             clicked => {
@@ -594,10 +964,19 @@ export component MainWindow inherits Window {
                         HorizontalLayout {
                             height: 104px;
                             spacing: 10px;
-                            StatCard { label: "ACTIVE CONNECTIONS"; value: root.connection-count; note: "SOCKS sessions"; }
+                            StatCard { label: "ACTIVE CONNECTIONS"; value: root.connection-count; note: "Current session"; }
                             StatCard { label: "PROXIES"; value: root.proxies.length; note: "Configured"; marker: Theme.success; }
                             StatCard { label: "RULES"; value: root.enabled-rule-count; note: root.enabled-rule-count + " / " + root.rules.length + " enabled"; marker: Theme.success; }
-                            StatCard { label: "DATA TRANSFER"; transfer: true; uploaded: root.uploaded; downloaded: root.downloaded; marker: Theme.success; }
+                            StatCard {
+                                label: "DATA TRANSFER";
+                                transfer: true;
+                                uploaded: root.uploaded;
+                                downloaded: root.downloaded;
+                                upload-rate: root.upload-rate;
+                                download-rate: root.download-rate;
+                                upload-share: root.upload-share;
+                                has-transfer: root.has-transfer;
+                            }
                             StatCard { label: "UPTIME"; value: root.uptime; note: root.active ? "Current session" : "Routing paused"; }
                         }
                         Rectangle {
@@ -620,7 +999,7 @@ export component MainWindow inherits Window {
                                 }
                                 if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; height: 40px; vertical-alignment: center; }
                                 if root.proxies.length > 0: HorizontalLayout {
-                                    height: 70px;
+                                    height: 80px;
                                     spacing: 10px;
                                     ProxyPreview { proxy: root.proxies[0]; }
                                     if root.proxies.length > 1: ProxyPreview { proxy: root.proxies[1]; }
@@ -641,24 +1020,42 @@ export component MainWindow inherits Window {
                                     height: 34px;
                                     spacing: 8px;
                                     Text { text: "Routing rules"; color: Theme.text; font-size: 15px; font-weight: 600; width: 96px; vertical-alignment: center; }
-                                    Rectangle { width: 42px; CountPill { value: root.rules.length; y: (parent.height - self.height) / 2; } }
+                                    Rectangle {
+                                        width: root.rules.length >= 100 ? 72px : 52px;
+                                        CountPill {
+                                            value: (root.enabled-rule-count + 2) + " / " + (root.rules.length + 2);
+                                            width: parent.width;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
                                     Rectangle { horizontal-stretch: 1; }
                                     if root.rules.length > 2: ActionButton { label: "View all"; accessible-label: "View all rules"; height: 32px; clicked => { root.page = 1; } }
                                     ActionButton { label: "Add Rule"; icon: "plus"; accessible-label: "Add Routing Rule"; height: 32px; clicked => { root.add-rule(); } }
                                 }
-                                HorizontalLayout {
-                                    height: 72px;
-                                    spacing: 10px;
-                                    RulePreview { name: "Local network"; route: "Direct"; }
-                                    if root.rules.length > 0: RulePreview { name: root.rules[0].name; route: root.rules[0].route; enabled: root.rules[0].enabled; }
-                                    if root.rules.length == 0: RulePreview { name: "Default"; route: root.fallback-label; }
-                                }
-                                if root.rules.length > 0: HorizontalLayout {
-                                    height: 72px;
-                                    spacing: 10px;
-                                    if root.rules.length > 1: RulePreview { name: root.rules[1].name; route: root.rules[1].route; enabled: root.rules[1].enabled; }
-                                    RulePreview { name: "Default"; route: root.fallback-label; }
-                                    if root.rules.length == 1: Rectangle { min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    RulePreview {
+                                        name: "Local";
+                                        route: "Direct";
+                                        active: true;
+                                        fixed-route: true;
+                                    }
+                                    if root.rules.length > 0: RulePreview {
+                                        rule: root.rules[0];
+                                        busy: root.busy;
+                                        toggled => { root.toggle-rule(root.rules[0].id); }
+                                    }
+                                    if root.rules.length > 1: RulePreview {
+                                        rule: root.rules[1];
+                                        busy: root.busy;
+                                        toggled => { root.toggle-rule(root.rules[1].id); }
+                                    }
+                                    RulePreview {
+                                        name: "Fallback";
+                                        route: root.fallback-label;
+                                        active: true;
+                                        fixed-route: true;
+                                    }
                                 }
                             }
                         }
@@ -669,16 +1066,29 @@ export component MainWindow inherits Window {
                     border-radius: Theme.radius-medium;
                     border-width: 1px;
                     border-color: Theme.border;
+                    clip: true;
                     VerticalLayout {
                         spacing: 0px;
                         HorizontalLayout {
                             height: 56px;
-                            padding-left: 16px;
-                            padding-right: 16px;
+                            padding-left: 14px;
+                            padding-right: 14px;
                             spacing: 10px;
-                            Text { text: "All Rules"; color: Theme.text; font-size: 15px; font-weight: 600; width: 65px; vertical-alignment: center; }
-                            Rectangle { width: 42px; CountPill { value: root.rules.length; y: (parent.height - self.height) / 2; } }
+                            Text { text: "All Rules"; color: Theme.text; font-size: 15px; font-weight: 600; horizontal-stretch: 0; vertical-alignment: center; }
+                            Rectangle {
+                                width: 36px;
+                                CountPill { value: root.visible-rules.length + 2; width: 36px; y: (parent.height - self.height) / 2; }
+                            }
                             Rectangle { horizontal-stretch: 1; }
+                            Rectangle {
+                                width: 206px;
+                                Field {
+                                    y: (parent.height - self.height) / 2;
+                                    height: 34px; field-height: 34px;
+                                    placeholder: "Search rules"; icon: "search"; value <=> root.rule-query;
+                                    edited => { rule-list.content-y = 0px; root.filter-rules(); }
+                                }
+                            }
                         }
                         Rectangle { height: 1px; background: Theme.border; }
                         rule-list := ScrollView {
@@ -689,67 +1099,98 @@ export component MainWindow inherits Window {
                                 alignment: start;
                                 spacing: 10px;
                                 padding: 14px;
-                                local-network-card := Rectangle {
-                                    height: local-network-content.preferred-height;
-                                    border-radius: Theme.radius-small;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-                                    background: Theme.surface;
-                                    local-network-content := VerticalLayout {
-                                        padding: 12px;
+                                local-network-card := RuleCard {
+                                    HorizontalLayout {
+                                        height: 36px;
                                         spacing: 8px;
-                                        HorizontalLayout {
-                                            height: 30px;
-                                            spacing: 10px;
-                                            Text { text: "1. Local network"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; }
-                                            Rectangle { width: 80px; RouteBadge { value: "Direct"; width: 80px; y: (parent.height - self.height) / 2; } }
-                                            Rectangle { width: 18px; UiIcon { name: "lock"; ink: Theme.muted; y: (parent.height - self.height) / 2; } }
+                                        RulePriority { number: 1; }
+                                        Text { text: "Local"; accessible-label: "1. Local"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Rectangle { width: 80px; RouteBadge { value: "Direct"; icon: "direct"; width: 80px; y: (parent.height - self.height) / 2; } }
+                                        ActionButton {
+                                            label: "Edit local network"; icon: "edit"; icon-only: true;
+                                            height: 36px; enabled: !root.busy;
+                                            clicked => { root.edit-local-network(); }
                                         }
-                                        Text { text: root.local-networks; color: Theme.secondary; font-family: "Consolas"; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                                        Rectangle { width: 18px; UiIcon { name: "lock"; ink: Theme.muted; y: (parent.height - self.height) / 2; } }
                                     }
                                 }
-                                for rule[index] in root.rules: Rectangle {
-                                    height: 66px;
-                                    border-radius: Theme.radius-small;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-                                    background: rule.enabled ? Theme.surface : Theme.field;
+                                if root.rule-query != "" && root.visible-rules.length == 0: Text {
+                                    height: 26px; text: "No matching rules"; color: Theme.muted;
+                                    font-size: 12px; horizontal-alignment: center; vertical-alignment: center;
+                                }
+                                for rule in root.visible-rules: RuleCard {
+                                    enabled: rule.enabled;
                                     HorizontalLayout {
-                                        padding: 12px;
+                                        height: 36px;
                                         spacing: 8px;
-                                        Rectangle { width: 42px; CountPill { value: "#" + (index + 2); y: (parent.height - self.height) / 2; } }
+                                        RulePriority { number: rule.priority; }
                                         Text {
                                             text: rule.name;
-                                            accessible-label: (index + 2) + ". " + rule.name;
+                                            accessible-label: rule.priority + ". " + rule.name;
                                             color: rule.enabled ? Theme.text : Theme.muted;
                                             font-weight: 600;
                                             font-size: 14px;
                                             vertical-alignment: center;
                                             overflow: elide;
                                             min-width: 0px;
+                                            horizontal-stretch: 1;
                                         }
-                                        Rectangle { width: 132px; RouteBadge { value: rule.route; y: (parent.height - self.height) / 2; } }
-                                        RuleSwitch { checked: rule.enabled; label: "Rule " + rule.name; height: 42px; enabled: !root.busy; toggled => { root.toggle-rule(rule.id); } }
-                                        ActionButton { label: ""; icon: "edit"; accessible-label: "Edit rule " + rule.name; height: 42px; min-width: 34px; max-width: 34px; clicked => { root.edit-rule(rule.id); } }
-                                        ActionButton { label: ""; icon: "trash"; accessible-label: "Delete rule " + rule.name; height: 42px; min-width: 34px; max-width: 34px; clicked => { root.delete-rule(rule.id); } }
-                                        ActionButton { label: ""; icon: "chevron-up"; accessible-label: "Move rule up"; height: 42px; min-width: 34px; max-width: 34px; enabled: index > 0; clicked => { root.move-rule(rule.id, -1); } }
-                                        ActionButton { label: ""; icon: "chevron-down"; accessible-label: "Move rule down"; height: 42px; min-width: 34px; max-width: 34px; enabled: index < root.rules.length - 1; clicked => { root.move-rule(rule.id, 1); } }
+                                        Rectangle {
+                                            width: 132px;
+                                            RouteBadge {
+                                                value: rule.route;
+                                                icon: rule.route == "Direct" ? "direct" : rule.route == "Block" ? "block" : "server";
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
+                                        RuleSwitch { checked: rule.enabled; label: "Rule " + rule.name; height: 36px; enabled: !root.busy; toggled => { root.toggle-rule(rule.id); } }
+                                        ActionButton { label: "Edit rule " + rule.name; icon: "edit"; icon-only: true; height: 36px; enabled: !root.busy; clicked => { root.edit-rule(rule.id); } }
+                                        ActionButton { label: "Delete rule " + rule.name; icon: "trash"; icon-only: true; height: 36px; enabled: !root.busy; clicked => { root.delete-rule(rule.id); } }
+                                        VerticalLayout {
+                                            spacing: 2px;
+                                            ActionButton {
+                                                label: "Move rule up"; icon: "chevron-up"; icon-only: true;
+                                                min-width: 24px; max-width: 24px; height: 17px;
+                                                enabled: !root.busy && rule.priority > 2;
+                                                clicked => { root.move-rule(rule.id, -1); }
+                                            }
+                                            ActionButton {
+                                                label: "Move rule down"; icon: "chevron-down"; icon-only: true;
+                                                min-width: 24px; max-width: 24px; height: 17px;
+                                                enabled: !root.busy && rule.priority < root.rules.length + 1;
+                                                clicked => { root.move-rule(rule.id, 1); }
+                                            }
+                                        }
+                                    }
+                                    Rectangle { height: 1px; background: Theme.border; }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        alignment: start;
+                                        RuleCondition { label: "Apps"; value: rule.apps == 0 ? "Any" : "" + rule.apps; }
+                                        RuleCondition { label: "Hosts"; value: rule.hosts == 0 ? "Any" : "" + rule.hosts; }
+                                        RuleCondition { label: "Ports"; value: rule.ports == 0 ? "Any" : "" + rule.ports; }
+                                        RuleCondition { label: "Protocol"; value: rule.protocol; }
                                     }
                                 }
-                                fallback-card := Rectangle {
-                                    height: 62px;
-                                    border-radius: Theme.radius-small;
-                                    border-width: 1px;
-                                    border-color: Theme.border;
-                                    background: Theme.surface;
+                                fallback-card := RuleCard {
                                     HorizontalLayout {
-                                        padding: 12px;
-                                        spacing: 10px;
-                                        Text { text: "Default route"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                                        height: 38px;
+                                        spacing: 8px;
+                                        RulePriority { number: root.rules.length + 2; }
+                                        Text { text: "Fallback"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
                                         Rectangle { width: 260px;
                                             fallback-selector := FallbackSelector { label: root.fallback-label; proxies: root.proxies; enabled: !root.busy; selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); } }
                                         }
                                         Rectangle { width: 18px; UiIcon { name: "lock"; ink: Theme.muted; y: (parent.height - self.height) / 2; } }
+                                    }
+                                    Rectangle { height: 1px; background: Theme.border; }
+                                    HorizontalLayout {
+                                        spacing: 6px;
+                                        alignment: start;
+                                        RuleCondition { label: "Apps"; value: "Any"; }
+                                        RuleCondition { label: "Hosts"; value: "Any"; }
+                                        RuleCondition { label: "Ports"; value: "Any"; }
+                                        RuleCondition { label: "Protocol"; value: "TCP + UDP"; }
                                     }
                                 }
                             }
@@ -762,27 +1203,78 @@ export component MainWindow inherits Window {
                     border-color: Theme.border;
                     background: Theme.surface;
                     VerticalLayout {
+                        padding: 1px;
                         spacing: 0px;
                         HorizontalLayout {
                             height: 56px;
                             padding-left: 16px;
+                            padding-right: 16px;
                             spacing: 10px;
                             Text { text: "All Proxies"; color: Theme.text; font-size: 15px; font-weight: 600; width: 78px; vertical-alignment: center; }
-                            Rectangle { width: 42px; CountPill { value: root.proxies.length; y: (parent.height - self.height) / 2; } }
+                            Rectangle { width: 24px; CountPill { value: root.visible-proxies.length; width: 24px; y: (parent.height - self.height) / 2; } }
                             Rectangle { horizontal-stretch: 1; }
+                            if root.selected-proxy-ids.length > 0: Text {
+                                text: root.selected-proxy-ids.length + " selected";
+                                color: Theme.secondary;
+                                font-size: 12px;
+                                vertical-alignment: center;
+                            }
+                            if root.selected-proxy-ids.length > 0: Rectangle {
+                                width: delete-selected.min-width;
+                                delete-selected := ActionButton {
+                                    label: "Delete Selected";
+                                    icon: "trash";
+                                    y: (parent.height - self.height) / 2;
+                                    height: 32px;
+                                    enabled: !root.busy;
+                                    ink: root.busy ? Theme.disabled-text : Theme.danger;
+                                    clicked => { root.delete-selected-proxies(); }
+                                }
+                            }
+                            Rectangle {
+                                width: 206px;
+                                Rectangle {
+                                    y: (parent.height - self.height) / 2;
+                                    height: 34px;
+                                    border-radius: Theme.radius-small;
+                                    border-width: 1px;
+                                    border-color: proxy-search.has-focus ? Theme.accent : Theme.border;
+                                    background: Theme.surface;
+                                    UiIcon { name: "search"; x: 9px; y: 9px; width: 16px; height: 16px; }
+                                    if root.proxy-query == "": Text {
+                                        x: 31px; width: parent.width - 41px;
+                                        text: "Search…"; color: Theme.muted; font-size: 12px;
+                                        vertical-alignment: center;
+                                        accessible-role: none;
+                                    }
+                                    proxy-search := TextInput {
+                                        x: 31px; width: parent.width - 41px; height: parent.height;
+                                        text <=> root.proxy-query;
+                                        color: Theme.text;
+                                        selection-background-color: Theme.selection;
+                                        selection-foreground-color: Theme.text;
+                                        font-size: 12px;
+                                        single-line: true;
+                                        vertical-alignment: center;
+                                        accessible-label: "Search proxies";
+                                        edited => {
+                                            proxy-list.content-y = 0px;
+                                            root.filter-proxies();
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Rectangle { height: 1px; background: Theme.border; }
                         Rectangle {
-                            height: 36px;
+                            height: 32px;
                             background: Theme.field;
-                            HorizontalLayout {
-                                padding-left: 16px;
-                                padding-right: 16px;
-                                spacing: 12px;
-                                Text { text: "NAME"; color: Theme.secondary; font-size: 10px; font-weight: 600; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; vertical-alignment: center; }
-                                Text { text: "PROTOCOL"; color: Theme.secondary; font-size: 10px; font-weight: 600; width: 96px; vertical-alignment: center; }
-                                Text { text: "ADDRESS"; color: Theme.secondary; font-size: 10px; font-weight: 600; min-width: 0px; preferred-width: 0px; horizontal-stretch: 2; vertical-alignment: center; }
-                                Text { text: "ACTIONS"; color: Theme.secondary; font-size: 10px; font-weight: 600; width: 168px; vertical-alignment: center; horizontal-alignment: right; }
+                            ProxyTableColumns {
+                                heading: true;
+                                selected: root.proxy-selection-state == 2;
+                                partially-selected: root.proxy-selection-state == 1;
+                                selection-enabled: root.visible-proxies.length > 0;
+                                select(value) => { root.select-visible-proxies(value); }
                             }
                         }
                         Rectangle { height: 1px; background: Theme.border; }
@@ -793,34 +1285,31 @@ export component MainWindow inherits Window {
                             proxy-content := VerticalLayout {
                                 alignment: start;
                                 spacing: 0px;
-                                if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; height: 90px; horizontal-alignment: center; vertical-alignment: center; }
-                                for proxy in root.proxies: Rectangle {
-                                    height: 62px;
-                                    HorizontalLayout {
-                                        padding: 13px;
-                                        padding-left: 16px;
-                                        padding-right: 16px;
-                                        spacing: 12px;
-                                        Text { text: proxy.name; color: Theme.text; font-size: 13px; font-weight: 600; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
-                                        Rectangle { width: 96px;
-                                            RouteBadge { value: "SOCKS5"; width: 68px; y: (parent.height - self.height) / 2; }
-                                        }
-                                        Text { text: proxy.address; color: Theme.secondary; font-family: "Consolas"; font-size: 12px; min-width: 0px; preferred-width: 0px; horizontal-stretch: 2; overflow: elide; vertical-alignment: center; }
-                                        HorizontalLayout {
-                                            width: 168px;
-                                            spacing: 6px;
-                                            alignment: end;
-                                            ActionButton { label: "Test"; icon: "check"; accessible-label: "Test proxy " + proxy.name; height: 34px; enabled: !root.probe-busy; clicked => { root.probe-proxy(proxy.id); } }
-                                            ActionButton { label: ""; icon: "edit"; accessible-label: "Edit proxy " + proxy.name; height: 34px; min-width: 34px; max-width: 34px; clicked => { root.edit-proxy(proxy.id); } }
-                                            ActionButton { label: ""; icon: "trash"; accessible-label: "Delete proxy " + proxy.name; height: 34px; min-width: 34px; max-width: 34px; clicked => { root.delete-proxy(proxy.id); } }
-                                        }
+                                if root.visible-proxies.length == 0: Text {
+                                    text: root.proxies.length == 0 ? "No SOCKS5 proxies configured" : "No matching proxies";
+                                    color: Theme.muted; font-size: 13px; height: 90px;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                }
+                                for proxy[index] in root.visible-proxies: Rectangle {
+                                    property <bool> selected: index < root.proxy-selection.length && root.proxy-selection[index];
+                                    height: 58px;
+                                    background: self.selected ? Theme.accent-soft : Theme.surface;
+                                    ProxyTableColumns {
+                                        proxy: proxy;
+                                        selected: parent.selected;
+                                        test-enabled: !root.probe-busy;
+                                        select(value) => { root.toggle-proxy-selection(proxy.id, value); }
+                                        test-proxy => { root.probe-proxy(proxy.id); }
+                                        edit-proxy => { root.edit-proxy(proxy.id); }
+                                        delete-proxy => { root.delete-proxy(proxy.id); }
                                     }
-                                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
                                 }
                             }
                         }
                     }
                 }
+                if root.page == 3: ConnectionsView { preview-ui: root.preview-ui; }
+                if root.page == 5: LogsView { }
                 if root.page == 4: HorizontalLayout {
                     spacing: 16px;
                     Rectangle {
@@ -1128,6 +1617,66 @@ export component MainWindow inherits Window {
                 HorizontalLayout { height: 38px; spacing: 10px; alignment: end;
                     ActionButton { label: "Cancel"; clicked => { root.cancel-import(); } }
                     ActionButton { label: "Save"; primary: true; enabled: root.import-valid && !root.busy; clicked => { root.save-import(); } }
+                }
+            }
+        }
+    }
+    if root.dialog == 4: Rectangle {
+        background: Theme.overlay;
+        TouchArea { }
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(parent.width - 48px, 530px);
+            height: min(parent.height - 42px, 450px);
+            border-radius: Theme.radius-large;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: Theme.surface;
+            clip: true;
+            VerticalLayout {
+                spacing: 0px;
+                DialogHeader {
+                    title: "Edit local network";
+                    subtitle: "First rule · Always Direct";
+                    icon: "direct";
+                    close => { root.close-dialog(); }
+                }
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 10px;
+                    Text {
+                        text: "IP ranges";
+                        color: Theme.text; font-size: 13px; font-weight: 600;
+                    }
+                    Text {
+                        text: "Enter one IPv4 or IPv6 CIDR per line.";
+                        color: Theme.muted; font-size: 12px;
+                    }
+                    TextEdit {
+                        accessible-label: "Local network CIDRs";
+                        text <=> root.local-network-draft;
+                        font-family: "Consolas";
+                        font-size: 13px;
+                        wrap: no-wrap;
+                        placeholder-text: "192.168.0.0/16";
+                        key-pressed(event) => {
+                            if event.text == Key.Escape { root.close-dialog(); return accept; }
+                            return reject;
+                        }
+                    }
+                    if root.notice != "": Text {
+                        text: root.notice; color: Theme.danger; font-size: 12px;
+                        wrap: word-wrap; max-height: 44px; overflow: elide;
+                    }
+                }
+                DialogActions {
+                    ActionButton { label: "Cancel"; clicked => { root.close-dialog(); } }
+                    ActionButton {
+                        label: "Save"; accessible-label: "Save local network"; primary: true;
+                        enabled: !root.busy;
+                        clicked => { root.save-local-network(); }
+                    }
                 }
             }
         }

@@ -1,6 +1,7 @@
 mod bundle;
 pub mod clipboard;
 pub mod divert;
+mod geoip;
 pub mod http;
 pub mod monitor;
 pub mod network;
@@ -11,15 +12,20 @@ pub mod startup;
 pub mod tray;
 pub mod update;
 
+pub use geoip::proxy_location;
+
 use anyhow::{Context, Result, ensure};
 use std::{path::Path, ptr};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LocalFree},
+    Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, LocalFree, SYSTEMTIME},
     Security::Cryptography::{
         CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
     },
     Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
-    System::Threading::{CreateMutexW, OpenProcess, WaitForSingleObject},
+    System::{
+        SystemInformation::GetLocalTime,
+        Threading::{CreateMutexW, OpenProcess, WaitForSingleObject},
+    },
     UI::{
         Shell::{IsUserAnAdmin, ShellExecuteW},
         WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW, SW_SHOWNORMAL},
@@ -70,6 +76,15 @@ pub fn show_error(message: &str) {
 pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
+
+/// Current local wall clock as hour, minute and second.
+pub fn local_clock() -> Option<(u16, u16, u16)> {
+    let mut time = SYSTEMTIME::default();
+    // SAFETY: time is writable SYSTEMTIME storage for this synchronous call.
+    unsafe { GetLocalTime(&mut time) };
+    Some((time.wHour, time.wMinute, time.wSecond))
+}
+
 pub fn relaunch_elevated() -> Result<()> {
     let exe = std::env::current_exe()?;
     // Normal launches elevate before creating UI or reading the profile. Safe

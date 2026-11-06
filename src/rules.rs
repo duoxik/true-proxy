@@ -72,7 +72,7 @@ fn process_eq(left: &str, right: &str) -> bool {
 }
 
 pub fn resolve(config: &Config, flow: &Flow<'_>) -> Action {
-    if crate::local_network::contains(flow.destination.ip()) {
+    if crate::local_network::contains(&config.local_networks, flow.destination.ip()) {
         return Action::Direct;
     }
     // DNS stays with Windows/the application's chosen resolver, regardless of
@@ -91,7 +91,7 @@ pub fn explanation(config: &Config, flow: &Flow<'_>) -> String {
     } else {
         "UDP"
     };
-    if crate::local_network::contains(flow.destination.ip()) {
+    if crate::local_network::contains(&config.local_networks, flow.destination.ip()) {
         return format!("{protocol} · Local network");
     }
     if flow.destination.port() == 53 {
@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_local_direct_precedes_process_domain_rules_and_default_for_both_protocols() {
+    fn default_local_direct_precedes_process_domain_rules_and_fallback_for_both_protocols() {
         let mut config = Config::default();
         let mut catch_all = rule();
         catch_all.process_names.clear();
@@ -268,6 +268,37 @@ mod tests {
     }
 
     #[test]
+    fn configured_local_ranges_override_matching_rules_and_replace_the_defaults() {
+        let mut config = Config {
+            default_action: Action::Block,
+            local_networks: ["192.0.2.0/24", "2001:db8::/32"]
+                .map(|network| network.parse().unwrap())
+                .into(),
+            ..Config::default()
+        };
+        let mut browser = rule();
+        browser.domains.push("example.com".into());
+        config.rules.push(browser);
+        let names = vec!["example.com".into()];
+        let mut f = flow(&names);
+        for protocol in [Protocol::Tcp, Protocol::Udp] {
+            f.protocol = protocol;
+            for address in ["192.0.2.1:443", "[2001:db8::1]:443"] {
+                f.destination = address.parse().unwrap();
+                assert_eq!(resolve(&config, &f), Action::Direct);
+                assert!(explanation(&config, &f).contains("Local network"));
+            }
+            for address in ["192.168.0.1:443", "[fd00::1]:443"] {
+                f.destination = address.parse().unwrap();
+                assert_eq!(resolve(&config, &f), Action::Proxy("vpn".into()));
+                assert!(explanation(&config, &f).contains("Browser"));
+            }
+            f.destination = "203.0.113.1:53".parse().unwrap();
+            assert_eq!(resolve(&config, &f), Action::Direct);
+        }
+    }
+
+    #[test]
     fn import_and_profile_roundtrip_cannot_disable_or_change_the_builtin_local_rule() {
         let mut ordinary = rule();
         ordinary.name = "Локальная сеть".into();
@@ -288,7 +319,7 @@ mod tests {
         assert_eq!(imported.rules, config.rules);
         assert!(imported.routing_enabled);
         // Imported catch-all Block, a same-named rule and its disabled state do not
-        // influence fixed local routing, and no synthetic rule is persisted.
+        // influence the local policy, and no synthetic rule is persisted.
         for enabled in [true, false] {
             imported.rules[0].enabled = enabled;
             let encoded = serde_json::to_vec(&imported).unwrap();

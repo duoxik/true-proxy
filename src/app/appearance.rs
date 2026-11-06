@@ -1,4 +1,4 @@
-use crate::{ConnectionsWindow, MainWindow};
+use crate::MainWindow;
 use slint::{
     ComponentHandle,
     winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent},
@@ -20,31 +20,12 @@ pub fn wire(ui: &MainWindow) {
                 | WindowEvent::Resized(_)
                 | WindowEvent::ScaleFactorChanged { .. }
         ) && let Some(ui) = weak.upgrade()
-            && !matches!(event, WindowEvent::Resized(size) if size.width == 0 || size.height == 0)
-        {
-            refresh(&ui);
-        }
-        EventResult::Propagate
-    });
-}
-
-pub fn wire_connections(ui: &ConnectionsWindow) {
-    let weak = ui.as_weak();
-    ui.window().on_winit_window_event(move |_, event| {
-        if matches!(
-            event,
-            WindowEvent::Focused(true)
-                | WindowEvent::Occluded(false)
-                | WindowEvent::Resized(_)
-                | WindowEvent::ScaleFactorChanged { .. }
-        ) && let Some(ui) = weak.upgrade()
         {
             if matches!(event, WindowEvent::Resized(size) if size.width == 0 || size.height == 0) {
-                ui.invoke_suspend_connections();
+                ui.invoke_suspend_connection_observation();
             } else {
-                ui.invoke_resume_observation();
-                ui.set_surface_fresh(!ui.get_surface_fresh());
-                ui.window().request_redraw();
+                refresh(&ui);
+                ui.invoke_sync_connection_observation();
             }
         }
         EventResult::Propagate

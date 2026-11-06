@@ -60,11 +60,9 @@ pub fn encode_address(address: SocketAddr, buffer: &mut Vec<u8>) {
     buffer.extend_from_slice(&address.port().to_be_bytes());
 }
 
-async fn command(proxy: &Proxy, cmd: u8, target: SocketAddr) -> Result<(TcpStream, SocketAddr)> {
+async fn send_command(proxy: &Proxy, request: &[u8]) -> Result<(TcpStream, u8)> {
     let mut stream = negotiate(proxy).await?;
-    let mut request = vec![5, cmd, 0];
-    encode_address(target, &mut request);
-    stream.write_all(&request).await?;
+    stream.write_all(request).await?;
     let mut head = [0; 4];
     stream.read_exact(&mut head).await?;
     ensure!(head[0] == 5 && head[2] == 0, "Invalid SOCKS5 reply");
@@ -81,7 +79,14 @@ async fn command(proxy: &Proxy, cmd: u8, target: SocketAddr) -> Result<(TcpStrea
             _ => "the server rejected the connection",
         }
     );
-    let ip = match head[3] {
+    Ok((stream, head[3]))
+}
+
+async fn command(proxy: &Proxy, cmd: u8, target: SocketAddr) -> Result<(TcpStream, SocketAddr)> {
+    let mut request = vec![5, cmd, 0];
+    encode_address(target, &mut request);
+    let (mut stream, address_type) = send_command(proxy, &request).await?;
+    let ip = match address_type {
         1 => {
             let mut b = [0; 4];
             stream.read_exact(&mut b).await?;
@@ -121,6 +126,35 @@ pub async fn connect(proxy: &Proxy, target: SocketAddr) -> Result<TcpStream> {
         .await
         .context("SOCKS5 CONNECT timed out")?
         .map(|(stream, _)| stream)
+}
+
+/// CONNECT by name for the manual GeoIP check. The SOCKS server resolves the
+/// destination, and its informational bound address never requires a lookup.
+#[cfg(any(windows, test))]
+pub(crate) async fn connect_hostname(proxy: &Proxy, host: &str, port: u16) -> Result<TcpStream> {
+    ensure!(
+        !host.is_empty() && host.len() <= u8::MAX as usize && host.is_ascii(),
+        "Invalid SOCKS5 destination name"
+    );
+    timeout(TIMEOUT, async {
+        let mut request = Vec::with_capacity(7 + host.len());
+        request.extend_from_slice(&[5, 1, 0, 3, host.len() as u8]);
+        request.extend_from_slice(host.as_bytes());
+        request.extend_from_slice(&port.to_be_bytes());
+        let (mut stream, address_type) = send_command(proxy, &request).await?;
+        let length = match address_type {
+            1 => 4,
+            4 => 16,
+            3 => usize::from(stream.read_u8().await?),
+            _ => bail!("Unknown SOCKS5 address type"),
+        };
+        ensure!(length > 0, "Empty SOCKS5 bound address");
+        let mut bound = [0; 257];
+        stream.read_exact(&mut bound[..length + 2]).await?;
+        Ok(stream)
+    })
+    .await
+    .context("SOCKS5 CONNECT timed out")?
 }
 
 pub struct UdpAssociation {
@@ -225,6 +259,45 @@ pub async fn probe(proxy: &Proxy) -> Result<(u128, bool)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn hostname_connect_leaves_resolution_to_the_socks_server() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = Proxy {
+            id: "test".into(),
+            name: "Test".into(),
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            username: String::new(),
+            protected_password: None,
+        };
+        let server = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut method = [0; 3];
+            stream.read_exact(&mut method).await.unwrap();
+            assert_eq!(method, [5, 1, 0]);
+            stream.write_all(&[5, 0]).await.unwrap();
+            let expected = b"\x05\x01\x00\x03\x0bgeo.invalid\x01\xbb";
+            let mut request = [0; 18];
+            stream.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, expected);
+            // A BND.ADDR domain is informational for TCP CONNECT.
+            stream
+                .write_all(b"\x05\x00\x00\x03\x0dbound.invalid\x00\x00!")
+                .await
+                .unwrap();
+        };
+        let client = async {
+            let mut stream = connect_hostname(&proxy, "geo.invalid", 443).await.unwrap();
+            assert_eq!(stream.read_u8().await.unwrap(), b'!');
+        };
+        timeout(Duration::from_secs(3), async {
+            tokio::join!(server, client)
+        })
+        .await
+        .unwrap();
+    }
+
     #[test]
     fn udp_roundtrip_v4_v6() {
         for address in ["1.2.3.4:443", "[2001:db8::1]:53"] {

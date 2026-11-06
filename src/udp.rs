@@ -4,7 +4,7 @@ use crate::{
     config::{Action, Config, Protocol},
     connections::{Connection, Info, Session, Status},
     dns::DomainCache,
-    engine::{ConnectionGuard, Statistics},
+    engine::{ConnectionGuard, LogLevel, LogSource, Statistics},
     packet::{FlowKey, udp_reply},
     rules::{self, Flow},
     socks,
@@ -494,10 +494,12 @@ async fn session<A: Copy + Send + Sync + 'static>(
             }
         }
         state.shared.context.stats.log(
+            LogSource::Connections,
+            LogLevel::Error,
             &state.name,
             state.key.local.to_string(),
-            "Error",
-            format!("{error:#}"),
+            "",
+            format!("UDP · {error:#}"),
         );
         state.shared.blocked();
     }

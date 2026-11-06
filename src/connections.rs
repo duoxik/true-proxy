@@ -74,12 +74,28 @@ pub struct Snapshot {
     pub id: u64,
     pub info: Info,
     pub status: Status,
+    pub timing: Option<Timing>,
+}
+#[derive(Clone, Copy)]
+pub struct Timing {
+    /// Local hour, minute, and second at observation.
+    pub local_start: Option<(u16, u16, u16)>,
+    pub elapsed: Duration,
 }
 struct Entry {
     info: Info,
     status: AtomicU8,
     last: AtomicU64,
     started: u64,
+    local_start: Option<(u16, u16, u16)>,
+}
+impl Entry {
+    fn timing(&self, now: u64) -> Timing {
+        Timing {
+            local_start: self.local_start,
+            elapsed: Duration::from_millis(now.saturating_sub(self.started)),
+        }
+    }
 }
 #[derive(Default)]
 struct State {
@@ -250,6 +266,7 @@ impl Connections {
             status: AtomicU8::new(status as u8),
             last: AtomicU64::new(now),
             started: now,
+            local_start: crate::platform::local_clock(),
         });
         if already_closed {
             if state.history {
@@ -260,6 +277,7 @@ impl Connections {
                     id,
                     info: entry.info.clone(),
                     status,
+                    timing: None,
                 });
             }
         } else {
@@ -285,7 +303,12 @@ impl Connections {
             if state.completed.len() == MAX_COMPLETED {
                 state.completed.pop_front();
             }
-            state.completed.push_back(Snapshot { id, info, status });
+            state.completed.push_back(Snapshot {
+                id,
+                info,
+                status,
+                timing: None,
+            });
         }
     }
     fn finish(&self, id: u64, status: Status, reason: &str) {
@@ -304,7 +327,12 @@ impl Connections {
                 if state.completed.len() == MAX_COMPLETED {
                     state.completed.pop_front();
                 }
-                state.completed.push_back(Snapshot { id, info, status });
+                state.completed.push_back(Snapshot {
+                    id,
+                    info,
+                    status,
+                    timing: Some(entry.timing(self.tick())),
+                });
             }
         }
     }
@@ -323,6 +351,7 @@ impl Connections {
         if !self.same_revision(revision) {
             return Vec::new();
         }
+        let now = self.tick();
         let mut rows = state
             .active
             .iter()
@@ -330,6 +359,7 @@ impl Connections {
                 id,
                 info: entry.info.clone(),
                 status: Status::decode(entry.status.load(Ordering::Acquire)),
+                timing: Some(entry.timing(now)),
             })
             .chain(state.completed.iter().cloned())
             .collect::<Vec<_>>();
@@ -482,10 +512,16 @@ mod tests {
         let old = store.start(info(Protocol::Tcp), Status::Active).unwrap();
         let old_session = old.session();
         let completed = store.start(info(Protocol::Udp), Status::Active).unwrap();
+        let observed = store.snapshots()[0].timing.unwrap();
         completed.finish(Status::Closed, "");
+        let closed = store.snapshots()[0].timing.unwrap();
+        assert_eq!(closed.local_start, observed.local_start);
+        assert!(closed.elapsed >= observed.elapsed);
         let row = old.info();
         store.close_socket(row.pid + 1, row.source, row.destination, true, 999);
-        assert_eq!(store.snapshots().len(), 2);
+        let snapshots = store.snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].timing.unwrap().elapsed, closed.elapsed);
         store.set_tracking(false);
         assert_eq!(old.status(), Status::Stopped);
         assert!(store.snapshots().is_empty());

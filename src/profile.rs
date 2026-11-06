@@ -136,7 +136,7 @@ impl Profile {
         config.proxies = proxies;
         config.rules = self.rules;
         config.default_action = self.default_action;
-        // routing_enabled, update preferences and Windows startup are not imported.
+        // Keep the local CIDRs and runtime preferences on this device.
         Ok(())
     }
 }
@@ -161,6 +161,10 @@ mod tests {
             text().replace("\"version\":2", "\"version\":99"),
             text().replace("\"rules\":[]", "\"rules\":[],\"extra\":true"),
             text().replace("\"rules\":[]", "\"rules\":[],\"rules\":[]"),
+            text().replace(
+                "\"rules\":[]",
+                "\"rules\":[],\"local_networks\":[\"192.0.2.0/24\"]",
+            ),
             text().replace("\"proxy_id\":\"vpn\"", "\"proxy_id\":\"missing\""),
         ] {
             assert!(Profile::parse(&invalid).is_err());
@@ -168,17 +172,23 @@ mod tests {
         assert!(Profile::parse(&" ".repeat(MAX_BYTES + 1)).is_err());
     }
     #[test]
-    fn import_preserves_pause_and_exports_only_network_configuration() {
+    fn import_preserves_pause_and_local_cidrs() {
         let mut config = Config {
             routing_enabled: false,
+            local_networks: vec!["192.0.2.0/24".parse().unwrap()],
             ..Config::default()
         };
         Profile::parse(&text()).unwrap().apply(&mut config).unwrap();
         assert!(!config.routing_enabled);
+        assert_eq!(
+            config.local_networks,
+            ["192.0.2.0/24".parse::<ipnet::IpNet>().unwrap()]
+        );
         let exported = Profile::export(&config).unwrap();
         assert!(
             !exported.contains("routing_enabled")
                 && !exported.contains("protected_password")
+                && !exported.contains("local_networks")
                 && !exported.contains("\"dns\"")
         );
         assert!(Profile::parse(&exported).is_ok());

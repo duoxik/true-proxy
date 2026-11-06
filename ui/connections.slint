@@ -1,38 +1,121 @@
-import { ScrollView, Palette } from "std-widgets.slint";
-import { Theme, UiIcon, ProxyRow, ProcessSummary, LogRow, ConnectionFilterRow, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
 
-component JournalFilters inherits VerticalLayout {
+component TrafficMetric inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <color> ink;
+    height: 68px;
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-medium;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface;
+
+    Rectangle {
+        x: 0px; y: 13px;
+        width: 4px; height: parent.height - 26px;
+        border-radius: 2px;
+        background: root.ink;
+    }
+    VerticalLayout {
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 3px;
+        alignment: center;
+        Text { text: root.label; color: Theme.secondary; font-size: 10px; font-weight: 700; min-width: 0px; overflow: elide; }
+        Text { text: root.value; color: Theme.text; font-size: 23px; font-weight: 700; min-width: 0px; overflow: elide; }
+    }
+}
+
+component ConnectionFilterMenu inherits Rectangle {
     in property <string> title;
     in property <string> scope;
-    in property <[ConnectionFilterRow]> rows;
-    in property <length> viewport-height;
+    in property <string> summary;
+    in property <[ConnectionFilterOption]> options;
     callback toggled(string, bool);
-    min-width: 0px;
-    vertical-stretch: 0;
-    spacing: 3px;
+    width: 120px;
+    height: 34px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: menu.is-open || focus.has-focus ? Theme.accent : Theme.border;
+    background: menu.is-open || touch.has-hover ? Theme.accent-soft : Theme.surface;
+    accessible-role: button;
+    accessible-expanded: menu.is-open;
+    accessible-action-default => { root.toggle-menu(); }
+    forward-focus: focus;
 
-    Text { text: root.title; color: Theme.secondary; font-size: 11px; font-weight: 600; }
-    ScrollView {
-        min-height: root.viewport-height;
-        preferred-height: root.viewport-height;
-        max-height: root.viewport-height;
-        vertical-stretch: 0;
-        horizontal-scrollbar-policy: always-off;
-        content-width: self.visible-width;
-        content-height: filter-content.preferred-height;
-        filter-content := VerticalLayout {
-            spacing: 0px;
-            padding-right: Theme.scroll-gutter;
-            alignment: start;
-            for row in root.rows: HorizontalLayout {
-                height: 28px;
-                spacing: 8px;
-                for option in row.options: ConnectionFilterCheck {
-                    min-width: 0px;
-                    horizontal-stretch: 1;
-                    option: option;
-                    scope: root.scope;
-                    toggled(checked) => { root.toggled(option.key, checked); }
+    function toggle-menu() {
+        if menu.is-open { menu.close(); }
+        else { menu.show(); }
+    }
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 8px;
+        spacing: 5px;
+        Text { text: root.title; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; accessible-role: none; }
+        Rectangle {
+            width: max(22px, summary-text.preferred-width + 9px);
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 18px;
+                border-radius: 9px;
+                background: Theme.accent-soft;
+                summary-text := Text { text: root.summary; color: Theme.accent; font-size: 10px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
+            }
+        }
+        Rectangle {
+            width: 15px;
+            UiIcon { y: (parent.height - self.height) / 2; width: 15px; height: 15px; name: menu.is-open ? "chevron-up" : "chevron-down"; }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.toggle-menu(); } }
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
+                root.toggle-menu();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    menu := PopupWindow {
+        x: root.width - self.width;
+        y: root.height + 6px;
+        width: 270px;
+        height: min(root.options.length, 8) * 30px + 12px;
+        close-policy: close-on-click-outside;
+        forward-focus: menu-focus;
+        menu-focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { menu.close(); return accept; }
+                return reject;
+            }
+            Rectangle {
+                border-radius: Theme.radius-small;
+                border-width: 1px;
+                border-color: Theme.border;
+                background: Theme.surface;
+                filter-options := ScrollView {
+                    x: 6px; y: 6px;
+                    width: parent.width - 12px;
+                    height: parent.height - 12px;
+                    horizontal-scrollbar-policy: always-off;
+                    content-width: self.visible-width;
+                    content-height: choices.preferred-height;
+                    choices := VerticalLayout {
+                        alignment: start;
+                        padding-right: root.options.length > 8 ? Theme.scroll-gutter : 0px;
+                        for option in root.options: ConnectionFilterCheck {
+                            height: 30px;
+                            option: option;
+                            scope: root.scope;
+                            toggled(checked) => { root.toggled(option.key, checked); }
+                        }
+                    }
                 }
             }
         }
@@ -45,7 +128,9 @@ component JournalCell inherits VerticalLayout {
     in property <bool> heading;
     in property <bool> emphasized;
     in property <bool> numeric;
+    in property <bool> monospace;
     in property <color> ink: Theme.text;
+    in property <color> detail-ink: Theme.muted;
     min-width: 0px;
     alignment: center;
     spacing: 2px;
@@ -56,13 +141,14 @@ component JournalCell inherits VerticalLayout {
         color: root.heading ? Theme.secondary : root.ink;
         font-size: root.heading ? 10px : 12px;
         font-weight: root.heading || root.emphasized ? 600 : 400;
+        font-family: !root.heading && root.monospace ? "Consolas" : "Segoe UI";
         horizontal-alignment: root.numeric ? right : left;
         overflow: elide;
     }
     if root.detail != "": Text {
         text: root.detail;
         min-width: 0px;
-        color: Theme.muted;
+        color: root.detail-ink;
         font-size: 10px;
         overflow: elide;
     }
@@ -76,19 +162,24 @@ component JournalLine inherits HorizontalLayout {
     in property <string> application;
     in property <string> source;
     in property <string> destination;
+    in property <string> target-detail;
     in property <string> explanation;
     in property <string> route;
+    in property <string> started;
+    in property <string> elapsed;
     in property <string> status;
     in property <color> status-ink: Theme.secondary;
     in property <string> sent;
     in property <string> received;
-    padding-left: 16px;
-    padding-right: 16px;
-    spacing: 10px;
+    padding-left: 14px;
+    padding-right: 14px;
+    spacing: 8px;
     min-width: 0px;
 
     HorizontalLayout {
-        width: 174px;
+        min-width: 0px;
+        preferred-width: 0px;
+        horizontal-stretch: 1;
         spacing: 6px;
         if root.group: Rectangle {
             width: 16px;
@@ -118,14 +209,23 @@ component JournalLine inherits HorizontalLayout {
                 }
             }
         }
-        if !root.group && !root.heading: Rectangle { width: 22px; }
-        JournalCell { label: root.application; detail: root.source; heading: root.heading; emphasized: root.group; }
+        if !root.group && !root.heading: Rectangle { width: 16px; }
+        JournalCell { label: root.application; detail: root.source; heading: root.heading; emphasized: true; horizontal-stretch: 1; }
     }
-    JournalCell { label: root.destination; detail: root.explanation; heading: root.heading; ink: root.group ? Theme.secondary : Theme.text; horizontal-stretch: 1; }
-    JournalCell { width: 124px; label: root.route; heading: root.heading; ink: Theme.accent; }
-    JournalCell { width: 94px; label: root.status; heading: root.heading; ink: root.status-ink; }
-    JournalCell { width: 74px; label: root.sent; heading: root.heading; numeric: true; ink: Theme.success; }
-    JournalCell { width: 74px; label: root.received; heading: root.heading; numeric: true; ink: Theme.accent; }
+    JournalCell { preferred-width: 0px; label: root.destination; detail: root.target-detail; heading: root.heading; monospace: !root.group; ink: root.group ? Theme.secondary : Theme.text; horizontal-stretch: 1.35; }
+    JournalCell { width: 76px; label: root.started; heading: root.heading; monospace: true; ink: Theme.secondary; }
+    JournalCell {
+        width: 68px;
+        label: root.elapsed != "" ? root.elapsed : root.status;
+        detail: root.elapsed != "" ? root.status : "";
+        heading: root.heading;
+        monospace: root.elapsed != "";
+        ink: root.group ? root.status-ink : Theme.secondary;
+        detail-ink: root.status-ink;
+    }
+    JournalCell { preferred-width: 0px; label: root.route; detail: root.explanation; heading: root.heading; emphasized: true; horizontal-stretch: 1.35; }
+    JournalCell { width: 66px; label: root.sent; heading: root.heading; numeric: true; monospace: true; ink: root.group ? Theme.success : Theme.muted; }
+    JournalCell { width: 66px; label: root.received; heading: root.heading; numeric: true; monospace: true; ink: root.group ? Theme.blue : Theme.muted; }
 }
 
 component JournalGroup inherits Rectangle {
@@ -139,7 +239,7 @@ component JournalGroup inherits Rectangle {
     group-content := VerticalLayout {
         spacing: 0px;
         Rectangle {
-            height: 44px;
+            height: 40px;
             border-width: header-focus.has-focus ? 1px : 0px;
             border-color: Theme.accent;
             background: header-touch.has-hover ? Theme.surface-hover : root.process.expanded ? Theme.accent-soft : root.stripe ? Theme.field : Theme.surface;
@@ -169,35 +269,34 @@ component JournalGroup inherits Rectangle {
         }
         if root.process.expanded: VerticalLayout {
             for entry[index] in root.process.connections: Rectangle {
-                height: 48px;
+                height: 44px;
                 background: mod(index, 2) == 0 ? Theme.field : Theme.surface;
                 JournalLine {
-                    application: root.process.name == "Other processes" ? entry.process : "";
-                    source: entry.source;
+                    application: entry.process;
+                    source: entry.pid;
                     destination: entry.destination;
+                    target-detail: "From " + entry.source;
                     explanation: entry.message;
                     route: entry.route;
+                    started: entry.started;
+                    elapsed: entry.elapsed;
                     status: entry.status;
                     status-ink: entry.state == 1 ? Theme.success : entry.state == 0 ? Theme.accent : entry.state == 2 ? Theme.warning : (entry.state == 4 || entry.state == 5) ? Theme.danger : Theme.secondary;
+                    sent: "—";
+                    received: "—";
                 }
             }
         }
     }
 }
 
-export component ConnectionsWindow inherits Window {
-    icon: @image-url("../assets/icon.svg");
-    title: "True Proxy · Live Connections";
-    preferred-width: 1040px; preferred-height: 760px; min-width: 800px; min-height: 600px;
-    background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
-    init => { Palette.color-scheme = ColorScheme.light; }
-    in-out property <bool> surface-fresh: false;
-    in property <[ProxyRow]> proxies;
+export global ConnectionMonitor {
     in property <[ProcessSummary]> process-summaries;
     in property <[string]> expanded-processes;
     in-out property <string> connection-query;
-    in property <[ConnectionFilterRow]> connection-route-filters;
-    in property <[ConnectionFilterRow]> connection-status-filters;
+    in property <[ConnectionFilterOption]> connection-route-filters;
+    in property <[ConnectionFilterOption]> connection-status-filters;
+    in property <int> selected-route-count;
     in-out property <bool> connection-routes-all: true;
     in-out property <[string]> connection-route-selection;
     in-out property <[string]> connection-status-selection: ["0", "1", "2"];
@@ -206,157 +305,179 @@ export component ConnectionsWindow inherits Window {
     in property <int> filtered-event-count;
     in-out property <bool> only-active: true;
     in property <int> connection-omitted;
-    property <length> route-filter-height: max(28px, min(root.connection-route-filters.length, 3) * 28px);
-    property <length> status-filter-height: max(28px, min(root.connection-status-filters.length, 3) * 28px);
+    in property <int> active-connection-count;
+    in property <string> total-sent: "0 B";
+    in property <string> total-received: "0 B";
+    in property <string> total-traffic: "0 B";
     callback set-only-active(bool);
     callback filter-connections;
-    callback sync-connections;
-    callback suspend-connections;
-    callback resume-observation;
     callback toggle-connection-route(string, bool);
     callback toggle-connection-status(string, bool);
     callback reset-connection-filters;
     callback expand-process(string);
-    callback hide-window;
+}
 
-    // Repaint the full opaque surface on native restore/resize.
-    surface := Rectangle {
-        width: parent.width;
-        height: parent.height;
-        background: root.surface-fresh ? Theme.background-refresh : Theme.background;
-
+export component ConnectionsView inherits VerticalLayout {
+    in property <bool> preview-ui;
+    min-width: 0px;
+    spacing: 10px;
+    HorizontalLayout {
+        height: 52px;
+        spacing: 8px;
+        vertical-stretch: 0;
         VerticalLayout {
-            padding: 20px;
-            spacing: 12px;
+            alignment: center;
+            spacing: 3px;
+            Text { text: "Traffic Monitor"; color: Theme.text; font-size: 28px; font-weight: 600; }
+            Text { text: "Live traffic and session history"; color: Theme.muted; font-size: 12px; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        if root.preview-ui: Rectangle {
+            width: 92px;
             Rectangle {
-                height: filter-card.preferred-height;
-                vertical-stretch: 0;
-                border-radius: Theme.radius-medium;
-                border-width: 1px;
-                border-color: Theme.border;
-                background: Theme.surface;
-                filter-card := VerticalLayout {
-                    padding: 12px;
-                    spacing: 6px;
-                    alignment: start;
-                    Field { placeholder: "Search process name"; icon: "search"; value <=> root.connection-query; edited => { root.filter-connections(); } }
-                    JournalFilters {
-                        title: "Routes";
-                        scope: "Route";
-                        rows: root.connection-route-filters;
-                        viewport-height: root.route-filter-height;
-                        toggled(key, checked) => { root.toggle-connection-route(key, checked); }
-                    }
-                    JournalFilters {
-                        title: "Statuses";
-                        scope: "Status";
-                        rows: root.connection-status-filters;
-                        viewport-height: root.status-filter-height;
-                        toggled(key, checked) => { root.toggle-connection-status(key, checked); }
-                    }
-                }
-            }
-            Rectangle {
-                vertical-stretch: 1;
-                border-radius: Theme.radius-medium;
-                border-width: 1px;
-                border-color: Theme.border;
-                background: Theme.surface;
-                clip: true;
-
-                VerticalLayout {
-                    padding: 1px;
-                    HorizontalLayout {
-                        height: 50px;
-                        padding-left: 16px;
-                        padding-right: 16px;
-                        spacing: 8px;
-
-                        Rectangle {
-                            width: 18px;
-                            UiIcon { y: (parent.height - self.height) / 2; name: "activity"; ink: Theme.accent; }
-                        }
-                        Text { text: "Live Connections"; color: Theme.text; font-size: 16px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
-                        Rectangle {
-                            width: max(25px, count-label.preferred-width + 12px);
-                            Rectangle {
-                                y: (parent.height - self.height) / 2;
-                                height: 22px;
-                                border-radius: Theme.radius-small;
-                                background: Theme.accent-soft;
-                                count-label := Text { text: "" + root.filtered-event-count; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                            }
-                        }
-                        Rectangle { horizontal-stretch: 1; }
-                        if root.filtered-event-count != root.connection-event-count: Text {
-                            text: root.filtered-event-count + " of " + root.connection-event-count + " shown";
-                            color: Theme.secondary;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                            horizontal-stretch: 0;
-                        }
-                        if !root.connection-filters-default: Rectangle {
-                            width: reset.min-width;
-                            reset := ActionButton { y: (parent.height - self.height) / 2; label: "Reset filters"; height: 30px; clicked => { root.reset-connection-filters(); } }
-                        }
-                    }
-                    Rectangle { height: 1px; background: Theme.border; }
-                    Rectangle {
-                        height: 32px;
-                        background: Theme.field;
-                        JournalLine {
-                            x: 0px;
-                            width: parent.width - Theme.scroll-gutter;
-                            heading: true;
-                            application: "APPLICATION";
-                            destination: "TARGET";
-                            route: "ROUTE";
-                            status: "STATUS";
-                            sent: "↑ SOCKS SENT";
-                            received: "↓ SOCKS RECV";
-                        }
-                    }
-                    Rectangle { height: 1px; background: Theme.border; }
-                    connection-list := ScrollView {
-                        vertical-stretch: 1;
-                        horizontal-scrollbar-policy: always-off;
-                        content-width: self.visible-width;
-                        content-height: max(self.visible-height, connection-content.preferred-height);
-                        connection-content := VerticalLayout {
-                            padding-right: Theme.scroll-gutter;
-                            padding-bottom: 8px;
-                            alignment: start;
-                            if root.process-summaries.length == 0: Rectangle {
-                                height: 66px;
-                                Text {
-                                    text: root.connection-event-count == 0 ? "No connections observed yet." : "No connections match these filters.";
-                                    color: Theme.muted;
-                                    font-size: 12px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
-                                }
-                            }
-                            for process[index] in root.process-summaries: JournalGroup {
-                                process: process;
-                                stripe: mod(index, 2) == 1;
-                                toggled => { root.expand-process(process.name); }
-                            }
-                        }
-                    }
-                }
-            }
-            if !root.only-active: Text {
-                text: "History keeps up to 256 connections completed since a finished status was selected.";
-                color: Theme.muted;
-                font-size: 11px;
-                wrap: word-wrap;
-            }
-            if root.connection-omitted > 0: Text {
-                text: "Tracking limit: 4,096 concurrent connections. Omitted: " + root.connection-omitted;
-                color: Theme.warning;
-                font-size: 11px;
-                wrap: word-wrap;
+                y: (parent.height - self.height) / 2;
+                height: 24px;
+                border-radius: 12px;
+                background: Theme.accent-soft;
+                Text { text: "Sample data"; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
+    }
+    HorizontalLayout {
+        height: 68px;
+        spacing: 10px;
+        vertical-stretch: 0;
+        TrafficMetric { label: "ACTIVE CONNECTIONS"; value: ConnectionMonitor.active-connection-count; ink: Theme.accent; }
+        TrafficMetric { label: "TOTAL SENT"; value: ConnectionMonitor.total-sent; ink: Theme.success; }
+        TrafficMetric { label: "TOTAL RECEIVED"; value: ConnectionMonitor.total-received; ink: Theme.blue; }
+        TrafficMetric { label: "TOTAL TRAFFIC"; value: ConnectionMonitor.total-traffic; ink: Theme.primary; }
+    }
+    Rectangle {
+        vertical-stretch: 1;
+        border-radius: Theme.radius-medium;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.surface;
+        clip: true;
+
+        VerticalLayout {
+            padding: 1px;
+            HorizontalLayout {
+                height: 54px;
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 8px;
+
+                Text { text: "Connections"; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
+                Rectangle {
+                    width: max(25px, count-label.preferred-width + 12px);
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        height: 22px;
+                        border-radius: 11px;
+                        background: Theme.accent-soft;
+                        count-label := Text { text: "" + ConnectionMonitor.filtered-event-count; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if !ConnectionMonitor.connection-filters-default: Rectangle {
+                    width: reset.min-width;
+                    reset := ActionButton { y: (parent.height - self.height) / 2; label: "Reset filters"; icon: "refresh"; icon-only: true; height: 34px; clicked => { ConnectionMonitor.reset-connection-filters(); } }
+                }
+                Rectangle {
+                    width: 120px;
+                    ConnectionFilterMenu {
+                        y: (parent.height - self.height) / 2;
+                        title: "Routes";
+                        scope: "Route";
+                        accessible-label: "Filter routes";
+                        summary: ConnectionMonitor.connection-routes-all ? "All" : "" + ConnectionMonitor.selected-route-count;
+                        options: ConnectionMonitor.connection-route-filters;
+                        toggled(key, checked) => { connection-list.content-y = 0px; ConnectionMonitor.toggle-connection-route(key, checked); }
+                    }
+                }
+                Rectangle {
+                    width: 120px;
+                    ConnectionFilterMenu {
+                        y: (parent.height - self.height) / 2;
+                        title: "Statuses";
+                        scope: "Status";
+                        accessible-label: "Filter statuses";
+                        summary: ConnectionMonitor.connection-status-selection.length == ConnectionMonitor.connection-status-filters.length - 1
+                            ? "All" : "" + ConnectionMonitor.connection-status-selection.length;
+                        options: ConnectionMonitor.connection-status-filters;
+                        toggled(key, checked) => { connection-list.content-y = 0px; ConnectionMonitor.toggle-connection-status(key, checked); }
+                    }
+                }
+                Rectangle {
+                    width: 190px;
+                    Field {
+                        y: (parent.height - self.height) / 2;
+                        height: 34px;
+                        field-height: 34px;
+                        placeholder: "Search process name";
+                        icon: "search";
+                        value <=> ConnectionMonitor.connection-query;
+                        edited => { connection-list.content-y = 0px; ConnectionMonitor.filter-connections(); }
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+            Rectangle {
+                height: 32px;
+                background: Theme.field;
+                JournalLine {
+                    x: 0px;
+                    width: parent.width - Theme.scroll-gutter;
+                    heading: true;
+                    application: "PROCESS";
+                    destination: "TARGET";
+                    started: "START";
+                    status: "TIME";
+                    route: "RULE / PROXY";
+                    sent: "↑ SENT";
+                    received: "↓ RECV";
+                }
+            }
+            Rectangle { height: 1px; background: Theme.border; }
+            connection-list := ScrollView {
+                vertical-stretch: 1;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: max(self.visible-height, connection-content.preferred-height);
+                connection-content := VerticalLayout {
+                    padding-right: Theme.scroll-gutter;
+                    padding-bottom: 8px;
+                    alignment: start;
+                    if ConnectionMonitor.process-summaries.length == 0: Rectangle {
+                        height: 66px;
+                        Text {
+                            text: ConnectionMonitor.connection-event-count == 0 ? "No connections observed yet." : "No connections match these filters.";
+                            color: Theme.muted;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    for process[index] in ConnectionMonitor.process-summaries: JournalGroup {
+                        process: process;
+                        stripe: mod(index, 2) == 1;
+                        toggled => { ConnectionMonitor.expand-process(process.name); }
+                    }
+                }
+            }
+        }
+    }
+    if !ConnectionMonitor.only-active: Text {
+        text: "History keeps up to 256 connections completed since a finished status was selected.";
+        color: Theme.muted;
+        font-size: 11px;
+        wrap: word-wrap;
+    }
+    if ConnectionMonitor.connection-omitted > 0: Text {
+        text: "Tracking limit: 4,096 concurrent connections. Omitted: " + ConnectionMonitor.connection-omitted;
+        color: Theme.warning;
+        font-size: 11px;
+        wrap: word-wrap;
     }
 }

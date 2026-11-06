@@ -23,6 +23,7 @@ pub fn persist(
     let changed = {
         let previous = state.borrow();
         previous.rules != next.rules
+            || previous.local_networks != next.local_networks
             || previous.proxies != next.proxies
             || previous.default_action != next.default_action
     };

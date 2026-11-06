@@ -1,7 +1,7 @@
 use super::{Command, State};
 use crate::{MainWindow, ProxyRow};
 use anyhow::{Context, Result, ensure};
-use slint::{ComponentHandle, Model};
+use slint::{ComponentHandle, Model, SharedString, VecModel};
 use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
@@ -18,6 +18,7 @@ pub struct Health {
     tcp: bool,
     udp: bool,
     latency: u128,
+    location: Option<String>,
     error: String,
 }
 pub type Statuses = HashMap<String, Health>;
@@ -37,23 +38,100 @@ pub fn key(proxy: &Proxy) -> String {
 pub fn row(proxy: &Proxy, statuses: &Statuses) -> ProxyRow {
     let key = key(proxy);
     let health = statuses.get(&proxy.id).filter(|h| h.key == key);
-    ProxyRow {
+    let mut row = ProxyRow {
         id: proxy.id.clone().into(),
         key: key.into(),
         name: proxy.name.clone().into(),
         address: format!("{}:{}", proxy.host, proxy.port).into(),
-        health: health.map_or(0, |h| if h.tcp { 2 } else { 3 }),
-        udp: health.is_some_and(|h| h.udp),
-        status: health
-            .map_or_else(String::new, |h| {
-                if h.tcp {
-                    format!("{} ms", h.latency)
-                } else {
-                    h.error.clone()
-                }
-            })
-            .into(),
+        ..ProxyRow::default()
+    };
+    if let Some(health) = health {
+        update_health(&mut row, health);
     }
+    row
+}
+
+fn update_health(row: &mut ProxyRow, health: &Health) {
+    row.health = if health.tcp { 2 } else { 3 };
+    row.udp = health.udp;
+    row.location = health.location.as_deref().unwrap_or_default().into();
+    row.status = if health.tcp {
+        format!("{} ms", health.latency)
+    } else {
+        health.error.clone()
+    }
+    .into();
+}
+
+pub fn refresh_table(ui: &MainWindow) {
+    let query = ui.get_proxy_query().trim().to_lowercase();
+    let rows = ui
+        .get_proxies()
+        .iter()
+        .filter(|row| {
+            query.is_empty()
+                || row.name.to_lowercase().contains(&query)
+                || row.address.to_lowercase().contains(&query)
+        })
+        .collect();
+    ui.set_visible_proxies(super::model(rows));
+    set_selection(ui, ui.get_selected_proxy_ids().iter().collect());
+}
+
+// Selection is scoped to the visible rows, including after a search or edit.
+fn set_selection(ui: &MainWindow, requested: Vec<SharedString>) {
+    let rows = ui.get_visible_proxies();
+    let mut ids = Vec::new();
+    let flags = rows
+        .iter()
+        .map(|row| {
+            let checked = requested.contains(&row.id);
+            if checked {
+                ids.push(row.id);
+            }
+            checked
+        })
+        .collect();
+    ui.set_proxy_selection_state(if ids.is_empty() {
+        0
+    } else if ids.len() == rows.row_count() {
+        2
+    } else {
+        1
+    });
+    ui.set_proxy_selection(super::model(flags));
+    ui.set_selected_proxy_ids(super::model(ids));
+}
+
+pub fn wire_table(ui: &MainWindow) {
+    let weak = ui.as_weak();
+    ui.on_filter_proxies(move || {
+        if let Some(ui) = weak.upgrade() {
+            refresh_table(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_toggle_proxy_selection(move |id, checked| {
+        if let Some(ui) = weak.upgrade() {
+            let mut ids: Vec<_> = ui.get_selected_proxy_ids().iter().collect();
+            ids.retain(|existing| existing != &id);
+            if checked {
+                ids.push(id);
+            }
+            set_selection(&ui, ids);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_select_visible_proxies(move |checked| {
+        if let Some(ui) = weak.upgrade() {
+            let ids = if checked {
+                ui.get_visible_proxies().iter().map(|row| row.id).collect()
+            } else {
+                Vec::new()
+            };
+            set_selection(&ui, ids);
+        }
+    });
 }
 pub async fn check(proxy: &Proxy) -> Health {
     let mut health = Health {
@@ -61,6 +139,7 @@ pub async fn check(proxy: &Proxy) -> Health {
         tcp: false,
         udp: false,
         latency: 0,
+        location: None,
         error: String::new(),
     };
     match socks::probe(proxy).await {
@@ -68,6 +147,7 @@ pub async fn check(proxy: &Proxy) -> Health {
             health.tcp = true;
             health.udp = udp;
             health.latency = latency;
+            health.location = platform::proxy_location(proxy).await;
         }
         Err(error) => health.error = format!("{error:#}"),
     }
@@ -76,24 +156,47 @@ pub async fn check(proxy: &Proxy) -> Health {
 
 fn result_text(name: &str, health: &Health) -> (String, bool) {
     if health.tcp {
-        (
-            format!(
-                "{name}: TCP available, {} ms · UDP {}",
-                health.latency,
-                if health.udp {
-                    "available"
-                } else {
-                    "unavailable"
-                }
-            ),
-            !health.udp,
-        )
+        let mut message = format!(
+            "{name}: TCP available, {} ms · UDP {}",
+            health.latency,
+            if health.udp {
+                "available"
+            } else {
+                "unavailable"
+            }
+        );
+        if let Some(location) = &health.location {
+            message.push_str(" · ");
+            message.push_str(location);
+        }
+        (message, !health.udp)
     } else {
         (
             format!("{name}: Connection failed · {}", health.error),
             true,
         )
     }
+}
+
+pub(super) fn preview_statuses(config: &Config) -> Statuses {
+    config
+        .proxies
+        .iter()
+        .zip([("Ashburn, US", 98), ("Nuremberg, DE", 19)])
+        .map(|(proxy, (location, latency))| {
+            (
+                proxy.id.clone(),
+                Health {
+                    key: key(proxy),
+                    tcp: true,
+                    udp: true,
+                    latency,
+                    location: Some(location.into()),
+                    error: String::new(),
+                },
+            )
+        })
+        .collect()
 }
 
 fn apply_result(ui: &MainWindow, proxy: &Proxy, health: &Health, token: Option<&str>) {
@@ -114,12 +217,22 @@ fn apply_result(ui: &MainWindow, proxy: &Proxy, health: &Health, token: Option<&
         }
     } else {
         ui.set_probe_busy(false);
-        if let Some(row) = ui
-            .get_proxies()
+        let rows = ui.get_proxies();
+        if let Some((index, mut row)) = rows
             .iter()
-            .find(|row| row.id == proxy.id && row.key == health.key)
+            .enumerate()
+            .find(|(_, row)| row.id == proxy.id && row.key == health.key)
         {
             let (message, error) = result_text(&row.name, health);
+            update_health(&mut row, health);
+            if let Some(model) = rows.as_any().downcast_ref::<VecModel<ProxyRow>>() {
+                model.set_row_data(index, row);
+            } else {
+                let mut updated: Vec<_> = rows.iter().collect();
+                updated[index] = row;
+                ui.set_proxies(super::model(updated));
+            }
+            refresh_table(ui);
             super::show_toast(ui, message, error);
         }
     }
@@ -228,6 +341,8 @@ pub fn wire_form_probe(ui: &MainWindow, state: State, sender: SyncSender<Command
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
+    use i_slint_backend_testing::ElementHandle;
+    use slint::platform::{PointerEventButton, WindowEvent};
 
     fn fixture_proxy() -> Proxy {
         Proxy {
@@ -238,6 +353,48 @@ mod tests {
             username: String::new(),
             protected_password: None,
         }
+    }
+
+    #[test]
+    fn first_click_selects_proxies_and_search_limits_selection_to_visible_rows() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1000., 700.));
+        ui.set_page(2);
+        let primary = fixture_proxy();
+        let backup = Proxy {
+            id: "backup".into(),
+            name: "Backup".into(),
+            ..primary.clone()
+        };
+        let statuses = Statuses::new();
+        ui.set_proxies(super::super::model(vec![
+            row(&primary, &statuses),
+            row(&backup, &statuses),
+        ]));
+        wire_table(&ui);
+        refresh_table(&ui);
+        ui.show().unwrap();
+
+        let click = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap_or_else(|| panic!("Missing control {label}"))
+                .mock_single_click(PointerEventButton::Left);
+        };
+        click("Select all proxies");
+        assert_eq!(ui.get_proxy_selection_state(), 2);
+        click("Select proxy Proxy");
+        assert_eq!(ui.get_proxy_selection_state(), 1);
+        click("Select all proxies");
+        click("Search proxies");
+        for text in ["B", "A"] {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+        }
+        assert_eq!(ui.get_visible_proxies().row_count(), 1);
+        assert_eq!(ui.get_selected_proxy_ids().row_count(), 1);
+        assert_eq!(ui.get_selected_proxy_ids().row_data(0).unwrap(), "backup");
     }
 
     #[test]
@@ -253,9 +410,12 @@ mod tests {
             tcp: true,
             udp: true,
             latency: 7,
+            location: Some("Berlin, DE".into()),
             error: String::new(),
         };
         apply_result(&ui, &proxy, &health, None);
+        assert_eq!(ui.get_visible_proxies().row_data(0).unwrap().status, "7 ms");
+        assert_eq!(ui.get_proxies().row_data(0).unwrap().location, "Berlin, DE");
         assert!(ui.get_toast().starts_with("Current name:"));
         assert!(
             ui.get_toast().contains("TCP available")
@@ -266,8 +426,11 @@ mod tests {
         let previous = ui.get_toast();
         health.key = "old endpoint".into();
         health.tcp = false;
+        health.location = None;
         health.error = "connection refused".into();
         apply_result(&ui, &proxy, &health, None);
+        assert_eq!(ui.get_visible_proxies().row_data(0).unwrap().status, "7 ms");
+        assert_eq!(ui.get_proxies().row_data(0).unwrap().location, "Berlin, DE");
         assert_eq!(
             ui.get_toast(),
             previous,
@@ -300,6 +463,7 @@ mod tests {
             tcp: true,
             udp: true,
             latency: 3,
+            location: None,
             error: String::new(),
         };
         ui.set_dialog(1);
@@ -362,6 +526,7 @@ mod tests {
                 tcp: true,
                 udp: false,
                 latency: 5,
+                location: None,
                 error: String::new(),
             },
         );

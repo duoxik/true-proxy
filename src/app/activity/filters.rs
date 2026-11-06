@@ -1,6 +1,6 @@
 use super::{model, routing};
-use crate::{ConnectionFilterOption, ConnectionFilterRow, ConnectionsWindow};
-use slint::{Model, ModelRc, VecModel};
+use crate::{ConnectionFilterOption, ConnectionMonitor, MainWindow};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::collections::{BTreeMap, HashSet};
 use true_proxy::{
     config::Action,
@@ -36,21 +36,25 @@ pub fn default_statuses() -> Vec<String> {
         .map(|status| status_key(*status))
         .collect()
 }
-pub fn selected_statuses(ui: &ConnectionsWindow) -> HashSet<String> {
-    routing::values(ui.get_connection_status_selection())
-        .into_iter()
-        .filter(|key| STATUSES.iter().any(|status| status_key(*status) == *key))
-        .collect()
+pub fn selected_statuses(ui: &MainWindow) -> HashSet<String> {
+    routing::values(
+        ui.global::<ConnectionMonitor>()
+            .get_connection_status_selection(),
+    )
+    .into_iter()
+    .filter(|key| STATUSES.iter().any(|status| status_key(*status) == *key))
+    .collect()
 }
-pub fn history_enabled(ui: &ConnectionsWindow) -> bool {
+pub fn history_enabled(ui: &MainWindow) -> bool {
     let selected = selected_statuses(ui);
     STATUSES
         .iter()
         .any(|status| status.finished() && selected.contains(&status_key(*status)))
 }
-pub fn is_default(ui: &ConnectionsWindow) -> bool {
-    ui.get_connection_query().is_empty()
-        && ui.get_connection_routes_all()
+pub fn is_default(ui: &MainWindow) -> bool {
+    let monitor = ui.global::<ConnectionMonitor>();
+    monitor.get_connection_query().is_empty()
+        && monitor.get_connection_routes_all()
         && selected_statuses(ui) == default_statuses().into_iter().collect()
 }
 fn option(key: String, label: String, checked: bool) -> ConnectionFilterOption {
@@ -60,15 +64,10 @@ fn option(key: String, label: String, checked: bool) -> ConnectionFilterOption {
         checked,
     }
 }
-fn options(rows: ModelRc<ConnectionFilterRow>) -> Vec<ConnectionFilterOption> {
-    rows.iter()
-        .flat_map(|row| row.options.iter().collect::<Vec<_>>())
-        .collect()
-}
-
-pub fn refresh(ui: &ConnectionsWindow, snapshots: &[Snapshot]) {
-    let all = ui.get_connection_routes_all();
-    let selected = routing::values(ui.get_connection_route_selection())
+pub fn refresh(ui: &MainWindow, snapshots: &[Snapshot]) {
+    let monitor = ui.global::<ConnectionMonitor>();
+    let all = monitor.get_connection_routes_all();
+    let selected = routing::values(monitor.get_connection_route_selection())
         .into_iter()
         .collect::<HashSet<_>>();
     let mut choices = vec![option(ALL.into(), "All".into(), all)];
@@ -111,7 +110,15 @@ pub fn refresh(ui: &ConnectionsWindow, snapshots: &[Snapshot]) {
             all || selected.contains(&key),
         ));
     }
-    ui.set_connection_route_filters(reconcile(ui.get_connection_route_filters(), choices));
+    monitor.set_selected_route_count(
+        choices
+            .iter()
+            .skip(1)
+            .filter(|choice| choice.checked)
+            .count() as i32,
+    );
+    monitor
+        .set_connection_route_filters(reconcile(monitor.get_connection_route_filters(), choices));
 
     let statuses = selected_statuses(ui);
     let mut choices = vec![option(
@@ -126,53 +133,41 @@ pub fn refresh(ui: &ConnectionsWindow, snapshots: &[Snapshot]) {
             statuses.contains(&status_key(*status)),
         )
     }));
-    ui.set_connection_status_filters(reconcile(ui.get_connection_status_filters(), choices));
-    ui.set_connection_filters_default(is_default(ui));
+    monitor
+        .set_connection_status_filters(reconcile(monitor.get_connection_status_filters(), choices));
+    monitor.set_connection_filters_default(is_default(ui));
 }
 
-/// Reuse unchanged row models; statistics refreshes must not rebuild checkboxes.
+/// Update existing checkbox rows in place to preserve focus and scroll position.
 fn reconcile(
-    previous: ModelRc<ConnectionFilterRow>,
+    previous: ModelRc<ConnectionFilterOption>,
     choices: Vec<ConnectionFilterOption>,
-) -> ModelRc<ConnectionFilterRow> {
-    let rows = choices
-        .chunks(4)
-        .enumerate()
-        .map(|(index, chunk)| {
-            let values = previous
-                .row_data(index)
-                .map(|row| row.options)
-                .filter(|old| {
-                    old.row_count() == chunk.len() && old.iter().zip(chunk).all(|(a, b)| a == *b)
-                })
-                .unwrap_or_else(|| model(chunk.to_vec()));
-            ConnectionFilterRow { options: values }
-        })
-        .collect::<Vec<_>>();
-    if previous.row_count() == rows.len()
+) -> ModelRc<ConnectionFilterOption> {
+    if previous.row_count() == choices.len()
         && let Some(model) = previous
             .as_any()
-            .downcast_ref::<VecModel<ConnectionFilterRow>>()
+            .downcast_ref::<VecModel<ConnectionFilterOption>>()
     {
-        for (index, row) in rows.into_iter().enumerate() {
+        for (index, row) in choices.into_iter().enumerate() {
             if previous.row_data(index).as_ref() != Some(&row) {
                 model.set_row_data(index, row);
             }
         }
         previous
     } else {
-        model(rows)
+        model(choices)
     }
 }
 
-pub fn toggle_route(ui: &ConnectionsWindow, key: &str, checked: bool) {
-    let choices = options(ui.get_connection_route_filters());
+pub fn toggle_route(ui: &MainWindow, key: &str, checked: bool) {
+    let monitor = ui.global::<ConnectionMonitor>();
+    let choices = monitor.get_connection_route_filters();
     if !choices.iter().any(|choice| choice.key == key) {
         return;
     }
     if key == ALL {
-        ui.set_connection_routes_all(checked);
-        ui.set_connection_route_selection(routing::strings(vec![]));
+        monitor.set_connection_routes_all(checked);
+        monitor.set_connection_route_selection(routing::strings(vec![]));
         return;
     }
     let available = choices
@@ -180,10 +175,10 @@ pub fn toggle_route(ui: &ConnectionsWindow, key: &str, checked: bool) {
         .filter(|choice| choice.key != ALL)
         .map(|choice| choice.key.to_string())
         .collect::<HashSet<_>>();
-    let mut selected = if ui.get_connection_routes_all() {
+    let mut selected = if monitor.get_connection_routes_all() {
         available.clone()
     } else {
-        routing::values(ui.get_connection_route_selection())
+        routing::values(monitor.get_connection_route_selection())
             .into_iter()
             .collect()
     };
@@ -197,17 +192,17 @@ pub fn toggle_route(ui: &ConnectionsWindow, key: &str, checked: bool) {
         selected.retain(|key| available.contains(key));
     }
     let all = available.iter().all(|key| selected.contains(key));
-    ui.set_connection_routes_all(all);
+    monitor.set_connection_routes_all(all);
     let mut selected = if all {
         vec![]
     } else {
         selected.into_iter().collect::<Vec<_>>()
     };
     selected.sort();
-    ui.set_connection_route_selection(routing::strings(selected));
+    monitor.set_connection_route_selection(routing::strings(selected));
 }
 
-pub fn toggle_status(ui: &ConnectionsWindow, key: &str, checked: bool) {
+pub fn toggle_status(ui: &MainWindow, key: &str, checked: bool) {
     let mut selected = selected_statuses(ui);
     if key == ALL {
         selected = if checked {
@@ -226,12 +221,14 @@ pub fn toggle_status(ui: &ConnectionsWindow, key: &str, checked: bool) {
     }
     let mut selected = selected.into_iter().collect::<Vec<_>>();
     selected.sort();
-    ui.set_connection_status_selection(routing::strings(selected));
+    ui.global::<ConnectionMonitor>()
+        .set_connection_status_selection(routing::strings(selected));
 }
 
-pub fn reset(ui: &ConnectionsWindow) {
-    ui.set_connection_query("".into());
-    ui.set_connection_routes_all(true);
-    ui.set_connection_route_selection(routing::strings(vec![]));
-    ui.set_connection_status_selection(routing::strings(default_statuses()));
+pub fn reset(ui: &MainWindow) {
+    let monitor = ui.global::<ConnectionMonitor>();
+    monitor.set_connection_query("".into());
+    monitor.set_connection_routes_all(true);
+    monitor.set_connection_route_selection(routing::strings(vec![]));
+    monitor.set_connection_status_selection(routing::strings(default_statuses()));
 }

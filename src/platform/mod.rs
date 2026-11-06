@@ -6,9 +6,22 @@ use std::path::Path;
 #[cfg(windows)]
 pub mod windows;
 #[cfg(windows)]
+pub use windows::proxy_location;
+#[cfg(windows)]
 pub use windows::{
-    SingleInstance, is_admin, protect, relaunch_elevated, replace_file, show_error, unprotect,
+    SingleInstance, is_admin, local_clock, protect, relaunch_elevated, replace_file, show_error,
+    unprotect,
 };
+
+#[cfg(not(windows))]
+pub async fn proxy_location(_: &crate::config::Proxy) -> Option<String> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn local_clock() -> Option<(u16, u16, u16)> {
+    None
+}
 
 #[derive(Clone)]
 pub struct RunningProcess {

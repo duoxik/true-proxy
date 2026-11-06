@@ -4,18 +4,42 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 
+const MAX_LOGS: usize = 256;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogSource {
+    Backend,
+    Connections,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogLevel {
+    Info,
+    Verbose,
+    Error,
+}
+
 #[derive(Clone)]
 pub struct LogEntry {
     pub sequence: u64,
+    pub time: Option<(u16, u16, u16)>,
+    pub source: LogSource,
+    pub level: LogLevel,
     pub process: String,
     pub destination: String,
     pub route: String,
     pub message: String,
+}
+
+#[derive(Default)]
+struct LogBuffer {
+    revision: u64,
+    entries: VecDeque<LogEntry>,
 }
 
 #[derive(Default)]
@@ -25,8 +49,8 @@ pub struct Statistics {
     pub downloaded: AtomicU64,
     pub connections: AtomicU64,
     pub blocked: AtomicU64,
-    sequence: AtomicU64,
-    logs: Mutex<VecDeque<LogEntry>>,
+    log_tracking: AtomicBool,
+    logs: Mutex<LogBuffer>,
     processes: Mutex<HashMap<String, Arc<ProcessCounters>>>,
     routing_started: Mutex<Option<Instant>>,
 }
@@ -62,7 +86,18 @@ impl Statistics {
         if !active {
             self.activity.finish_all("Routing stopped");
         }
-        *self.routing_started.lock().unwrap() = active.then(Instant::now);
+        let mut started = self.routing_started.lock().unwrap();
+        let changed = started.is_some() != active;
+        *started = active.then(Instant::now);
+        drop(started);
+        if changed {
+            let message = if active {
+                "Routing started"
+            } else {
+                "Routing stopped"
+            };
+            self.log(LogSource::Backend, LogLevel::Info, "", "", "", message);
+        }
     }
     pub fn uptime(&self) -> Duration {
         self.routing_started
@@ -115,35 +150,49 @@ impl Statistics {
     }
     pub fn log(
         &self,
+        source: LogSource,
+        level: LogLevel,
         process: impl Into<String>,
         destination: impl Into<String>,
         route: impl Into<String>,
         message: impl Into<String>,
     ) {
-        let entry = LogEntry {
-            sequence: self.sequence.fetch_add(1, Ordering::Relaxed),
+        let mut entry = LogEntry {
+            sequence: 0,
+            time: crate::platform::local_clock(),
+            source,
+            level,
             process: process.into(),
             destination: destination.into(),
             route: route.into(),
             message: message.into(),
         };
         let mut logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
-        if logs.len() >= 256 {
-            logs.pop_front();
+        logs.revision = logs.revision.wrapping_add(1);
+        entry.sequence = logs.revision;
+        if logs.entries.len() == MAX_LOGS {
+            logs.entries.pop_front();
         }
-        logs.push_back(entry);
+        logs.entries.push_back(entry);
     }
-    pub fn logs(&self) -> Vec<LogEntry> {
-        self.logs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .rev()
-            .cloned()
-            .collect()
+    /// Detailed connection events may feed the visible log without tracking sessions.
+    pub fn set_log_tracking(&self, enabled: bool) {
+        self.log_tracking.store(enabled, Ordering::Relaxed);
+    }
+    pub fn log_tracking(&self) -> bool {
+        self.log_tracking.load(Ordering::Relaxed)
+    }
+    pub fn log_snapshot(&self, previous: Option<u64>) -> Option<(u64, Vec<LogEntry>)> {
+        let logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
+        (previous != Some(logs.revision))
+            .then(|| (logs.revision, logs.entries.iter().cloned().collect()))
     }
     pub fn clear(&self) {
-        self.logs.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let mut logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
+        if !logs.entries.is_empty() {
+            logs.entries.clear();
+            logs.revision = logs.revision.wrapping_add(1);
+        }
     }
 }
 
@@ -217,7 +266,14 @@ mod tests {
         let a = stats.connection("Discord.exe");
         let b = stats.connection("discord.exe");
         a.process.uploaded.store(123, Ordering::Relaxed);
-        stats.log("Discord.exe", "test", "proxy", "TCP");
+        stats.log(
+            LogSource::Connections,
+            LogLevel::Info,
+            "Discord.exe",
+            "test",
+            "proxy",
+            "TCP",
+        );
         stats.clear();
         let rows = stats.process_snapshots();
         assert_eq!(rows.len(), 1);
@@ -226,6 +282,27 @@ mod tests {
         drop((a, b));
         assert_eq!(stats.connections.load(Ordering::Relaxed), 0);
         assert_eq!(stats.process_snapshots()[0].active, 0);
+    }
+    #[test]
+    fn technical_logs_are_bounded_and_return_only_changed_snapshots() {
+        let stats = Statistics::default();
+        for index in 0..=MAX_LOGS {
+            stats.log(
+                LogSource::Backend,
+                LogLevel::Error,
+                "",
+                "",
+                "",
+                index.to_string(),
+            );
+        }
+        let (revision, entries) = stats.log_snapshot(None).unwrap();
+        assert_eq!(entries.len(), MAX_LOGS);
+        assert_eq!(entries[0].message, "1");
+        assert_eq!(entries[MAX_LOGS - 1].message, MAX_LOGS.to_string());
+        assert!(stats.log_snapshot(Some(revision)).is_none());
+        stats.clear();
+        assert!(stats.log_snapshot(Some(revision)).unwrap().1.is_empty());
     }
     #[test]
     fn process_metrics_are_bounded() {

@@ -1,13 +1,12 @@
 import { ComboBox } from "std-widgets.slint";
 
 // Shared theme, models and controls for the tray panel and Connections window.
-export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, health: int, udp: bool }
-export struct RuleRow { id: string, name: string, route: string, enabled: bool }
-export struct LogRow { id: string, process: string, destination: string, route: string, message: string, source: string, status: string, state: int }
+export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, location: string, health: int, udp: bool }
+export struct RuleRow { id: string, name: string, route: string, enabled: bool, priority: int, apps: int, hosts: int, ports: int, protocol: string }
+export struct LogRow { id: string, process: string, pid: string, destination: string, route: string, message: string, source: string, started: string, elapsed: string, status: string, state: int }
 export struct ProcessChoice { key: string, name: string, path: string, pids: string, instances: int, selected: bool }
 export struct ProcessSummary { name: string, active: int, events: int, uploaded: string, downloaded: string, expanded: bool, connections: [LogRow] }
 export struct ConnectionFilterOption { key: string, label: string, checked: bool }
-export struct ConnectionFilterRow { options: [ConnectionFilterOption] }
 
 export global Theme {
     out property <color> background: #f1f3f5;
@@ -104,7 +103,7 @@ export component ActionButton inherits Rectangle {
     in property <bool> icon-only: false;
     in property <bool> primary: false;
     in property <bool> enabled: true;
-    property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text;
+    in property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text;
     callback clicked;
     min-width: root.icon-only ? 36px : max(38px, label-text.preferred-width + 26px + (root.icon == "" ? 0px : 23px)); max-width: self.min-width;
     height: 38px; horizontal-stretch: 0; vertical-stretch: 0;
@@ -136,6 +135,7 @@ export component Field inherits VerticalLayout {
     in property <string> placeholder;
     in property <string> icon;
     in property <bool> secret: false;
+    in property <length> field-height: 40px;
     in-out property <string> value;
     spacing: 6px;
     alignment: start;
@@ -145,7 +145,7 @@ export component Field inherits VerticalLayout {
     callback accepted;
     if root.label != "": Text { text: root.label; font-size: 13px; font-weight: 500; color: Theme.secondary; }
     Rectangle {
-        height: 40px;
+        height: root.field-height;
         border-radius: Theme.radius-small;
         border-width: 1px;
         border-color: input.has-focus ? Theme.accent : Theme.border;

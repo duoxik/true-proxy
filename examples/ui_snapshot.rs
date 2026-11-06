@@ -152,8 +152,11 @@ fn main() -> Result<()> {
     ui.set_uptime("00:14:37".into());
     ui.set_uploaded("2.1 MB".into());
     ui.set_downloaded("16.4 MB".into());
+    ui.set_upload_rate("24.0 KB/s".into());
+    ui.set_download_rate("38.0 KB/s".into());
+    ui.set_upload_share(2.1 / (2.1 + 16.4));
+    ui.set_has_transfer(true);
     ui.set_connection_count("4".into());
-    ui.set_local_networks(true_proxy::local_network::NETWORKS.join(" · ").into());
     ui.set_proxy_names(model(vec!["VPN".into(), "Work".into()]));
     ui.set_proxies(model(vec![
         ProxyRow {
@@ -162,6 +165,7 @@ fn main() -> Result<()> {
             name: "VPN".into(),
             address: "192.0.2.10:1080".into(),
             status: "3 ms".into(),
+            location: "Frankfurt am Main, DE".into(),
             health: 2,
             udp: true,
         },
@@ -171,6 +175,7 @@ fn main() -> Result<()> {
             name: "Work".into(),
             address: "127.0.0.1:1080".into(),
             status: "".into(),
+            location: "".into(),
             health: 3,
             udp: false,
         },
@@ -181,12 +186,22 @@ fn main() -> Result<()> {
             name: "Applications".into(),
             route: "Proxy · VPN".into(),
             enabled: true,
+            priority: 2,
+            apps: 4,
+            hosts: 0,
+            ports: 0,
+            protocol: "TCP + UDP".into(),
         },
         RuleRow {
             id: "game".into(),
             name: "Game".into(),
             route: "Proxy · VPN".into(),
             enabled: false,
+            priority: 3,
+            apps: 3,
+            hosts: 2,
+            ports: 0,
+            protocol: "TCP".into(),
         },
     ]));
     ui.set_enabled_rule_count(1);
@@ -244,65 +259,55 @@ fn main() -> Result<()> {
     ui.set_import_summary("Proxies: 1 · Rules: 0 · Default route: Direct".into());
     save(&main_adapter, &destination.join("json-import.png"))?;
     ui.set_dialog(0);
-    ui.hide()?;
-
-    let connections = ConnectionsWindow::new()?;
-    let connection_adapter = windows
-        .borrow()
-        .last()
-        .cloned()
-        .context("No connection memory window")?;
+    ui.set_page(3);
+    let connections = ui.global::<ConnectionMonitor>();
     connections.set_connection_route_filters(model(vec![
-        ConnectionFilterRow {
-            options: model(vec![
-                filter("all", "All", true),
-                filter("proxy:p", "VPN", true),
-                filter("proxy:q", "Work", true),
-                filter("direct", "Direct", true),
-            ]),
-        },
-        ConnectionFilterRow {
-            options: model(vec![filter("block", "Blocked", true)]),
-        },
+        filter("all", "All", true),
+        filter("proxy:p", "VPN", true),
+        filter("proxy:q", "Work", true),
+        filter("direct", "Direct", true),
+        filter("block", "Blocked", true),
     ]));
     connections.set_connection_status_filters(model(vec![
-        ConnectionFilterRow {
-            options: model(vec![
-                filter("all", "All", false),
-                filter("0", "Connecting", true),
-                filter("1", "Active", true),
-                filter("2", "Closing", true),
-            ]),
-        },
-        ConnectionFilterRow {
-            options: model(vec![
-                filter("3", "Closed", false),
-                filter("4", "Failed", false),
-                filter("5", "Blocked", false),
-                filter("6", "Stopped", false),
-            ]),
-        },
+        filter("all", "All", false),
+        filter("0", "Connecting", true),
+        filter("1", "Active", true),
+        filter("2", "Closing", true),
+        filter("3", "Closed", false),
+        filter("4", "Failed", false),
+        filter("5", "Blocked", false),
+        filter("6", "Stopped", false),
     ]));
     connections.set_connection_event_count(3);
     connections.set_filtered_event_count(3);
+    connections.set_active_connection_count(3);
+    connections.set_total_sent("2.0 MB".into());
+    connections.set_total_received("16.4 MB".into());
+    connections.set_total_traffic("18.4 MB".into());
     let rows = model(vec![
         LogRow {
             id: "1".into(),
             process: "browser.exe".into(),
-            destination: "203.0.113.7:443".into(),
+            pid: "PID 100".into(),
+            destination: "TCP · 203.0.113.7:443".into(),
             route: "VPN".into(),
             message: "TCP · Applications · example.com".into(),
-            source: "192.0.2.30:51001 · PID 100".into(),
+            source: "192.0.2.30:51001".into(),
+            started: "21:11:48".into(),
+            elapsed: "8.6s".into(),
             status: "Active".into(),
             state: 1,
         },
         LogRow {
             id: "2".into(),
             process: "browser.exe".into(),
-            destination: "198.51.100.9:443".into(),
+            pid: "PID 100".into(),
+            destination: "TCP · 198.51.100.9:443".into(),
             route: "VPN".into(),
             message: "TCP · Applications · DNS name unknown".into(),
-            source: "192.0.2.30:51002 · PID 100".into(),
+            source: "192.0.2.30:51002".into(),
+            started: "21:11:49".into(),
+            elapsed: "7.1s".into(),
             status: "Connecting".into(),
             state: 0,
         },
@@ -327,10 +332,32 @@ fn main() -> Result<()> {
             connections: model(vec![]),
         },
     ]));
-    connections.window().set_size(PhysicalSize::new(1040, 760));
-    connections.show()?;
-    save(&connection_adapter, &destination.join("connections.png"))?;
-    connections.hide()?;
+    save(&main_adapter, &destination.join("connections.png"))?;
+    ui.set_page(5);
+    let logs = ui.global::<TechnicalLogs>();
+    logs.set_total(3);
+    logs.set_rows(model(vec![
+        TechnicalLogRow {
+            time: "12:18:41".into(),
+            level: "INF".into(),
+            message: "UI preview started".into(),
+            error: false,
+        },
+        TechnicalLogRow {
+            time: "12:18:44".into(),
+            level: "INF".into(),
+            message: "browser.exe · 203.0.113.7:443 · VPN · TCP · Applications".into(),
+            error: false,
+        },
+        TechnicalLogRow {
+            time: "12:18:47".into(),
+            level: "ERR".into(),
+            message: "game.exe · 198.51.100.28:443 · VPN · Sample SOCKS5 timeout".into(),
+            error: true,
+        },
+    ]));
+    save(&main_adapter, &destination.join("logs.png"))?;
+    ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());
     Ok(())
 }

@@ -180,14 +180,11 @@ mod ui_tests {
     }
 
     #[test]
-    fn desktop_navigation_fits_supported_sizes_and_opens_connections() {
+    fn desktop_navigation_fits_supported_sizes_in_one_window() {
         i_slint_backend_testing::init_no_event_loop();
         for (width, height) in [(960., 640.), (1240., 780.)] {
             let ui = MainWindow::new().unwrap();
             ui.window().set_size(slint::LogicalSize::new(width, height));
-            let connections = Rc::new(Cell::new(0));
-            let calls = connections.clone();
-            ui.on_open_connections(move || calls.set(calls.get() + 1));
             let hides = Rc::new(Cell::new(0));
             let calls = hides.clone();
             ui.window().on_close_requested(move || {
@@ -199,6 +196,8 @@ mod ui_tests {
                 ("Dashboard", 0),
                 ("Rules", 1),
                 ("Proxies", 2),
+                ("Connections", 3),
+                ("Logs", 5),
                 ("Settings", 4),
             ] {
                 let button = ElementHandle::find_by_accessible_label(&ui, label)
@@ -212,9 +211,13 @@ mod ui_tests {
                 button.mock_single_click(PointerEventButton::Left);
                 assert_eq!(ui.get_page(), page);
             }
-            click(&ui, "Connections");
-            assert_eq!(connections.get(), 1);
-            assert_eq!(ui.get_page(), 4, "Connections opens in its own window");
+            click(&ui, "Logs");
+            let logs = ui.global::<TechnicalLogs>();
+            assert!(!logs.get_follow());
+            click(&ui, "Follow: Off");
+            assert!(logs.get_follow());
+            click(&ui, "Follow: On");
+            assert!(!logs.get_follow());
             assert!(ui.window().size().width <= width as u32);
             assert!(ui.window().size().height <= height as u32);
             ui.window()
@@ -294,11 +297,10 @@ mod ui_tests {
     }
 
     #[test]
-    fn local_network_card_is_always_first_and_contains_no_mutation_controls() {
+    fn local_network_card_is_always_first_and_can_only_edit_cidrs() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
-        ui.set_local_networks(true_proxy::local_network::NETWORKS.join(", ").into());
         ui.set_page(1);
         ui.show().unwrap();
         let card = ElementHandle::find_by_element_id(&ui, "MainWindow::local-network-card")
@@ -308,40 +310,38 @@ mod ui_tests {
         assert!(
             labels
                 .iter()
-                .any(|element| element.accessible_label().as_deref() == Some("1. Local network"))
+                .any(|element| element.accessible_label().as_deref() == Some("1. Local"))
         );
         assert!(
             labels
                 .iter()
                 .any(|element| element.accessible_label().as_deref() == Some("Direct"))
         );
-        assert!(
-            labels.iter().all(|element| !matches!(
-                element.accessible_role(),
-                Some(
-                    AccessibleRole::Button
-                        | AccessibleRole::Switch
-                        | AccessibleRole::Checkbox
-                        | AccessibleRole::TextInput
-                )
-            )),
-            "The fixed route must have no edit, delete, toggle, save or move control"
-        );
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Local network")
-                .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
-                .count(),
-            0,
-            "There must be no old editable preset button"
+            labels
+                .iter()
+                .filter_map(|element| {
+                    match element.accessible_role() {
+                        Some(
+                            AccessibleRole::Button
+                            | AccessibleRole::Switch
+                            | AccessibleRole::Checkbox
+                            | AccessibleRole::TextInput,
+                        ) => element.accessible_label(),
+                        _ => None,
+                    }
+                })
+                .collect::<Vec<_>>(),
+            ["Edit local network"],
+            "The local route must only expose CIDR editing"
         );
-        assert!(ui.get_local_networks().contains("192.168.0.0/16"));
-        assert!(ui.get_local_networks().contains("fc00::/7"));
 
         ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
             crate::RuleRow {
                 id: "game".into(),
                 name: "Game".into(),
                 enabled: true,
+                priority: 2,
                 ..Default::default()
             },
         ])));
@@ -380,6 +380,7 @@ mod ui_tests {
                 id: "one".into(),
                 name: "Game".into(),
                 enabled: true,
+                priority: 2,
                 ..Default::default()
             },
         ])));
@@ -409,6 +410,10 @@ mod ui_tests {
         );
         ui.set_busy(false);
         ui.set_active(false);
+        click(&ui, "Dashboard");
+        click(&ui, "Rule Game");
+        assert_eq!(toggles.get(), 3, "The Dashboard switch edits the same rule");
+        click(&ui, "Rules");
         ui.set_dialog(2);
         let protocol = ElementHandle::find_by_element_id(&ui, "ThemedComboBox::control")
             .find(|control| control.accessible_value().as_deref() == Some("TCP + UDP"))

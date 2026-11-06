@@ -63,8 +63,11 @@ mod tests {
                     })
                     .collect();
             }
-            let folder =
-                std::env::temp_dir().join(format!("true-proxy-fallback-{}", crate::app::id()));
+            let folder = std::env::temp_dir().join(format!(
+                "true-proxy-fallback-{}-{:?}",
+                crate::app::id(),
+                std::thread::current().id()
+            ));
             let path = folder.join("config.json");
             config.save(&path).unwrap();
             Self {

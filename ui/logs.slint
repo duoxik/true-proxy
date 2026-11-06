@@ -1,0 +1,237 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "common.slint";
+
+export struct TechnicalLogRow { time: string, level: string, message: string, error: bool }
+
+export global TechnicalLogs {
+    in property <[TechnicalLogRow]> rows;
+    in property <int> total;
+    in property <int> revision;
+    in-out property <int> verbosity: 0;
+    in-out property <bool> errors-only: false;
+    in-out property <int> source: 0;
+    in-out property <bool> follow: false;
+    callback filter;
+}
+
+component LogFilterButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <color> selected-color: Theme.primary;
+    in property <color> resting-color: transparent;
+    callback clicked;
+
+    width: max(28px, caption.preferred-width + 16px);
+    height: 26px;
+    border-radius: 6px;
+    border-width: focus.has-focus ? 1px : 0px;
+    border-color: Theme.accent-hover;
+    background: root.selected ? root.selected-color : touch.has-hover ? Theme.surface-hover : root.resting-color;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    caption := Text {
+        text: root.label;
+        color: root.selected ? Theme.primary-text : Theme.secondary;
+        font-size: 11px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    forward-focus: focus;
+}
+
+component LogFilterGroup inherits Rectangle {
+    width: filters.preferred-width;
+    height: 30px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.field;
+
+    filters := HorizontalLayout {
+        padding: 2px;
+        spacing: 2px;
+        @children
+    }
+}
+
+export component LogsView inherits Rectangle {
+    private property <int> revision: TechnicalLogs.revision;
+    private property <bool> follow: TechnicalLogs.follow;
+    vertical-stretch: 1;
+    min-width: 0px;
+    min-height: 0px;
+    border-radius: Theme.radius-medium;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface;
+    clip: true;
+
+    function follow-latest() {
+        if root.follow {
+            log-scroll.content-y = min(0px, log-scroll.visible-height - log-scroll.content-height);
+        }
+    }
+    init => { root.follow-latest(); }
+    changed revision => { root.follow-latest(); }
+    changed follow => { root.follow-latest(); }
+    changed height => { root.follow-latest(); }
+
+    VerticalLayout {
+        HorizontalLayout {
+            height: 40px;
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 10px;
+            Text {
+                text: "Live log stream";
+                color: Theme.text;
+                font-size: 14px;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Text {
+                text: TechnicalLogs.rows.length == TechnicalLogs.total
+                    ? "latest " + TechnicalLogs.total + " lines"
+                    : TechnicalLogs.rows.length + " of " + TechnicalLogs.total + " lines";
+                color: Theme.muted;
+                font-family: "Consolas";
+                font-size: 11px;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+        HorizontalLayout {
+            height: 44px;
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 8px;
+            LogFilterGroup {
+                y: (parent.height - self.height) / 2;
+                LogFilterButton {
+                    label: "Normal";
+                    selected: TechnicalLogs.verbosity == 0;
+                    clicked => { TechnicalLogs.verbosity = 0; TechnicalLogs.filter(); }
+                }
+                LogFilterButton {
+                    label: "Verbose";
+                    selected: TechnicalLogs.verbosity == 1;
+                    clicked => { TechnicalLogs.verbosity = 1; TechnicalLogs.filter(); }
+                }
+            }
+            LogFilterGroup {
+                y: (parent.height - self.height) / 2;
+                LogFilterButton {
+                    label: "All";
+                    selected: !TechnicalLogs.errors-only;
+                    clicked => { TechnicalLogs.errors-only = false; TechnicalLogs.filter(); }
+                }
+                LogFilterButton {
+                    label: "Error";
+                    selected: TechnicalLogs.errors-only;
+                    clicked => { TechnicalLogs.errors-only = true; TechnicalLogs.filter(); }
+                }
+            }
+            LogFilterGroup {
+                y: (parent.height - self.height) / 2;
+                LogFilterButton {
+                    label: "All sources";
+                    selected: TechnicalLogs.source == 0;
+                    clicked => { TechnicalLogs.source = 0; TechnicalLogs.filter(); }
+                }
+                LogFilterButton {
+                    label: "Backend";
+                    selected: TechnicalLogs.source == 1;
+                    clicked => { TechnicalLogs.source = 1; TechnicalLogs.filter(); }
+                }
+                LogFilterButton {
+                    label: "Connections";
+                    selected: TechnicalLogs.source == 2;
+                    accessible-label: "Log source Connections";
+                    clicked => { TechnicalLogs.source = 2; TechnicalLogs.filter(); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            LogFilterButton {
+                y: (parent.height - self.height) / 2;
+                label: root.follow ? "Follow: On" : "Follow: Off";
+                selected: root.follow;
+                selected-color: Theme.success;
+                resting-color: Theme.field;
+                clicked => { TechnicalLogs.follow = !TechnicalLogs.follow; }
+            }
+        }
+        log-scroll := ScrollView {
+            min-height: 0px;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            content-height: max(self.visible-height, lines.preferred-height);
+
+            lines := VerticalLayout {
+                alignment: start;
+                padding-left: 14px;
+                padding-right: 14px + Theme.scroll-gutter;
+                padding-bottom: 8px;
+                if TechnicalLogs.rows.length == 0: Text {
+                    text: TechnicalLogs.total == 0 ? "No log entries yet" : "No matching log entries";
+                    height: 40px;
+                    color: Theme.muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                for line in TechnicalLogs.rows: HorizontalLayout {
+                    height: max(24px, message.preferred-height + 4px);
+                    spacing: 8px;
+                    Text {
+                        text: line.time;
+                        width: 65px;
+                        color: Theme.muted;
+                        font-family: "Consolas";
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Rectangle {
+                        width: 34px;
+                        height: 17px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 3px;
+                        background: line.error ? Theme.danger-soft : Theme.field;
+                        Text {
+                            text: line.level;
+                            color: line.error ? Theme.danger : Theme.secondary;
+                            font-family: "Consolas";
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    message := Text {
+                        text: line.message;
+                        color: line.error ? Theme.danger : Theme.text;
+                        font-family: "Consolas";
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        min-width: 0px;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}
