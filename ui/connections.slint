@@ -1,5 +1,5 @@
 import { ScrollView, Palette } from "std-widgets.slint";
-import { Theme, ProxyRow, ProcessSummary, LogRow, ConnectionFilterRow, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+import { Theme, UiIcon, ProxyRow, ProcessSummary, LogRow, ConnectionFilterRow, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
 
 component JournalFilters inherits VerticalLayout {
     in property <string> title;
@@ -39,103 +39,124 @@ component JournalFilters inherits VerticalLayout {
     }
 }
 
-component JournalEntry inherits Rectangle {
-    in property <LogRow> entry;
-    in property <bool> show-process;
-    height: 66px;
+component JournalCell inherits VerticalLayout {
+    in property <string> label;
+    in property <string> detail;
+    in property <bool> heading;
+    in property <bool> emphasized;
+    in property <bool> numeric;
+    in property <color> ink: Theme.text;
     min-width: 0px;
-    border-radius: Theme.radius-small;
-    background: Theme.field;
+    alignment: center;
+    spacing: 2px;
+
+    if root.label != "": Text {
+        text: root.label;
+        min-width: 0px;
+        color: root.heading ? Theme.secondary : root.ink;
+        font-size: root.heading ? 10px : 12px;
+        font-weight: root.heading || root.emphasized ? 600 : 400;
+        horizontal-alignment: root.numeric ? right : left;
+        overflow: elide;
+    }
+    if root.detail != "": Text {
+        text: root.detail;
+        min-width: 0px;
+        color: Theme.muted;
+        font-size: 10px;
+        overflow: elide;
+    }
+}
+
+// Use the same columns for headings, application summaries, and connection details.
+component JournalLine inherits HorizontalLayout {
+    in property <bool> heading;
+    in property <bool> group;
+    in property <bool> expanded;
+    in property <string> application;
+    in property <string> source;
+    in property <string> destination;
+    in property <string> explanation;
+    in property <string> route;
+    in property <string> status;
+    in property <color> status-ink: Theme.secondary;
+    in property <string> sent;
+    in property <string> received;
+    padding-left: 16px;
+    padding-right: 16px;
+    spacing: 10px;
+    min-width: 0px;
 
     HorizontalLayout {
-        padding: 10px;
-        spacing: 12px;
-        Text {
-            text: root.entry.route;
-            width: 108px;
-            color: Theme.accent;
-            font-size: 11px;
-            overflow: elide;
-            vertical-alignment: center;
+        width: 174px;
+        spacing: 6px;
+        if root.group: Rectangle {
+            width: 16px;
+            UiIcon {
+                y: (parent.height - self.height) / 2;
+                width: 14px;
+                height: 14px;
+                name: root.expanded ? "chevron-down" : "chevron-right";
+                ink: Theme.secondary;
+            }
         }
-        VerticalLayout {
-            min-width: 0px;
-            spacing: 3px;
-            alignment: center;
-            Text { text: root.entry.destination; min-width: 0px; color: Theme.text; font-size: 12px; overflow: elide; }
-            Text { text: root.show-process ? root.entry.process + " · " + root.entry.source : root.entry.source; min-width: 0px; color: Theme.secondary; font-size: 10px; overflow: elide; }
-            Text { text: root.entry.message; min-width: 0px; color: Theme.muted; font-size: 10px; overflow: elide; }
-        }
-        Rectangle {
-            width: 110px;
+        if root.group: Rectangle {
+            width: 24px;
             Rectangle {
                 y: (parent.height - self.height) / 2;
-                width: parent.width;
-                height: 25px;
+                width: 24px;
+                height: 24px;
                 border-radius: Theme.radius-small;
-                background: Theme.surface;
-                Text {
-                    text: root.entry.status;
-                    color: root.entry.state == 1 ? Theme.success : root.entry.state == 0 ? Theme.accent : root.entry.state == 2 ? Theme.warning : (root.entry.state == 4 || root.entry.state == 5) ? Theme.danger : Theme.secondary;
-                    font-size: 11px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                    overflow: elide;
+                background: Theme.accent-soft;
+                UiIcon {
+                    x: 5px;
+                    y: 5px;
+                    width: 14px;
+                    height: 14px;
+                    name: "app";
+                    ink: Theme.accent;
                 }
             }
         }
+        if !root.group && !root.heading: Rectangle { width: 22px; }
+        JournalCell { label: root.application; detail: root.source; heading: root.heading; emphasized: root.group; }
     }
+    JournalCell { label: root.destination; detail: root.explanation; heading: root.heading; ink: root.group ? Theme.secondary : Theme.text; horizontal-stretch: 1; }
+    JournalCell { width: 124px; label: root.route; heading: root.heading; ink: Theme.accent; }
+    JournalCell { width: 94px; label: root.status; heading: root.heading; ink: root.status-ink; }
+    JournalCell { width: 74px; label: root.sent; heading: root.heading; numeric: true; ink: Theme.success; }
+    JournalCell { width: 74px; label: root.received; heading: root.heading; numeric: true; ink: Theme.accent; }
 }
 
 component JournalGroup inherits Rectangle {
     in property <ProcessSummary> process;
+    in property <bool> stripe;
     callback toggled;
     min-width: 0px;
     height: group-content.preferred-height;
     vertical-stretch: 0;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.surface;
 
     group-content := VerticalLayout {
         spacing: 0px;
         Rectangle {
-            height: 48px;
-            border-radius: Theme.radius-medium;
+            height: 44px;
             border-width: header-focus.has-focus ? 1px : 0px;
             border-color: Theme.accent;
-            background: header-touch.has-hover ? Theme.surface-hover : root.process.expanded ? Theme.accent-soft : transparent;
+            background: header-touch.has-hover ? Theme.surface-hover : root.process.expanded ? Theme.accent-soft : root.stripe ? Theme.field : Theme.surface;
             accessible-role: button;
-            accessible-label: "Подключения " + root.process.name;
+            accessible-label: "Connections for " + root.process.name;
             accessible-expanded: root.process.expanded;
             accessible-action-default => { root.toggled(); }
             forward-focus: header-focus;
-            HorizontalLayout {
-                padding-left: 11px;
-                padding-right: 12px;
-                spacing: 10px;
-                Rectangle {
-                    width: 28px;
-                    Rectangle {
-                        y: (parent.height - self.height) / 2;
-                        width: 28px;
-                        height: 28px;
-                        border-radius: Theme.radius-small;
-                        background: root.process.expanded ? Theme.primary : Theme.field;
-                        Path {
-                            x: 8px; y: 8px; width: 12px; height: 12px;
-                            viewbox-width: 12; viewbox-height: 12;
-                            stroke: root.process.expanded ? Theme.text : Theme.secondary;
-                            stroke-width: 1.5px;
-                            commands: root.process.expanded ? "M2 4 L6 8 L10 4" : "M4 2 L8 6 L4 10";
-                        }
-                    }
-                }
-                Text { text: root.process.name; min-width: 0px; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; vertical-alignment: center; }
-                Text { text: root.process.active + " активных"; width: 84px; color: root.process.active > 0 ? Theme.success : Theme.secondary; font-size: 11px; overflow: elide; vertical-alignment: center; }
-                Text { text: "↑ " + root.process.uploaded + "   ↓ " + root.process.downloaded; width: 170px; color: Theme.secondary; font-size: 11px; overflow: elide; vertical-alignment: center; }
-                Text { text: root.process.events + " соед."; width: 80px; color: Theme.muted; font-size: 10px; overflow: elide; vertical-alignment: center; }
+            JournalLine {
+                group: true;
+                expanded: root.process.expanded;
+                application: root.process.name;
+                destination: root.process.events + (root.process.events == 1 ? " connection" : " connections");
+                status: root.process.active + " active";
+                status-ink: root.process.active > 0 ? Theme.success : Theme.secondary;
+                sent: root.process.uploaded;
+                received: root.process.downloaded;
             }
             header-touch := TouchArea { mouse-cursor: pointer; clicked => { header-focus.focus(); root.toggled(); } }
             header-focus := FocusScope {
@@ -147,11 +168,18 @@ component JournalGroup inherits Rectangle {
             }
         }
         if root.process.expanded: VerticalLayout {
-            padding: 9px;
-            spacing: 6px;
-            for entry in root.process.connections: JournalEntry {
-                entry: entry;
-                show-process: root.process.name == "Другие процессы";
+            for entry[index] in root.process.connections: Rectangle {
+                height: 48px;
+                background: mod(index, 2) == 0 ? Theme.field : Theme.surface;
+                JournalLine {
+                    application: root.process.name == "Other processes" ? entry.process : "";
+                    source: entry.source;
+                    destination: entry.destination;
+                    explanation: entry.message;
+                    route: entry.route;
+                    status: entry.status;
+                    status-ink: entry.state == 1 ? Theme.success : entry.state == 0 ? Theme.accent : entry.state == 2 ? Theme.warning : (entry.state == 4 || entry.state == 5) ? Theme.danger : Theme.secondary;
+                }
             }
         }
     }
@@ -159,10 +187,10 @@ component JournalGroup inherits Rectangle {
 
 export component ConnectionsWindow inherits Window {
     icon: @image-url("../assets/icon.svg");
-    title: "True Proxy · Соединения";
+    title: "True Proxy · Live Connections";
     preferred-width: 1040px; preferred-height: 760px; min-width: 800px; min-height: 600px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
-    init => { Palette.color-scheme = ColorScheme.dark; }
+    init => { Palette.color-scheme = ColorScheme.light; }
     in-out property <bool> surface-fresh: false;
     in property <[ProxyRow]> proxies;
     in property <[ProcessSummary]> process-summaries;
@@ -199,88 +227,136 @@ export component ConnectionsWindow inherits Window {
 
         VerticalLayout {
             padding: 20px;
-            spacing: 10px;
-            HorizontalLayout {
-                height: 36px;
-                spacing: 10px;
-                Rectangle { width: 30px;
-                    Image { y: (parent.height - self.height) / 2; width: 30px; height: 30px; source: @image-url("../assets/icon.svg"); }
-                }
-                Text { text: "Соединения"; color: Theme.text; font-size: 23px; font-weight: 600; vertical-alignment: center; }
-            }
+            spacing: 12px;
             Rectangle {
                 height: filter-card.preferred-height;
                 vertical-stretch: 0;
-                border-radius: Theme.radius-large;
+                border-radius: Theme.radius-medium;
                 border-width: 1px;
                 border-color: Theme.border;
                 background: Theme.surface;
                 filter-card := VerticalLayout {
-                    padding: 11px;
+                    padding: 12px;
                     spacing: 6px;
                     alignment: start;
-                    Field { placeholder: "Поиск по имени процесса"; value <=> root.connection-query; edited => { root.filter-connections(); } }
+                    Field { placeholder: "Search process name"; icon: "search"; value <=> root.connection-query; edited => { root.filter-connections(); } }
                     JournalFilters {
-                        title: "Маршруты";
-                        scope: "Маршрут";
+                        title: "Routes";
+                        scope: "Route";
                         rows: root.connection-route-filters;
                         viewport-height: root.route-filter-height;
                         toggled(key, checked) => { root.toggle-connection-route(key, checked); }
                     }
                     JournalFilters {
-                        title: "Статусы";
-                        scope: "Статус";
+                        title: "Statuses";
+                        scope: "Status";
                         rows: root.connection-status-filters;
                         viewport-height: root.status-filter-height;
                         toggled(key, checked) => { root.toggle-connection-status(key, checked); }
                     }
                 }
             }
-            HorizontalLayout {
-                height: 30px;
-                spacing: 10px;
-                padding-left: 4px;
-                padding-right: Theme.scroll-gutter;
-                Text {
-                    text: "По процессам · " + root.filtered-event-count + " из " + root.connection-event-count + " соединений";
-                    min-width: 0px;
-                    color: Theme.secondary;
-                    font-size: 11px;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
-                if !root.connection-filters-default: ActionButton { label: "Сбросить фильтры"; height: 28px; clicked => { root.reset-connection-filters(); } }
-            }
-            connection-list := ScrollView {
+            Rectangle {
                 vertical-stretch: 1;
-                horizontal-scrollbar-policy: always-off;
-                content-width: self.visible-width;
-                content-height: max(self.visible-height, connection-content.preferred-height);
-                connection-content := VerticalLayout {
-                    spacing: 8px;
-                    padding-right: Theme.scroll-gutter;
-                    padding-bottom: 8px;
-                    if root.process-summaries.length == 0: Rectangle {
-                        height: 58px;
-                        background: Theme.surface;
-                        border-radius: Theme.radius-medium;
-                        Text {
-                            text: "Нет подключений для выбранного фильтра.";
-                            color: Theme.muted;
-                            font-size: 12px;
-                            horizontal-alignment: center;
+                border-radius: Theme.radius-medium;
+                border-width: 1px;
+                border-color: Theme.border;
+                background: Theme.surface;
+                clip: true;
+
+                VerticalLayout {
+                    padding: 1px;
+                    HorizontalLayout {
+                        height: 50px;
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 8px;
+
+                        Rectangle {
+                            width: 18px;
+                            UiIcon { y: (parent.height - self.height) / 2; name: "activity"; ink: Theme.accent; }
+                        }
+                        Text { text: "Live Connections"; color: Theme.text; font-size: 16px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
+                        Rectangle {
+                            width: max(25px, count-label.preferred-width + 12px);
+                            Rectangle {
+                                y: (parent.height - self.height) / 2;
+                                height: 22px;
+                                border-radius: Theme.radius-small;
+                                background: Theme.accent-soft;
+                                count-label := Text { text: "" + root.filtered-event-count; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        if root.filtered-event-count != root.connection-event-count: Text {
+                            text: root.filtered-event-count + " of " + root.connection-event-count + " shown";
+                            color: Theme.secondary;
+                            font-size: 11px;
                             vertical-alignment: center;
+                            horizontal-stretch: 0;
+                        }
+                        if !root.connection-filters-default: Rectangle {
+                            width: reset.min-width;
+                            reset := ActionButton { y: (parent.height - self.height) / 2; label: "Reset filters"; height: 30px; clicked => { root.reset-connection-filters(); } }
                         }
                     }
-                    for process in root.process-summaries: JournalGroup {
-                        process: process;
-                        toggled => { root.expand-process(process.name); }
+                    Rectangle { height: 1px; background: Theme.border; }
+                    Rectangle {
+                        height: 32px;
+                        background: Theme.field;
+                        JournalLine {
+                            x: 0px;
+                            width: parent.width - Theme.scroll-gutter;
+                            heading: true;
+                            application: "APPLICATION";
+                            destination: "TARGET";
+                            route: "ROUTE";
+                            status: "STATUS";
+                            sent: "↑ SOCKS SENT";
+                            received: "↓ SOCKS RECV";
+                        }
                     }
-                    Rectangle { vertical-stretch: 1; }
+                    Rectangle { height: 1px; background: Theme.border; }
+                    connection-list := ScrollView {
+                        vertical-stretch: 1;
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
+                        content-height: max(self.visible-height, connection-content.preferred-height);
+                        connection-content := VerticalLayout {
+                            padding-right: Theme.scroll-gutter;
+                            padding-bottom: 8px;
+                            alignment: start;
+                            if root.process-summaries.length == 0: Rectangle {
+                                height: 66px;
+                                Text {
+                                    text: root.connection-event-count == 0 ? "No connections observed yet." : "No connections match these filters.";
+                                    color: Theme.muted;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            for process[index] in root.process-summaries: JournalGroup {
+                                process: process;
+                                stripe: mod(index, 2) == 1;
+                                toggled => { root.expand-process(process.name); }
+                            }
+                        }
+                    }
                 }
             }
-            if !root.only-active: Text { text: "История: последние 256 завершённых соединений с момента выбора завершённых статусов. Трафик — через SOCKS."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
-            if root.connection-omitted > 0: Text { text: "Лимит отслеживания: 4096 активных соединений. Пропущено: " + root.connection-omitted; color: Theme.warning; font-size: 10px; wrap: word-wrap; }
+            if !root.only-active: Text {
+                text: "History keeps up to 256 connections completed since a finished status was selected.";
+                color: Theme.muted;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+            if root.connection-omitted > 0: Text {
+                text: "Tracking limit: 4,096 concurrent connections. Omitted: " + root.connection-omitted;
+                color: Theme.warning;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
         }
     }
 }

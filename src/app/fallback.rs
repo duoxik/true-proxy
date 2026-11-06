@@ -10,13 +10,7 @@ use std::{
 use true_proxy::config::{Action, Config};
 
 pub fn label(config: &Config) -> String {
-    match &config.default_action {
-        Action::Proxy(_) => format!(
-            "Прокси · {}",
-            super::route_name(config, &config.default_action)
-        ),
-        action => super::route_name(config, action),
-    }
+    super::route_name(config, &config.default_action)
 }
 
 pub fn wire(ui: &MainWindow, state: State, path: PathBuf, statuses: Arc<Mutex<proxies::Statuses>>) {
@@ -29,7 +23,7 @@ pub fn wire(ui: &MainWindow, state: State, path: PathBuf, statuses: Arc<Mutex<pr
                         0 => Action::Direct,
                         1 => Action::Block,
                         2 => Action::Proxy(config.proxy(&proxy_id)?.id.clone()),
-                        _ => bail!("Неизвестный маршрут"),
+                        _ => bail!("Unknown route"),
                     };
                     config.default_action = action;
                     Ok(())
@@ -57,7 +51,7 @@ mod tests {
         fn new(with_proxies: bool) -> Self {
             let mut config = Config::default();
             if with_proxies {
-                config.proxies = [("one", "Первый"), ("two", "Второй")]
+                config.proxies = [("one", "First"), ("two", "Second")]
                     .into_iter()
                     .map(|(id, name)| Proxy {
                         id: id.into(),
@@ -111,15 +105,15 @@ mod tests {
     fn first_click_and_proxy_hover_save_one_atomic_selection_with_deferred_application() {
         let fixture = Fixture::new(true);
         let ui = fixture.window();
-        click(&ui, "Маршрут по умолчанию: Напрямую");
-        click(&ui, "Маршрут: Блокировать");
+        click(&ui, "Default route: Direct");
+        click(&ui, "Route: Block");
         assert_eq!(
             Config::load(&fixture.path).unwrap().default_action,
             Action::Block
         );
-        assert_eq!(ui.get_fallback_label(), "Блокировать");
+        assert_eq!(ui.get_fallback_label(), "Block");
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Маршрут: Блокировать")
+            ElementHandle::find_by_accessible_label(&ui, "Route: Block")
                 .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
                 .count(),
             0,
@@ -128,8 +122,8 @@ mod tests {
 
         let running_snapshot = fixture.state.borrow().clone();
         ui.set_active(true);
-        click(&ui, "Маршрут по умолчанию: Блокировать");
-        let proxy = button(&ui, "Маршрут: Прокси");
+        click(&ui, "Default route: Block");
+        let proxy = button(&ui, "Route: Proxy");
         let position = proxy.absolute_position();
         let size = proxy.size();
         let selector = ElementHandle::find_by_element_id(&ui, "MainWindow::fallback-selector")
@@ -150,22 +144,22 @@ mod tests {
                 ),
             });
         // No click on Proxy: merely hovering must reveal the configured servers.
-        click(&ui, "SOCKS-прокси: Второй");
+        click(&ui, "SOCKS proxy: Second");
         assert_eq!(
             Config::load(&fixture.path).unwrap().default_action,
             Action::Proxy("two".into())
         );
-        assert_eq!(ui.get_fallback_label(), "Прокси · Второй");
+        assert_eq!(ui.get_fallback_label(), "Proxy · Second");
         assert_eq!(running_snapshot.default_action, Action::Block);
         assert!(ui.get_routing_pending() && ui.get_restart_prompt());
         ui.set_restart_prompt(false);
-        click(&ui, "Маршрут по умолчанию: Прокси · Второй");
-        click(&ui, "Маршрут: Напрямую");
+        click(&ui, "Default route: Proxy · Second");
+        click(&ui, "Route: Direct");
         assert_eq!(
             Config::load(&fixture.path).unwrap().default_action,
             Action::Direct
         );
-        assert_eq!(ui.get_fallback_label(), "Напрямую");
+        assert_eq!(ui.get_fallback_label(), "Direct");
     }
 
     #[test]
@@ -173,16 +167,16 @@ mod tests {
         let fixture = Fixture::new(false);
         let ui = fixture.window();
         let saved = std::fs::read(&fixture.path).unwrap();
-        click(&ui, "Маршрут по умолчанию: Напрямую");
+        click(&ui, "Default route: Direct");
         assert_eq!(
-            button(&ui, "Маршрут: Прокси").accessible_enabled(),
+            button(&ui, "Route: Proxy").accessible_enabled(),
             Some(false)
         );
-        click(&ui, "Маршрут: Прокси");
-        assert_eq!(ui.get_fallback_label(), "Напрямую");
-        click(&ui, "+ Создать правило");
+        click(&ui, "Route: Proxy");
+        assert_eq!(ui.get_fallback_label(), "Direct");
+        click(&ui, "Add Routing Rule");
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Маршрут: Прокси")
+            ElementHandle::find_by_accessible_label(&ui, "Route: Proxy")
                 .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
                 .count(),
             0
@@ -197,22 +191,22 @@ mod tests {
         let saved = std::fs::read(&fixture.path).unwrap();
         ui.set_busy(true);
         assert_eq!(
-            button(&ui, "Маршрут по умолчанию: Напрямую").accessible_enabled(),
+            button(&ui, "Default route: Direct").accessible_enabled(),
             Some(false)
         );
-        click(&ui, "Маршрут по умолчанию: Напрямую");
+        click(&ui, "Default route: Direct");
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Маршрут: Прокси")
+            ElementHandle::find_by_accessible_label(&ui, "Route: Proxy")
                 .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))
                 .count(),
             0
         );
         ui.invoke_select_fallback(2, "two".into());
-        assert_eq!(ui.get_fallback_label(), "Напрямую");
-        assert!(ui.get_notice().contains("Дождитесь"));
+        assert_eq!(ui.get_fallback_label(), "Direct");
+        assert!(ui.get_notice().contains("Wait for the proxy"));
         ui.set_busy(false);
         ui.invoke_select_fallback(2, "removed".into());
-        assert_eq!(ui.get_fallback_label(), "Напрямую");
+        assert_eq!(ui.get_fallback_label(), "Direct");
         assert!(!ui.get_notice().is_empty());
         assert_eq!(fixture.state.borrow().default_action, Action::Direct);
         assert_eq!(std::fs::read(&fixture.path).unwrap(), saved);

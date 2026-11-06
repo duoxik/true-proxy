@@ -47,7 +47,7 @@ pub fn row(proxy: &Proxy, statuses: &Statuses) -> ProxyRow {
         status: health
             .map_or_else(String::new, |h| {
                 if h.tcp {
-                    format!("{} мс", h.latency)
+                    format!("{} ms", h.latency)
                 } else {
                     h.error.clone()
                 }
@@ -78,19 +78,19 @@ fn result_text(name: &str, health: &Health) -> (String, bool) {
     if health.tcp {
         (
             format!(
-                "{name}: TCP доступен, {} мс · UDP {}",
+                "{name}: TCP available, {} ms · UDP {}",
                 health.latency,
                 if health.udp {
-                    "доступен"
+                    "available"
                 } else {
-                    "недоступен"
+                    "unavailable"
                 }
             ),
             !health.udp,
         )
     } else {
         (
-            format!("{name}: соединение не удалось · {}", health.error),
+            format!("{name}: Connection failed · {}", health.error),
             true,
         )
     }
@@ -150,8 +150,8 @@ pub fn from_form(ui: &MainWindow, config: &Config) -> Result<Proxy> {
         .get_form_port()
         .trim()
         .parse::<u16>()
-        .context("Порт должен быть числом 1–65535")?;
-    ensure!(port > 0, "Порт не может быть нулевым");
+        .context("Enter a port between 1 and 65535")?;
+    ensure!(port > 0, "The port must be greater than zero");
     let mut proxy = Proxy {
         id: if ui.get_form_id().is_empty() {
             super::id()
@@ -196,10 +196,10 @@ pub fn wire_form_probe(ui: &MainWindow, state: State, sender: SyncSender<Command
                 return;
             }
             let result = (|| {
-                ensure!(!preview, "В режиме проверки UI сетевые проверки отключены");
+                ensure!(!preview, "Network checks are disabled in UI preview mode");
                 let mut proxy = from_form(&ui, &state.borrow())?;
                 if proxy.name.is_empty() {
-                    proxy.name = "Проверка".into();
+                    proxy.name = "Connection test".into();
                 }
                 Config {
                     proxies: vec![proxy.clone()],
@@ -209,10 +209,10 @@ pub fn wire_form_probe(ui: &MainWindow, state: State, sender: SyncSender<Command
                 let token = super::id();
                 sender
                     .try_send(Command::Probe(proxy, Some(token.clone())))
-                    .context("Проверка уже выполняется")?;
+                    .context("A connection check is already running")?;
                 ui.set_form_probe_token(token.into());
                 ui.set_form_probe_health(0);
-                ui.set_form_probe_status("Проверяем…".into());
+                ui.set_form_probe_status("Checking…".into());
                 ui.set_probe_busy(true);
                 Ok(())
             })();
@@ -258,9 +258,9 @@ mod tests {
         apply_result(&ui, &proxy, &health, None);
         assert!(ui.get_toast().starts_with("Current name:"));
         assert!(
-            ui.get_toast().contains("TCP доступен")
-                && ui.get_toast().contains("7 мс")
-                && ui.get_toast().contains("UDP доступен")
+            ui.get_toast().contains("TCP available")
+                && ui.get_toast().contains("7 ms")
+                && ui.get_toast().contains("UDP available")
         );
         assert!(!ui.get_toast_error());
         let previous = ui.get_toast();
@@ -285,8 +285,8 @@ mod tests {
         apply_result(&ui, &proxy, &health, None);
         assert!(
             ui.get_toast_error()
-                && ui.get_toast().contains("TCP доступен")
-                && ui.get_toast().contains("UDP недоступен")
+                && ui.get_toast().contains("TCP available")
+                && ui.get_toast().contains("UDP unavailable")
         );
     }
 
@@ -304,11 +304,11 @@ mod tests {
         };
         ui.set_dialog(1);
         ui.set_form_probe_token("current".into());
-        ui.set_form_probe_status("Проверяем…".into());
+        ui.set_form_probe_status("Checking…".into());
         ui.set_probe_busy(true);
         apply_result(&ui, &proxy, &health, Some("old"));
         assert!(ui.get_toast().is_empty() && ui.get_probe_busy());
-        assert_eq!(ui.get_form_probe_status(), "Проверяем…");
+        assert_eq!(ui.get_form_probe_status(), "Checking…");
         apply_result(&ui, &proxy, &health, Some("current"));
         assert!(!ui.get_toast().is_empty() && !ui.get_probe_busy());
         assert!(ui.get_form_probe_status().is_empty());

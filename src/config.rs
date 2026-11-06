@@ -69,11 +69,11 @@ impl PortRange {
     pub fn parse(input: &str) -> Result<Self> {
         let input = input.trim();
         let (start, end) = input.split_once('-').unwrap_or((input, input));
-        let start = start.trim().parse().context("Некорректный порт")?;
-        let end = end.trim().parse().context("Некорректная граница портов")?;
+        let start = start.trim().parse().context("Invalid port")?;
+        let end = end.trim().parse().context("Invalid port range endpoint")?;
         ensure!(
             start > 0 && start <= end,
-            "Диапазон портов должен быть в пределах 1–65535"
+            "Port ranges must be within 1–65535"
         );
         Ok(Self { start, end })
     }
@@ -156,34 +156,34 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.version == 2,
-            "Неизвестная версия настроек: {}",
+            "Unsupported configuration version: {}",
             self.version
         );
         ensure!(
             self.proxies.len() <= 64 && self.rules.len() <= 1024,
-            "Слишком много прокси или правил"
+            "Too many proxies or rules"
         );
         let mut ids = HashSet::new();
         for proxy in &self.proxies {
             ensure!(
                 !proxy.id.is_empty() && ids.insert(&proxy.id),
-                "Повторяющийся ID прокси"
+                "Duplicate proxy ID"
             );
-            ensure!(!proxy.name.trim().is_empty(), "Укажите название прокси");
+            ensure!(!proxy.name.trim().is_empty(), "Enter a proxy name");
             ensure!(
                 !proxy.host.trim().is_empty() && !proxy.host.contains(['/', '\\', ':', ' '])
                     || proxy.host.parse::<IpAddr>().is_ok(),
-                "Укажите адрес без протокола и порта"
+                "Enter the address without a protocol or port"
             );
-            ensure!(proxy.port != 0, "Порт должен быть в пределах 1–65535");
-            ensure!(proxy.username.len() <= 255, "Логин SOCKS5 длиннее 255 байт");
+            ensure!(proxy.port != 0, "The port must be within 1–65535");
+            ensure!(
+                proxy.username.len() <= 255,
+                "The SOCKS5 username exceeds 255 bytes"
+            );
         }
         let validate_action = |action: &Action| -> Result<()> {
             if let Action::Proxy(id) = action {
-                ensure!(
-                    ids.contains(id),
-                    "Правило ссылается на отсутствующий прокси"
-                );
+                ensure!(ids.contains(id), "A rule references a missing proxy");
             }
             Ok(())
         };
@@ -192,20 +192,20 @@ impl Config {
         for rule in &self.rules {
             ensure!(
                 !rule.id.is_empty() && rule_ids.insert(&rule.id),
-                "Повторяющийся ID правила"
+                "Duplicate rule ID"
             );
-            ensure!(!rule.name.trim().is_empty(), "Укажите название правила");
+            ensure!(!rule.name.trim().is_empty(), "Enter a rule name");
             validate_action(&rule.action)?;
             for name in &rule.process_names {
                 ensure!(
                     !name.is_empty() && !name.contains(['/', '\\', '*', '?']),
-                    "Имя процесса должно быть точным именем файла"
+                    "Enter the exact executable filename"
                 );
             }
             for path in &rule.process_paths {
                 ensure!(
                     Path::new(path).is_absolute(),
-                    "Путь процесса должен быть абсолютным"
+                    "The executable path must be absolute"
                 );
             }
             for domain in rule.domains.iter().chain(&rule.domain_suffixes) {
@@ -217,13 +217,13 @@ impl Config {
                             && label
                                 .bytes()
                                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')),
-                    "Некорректный домен: {domain}. Используйте ASCII / punycode"
+                    "Invalid domain {domain}. Use ASCII or Punycode."
                 );
             }
             for port in &rule.ports {
                 ensure!(
                     port.start > 0 && port.start <= port.end,
-                    "Некорректный диапазон портов"
+                    "Invalid port range"
                 );
             }
         }
@@ -234,15 +234,13 @@ impl Config {
         self.proxies
             .iter()
             .find(|p| p.id == id)
-            .context("Прокси не найден")
+            .context("Proxy not found")
     }
 
     pub fn remove_proxy(&mut self, id: &str) -> Result<()> {
         let used = |a: &Action| matches!(a, Action::Proxy(p) if p == id);
         if self.rules.iter().any(|r| used(&r.action)) || used(&self.default_action) {
-            bail!(
-                "Прокси используется в правилах или маршруте по умолчанию. Сначала измените эти настройки."
-            );
+            bail!("This proxy is used by a rule or the default route. Update those routes first.");
         }
         self.proxies.retain(|p| p.id != id);
         Ok(())
@@ -255,11 +253,11 @@ impl Config {
         let metadata = fs::metadata(path)?;
         ensure!(
             metadata.len() <= 2 * 1024 * 1024,
-            "Файл настроек слишком большой"
+            "The configuration file is too large"
         );
         let original = fs::read(path)?;
         let mut config: Self = serde_json::from_slice(&original)
-            .context("Не удалось прочитать настройки. Исходный файл сохранен.")?;
+            .context("Could not read the configuration. The original file was preserved.")?;
         let upgrade = config.version == 1;
         if upgrade {
             // One-time user-requested expansion. New version-2 exact domains stay exact.
@@ -297,7 +295,7 @@ impl Config {
         let bytes = serde_json::to_vec_pretty(self)?;
         ensure!(
             bytes.len() <= 2 * 1024 * 1024,
-            "Файл настроек превышает допустимые 2 МиБ"
+            "The configuration file exceeds 2 MiB"
         );
         use std::io::Write;
         let mut file = fs::File::create(&temporary)?;
@@ -305,7 +303,7 @@ impl Config {
         file.sync_all()?;
         drop(file);
         crate::platform::replace_file(&temporary, path)
-            .context("Не удалось атомарно сохранить настройки")
+            .context("Could not save the configuration atomically")
     }
 
     pub fn path() -> Result<PathBuf> {
@@ -314,7 +312,7 @@ impl Config {
         } else {
             "HOME"
         })
-        .context("Не найдена пользовательская папка")?;
+        .context("Could not find the user directory")?;
         Ok(PathBuf::from(root)
             .join(if cfg!(windows) {
                 "TrueProxy"
@@ -342,11 +340,11 @@ fn backup_profile(path: &Path, original: &[u8]) -> Result<()> {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(error)
-                    .context("Не удалось сохранить исходный профиль перед обновлением");
+                    .context("Could not back up the original profile before upgrading");
             }
         }
     }
-    bail!("Не удалось создать резервную копию профиля: слишком много копий")
+    bail!("Could not back up the profile because too many backups already exist")
 }
 
 #[cfg(test)]

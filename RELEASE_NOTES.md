@@ -1,10 +1,11 @@
-True Proxy 0.7.0
+True Proxy 0.8.0
 
-- Основная панель получила оформление в духе JetBrains Toolbox. Сливовая палитра, верхние вкладки, синие кнопки и скруглённые карточки используются на всех экранах.
-- Панель открывается в правом нижнем углу рабочей области монитора трея. При размещении учитываются масштаб Windows и положение панели задач.
-- Окно «Соединения» оформлено в той же палитре. Фильтры собраны в одну карточку, а состояние каждой записи выделено цветной плашкой. Группы можно раскрывать мышью или клавиатурой.
-- Поля, редакторы правил и прокси, импорт JSON, меню и уведомления используют общий стиль.
+- Redesigned the Windows interface around a light, resizable desktop window with sidebar navigation, violet accents, and outline icons.
+- Dashboard shows active SOCKS sessions, configured proxies, enabled rules, transfer totals, and uptime. The proxy list, routing rules, settings, and editors use the same design.
+- Live Connections uses a separate desktop window with a compact table, expandable process groups, and the existing search and filters.
+- The app, dialogs, notifications, and tray menu now use English. Closing the main window keeps True Proxy running in the system tray.
+- Routing behavior, supported protocols, and the profile format are unchanged.
 
-Windows x64. WinDivert встроен в EXE. DNS использует системный резолвер Windows. Сетевой backend остаётся экспериментальным.
+Windows x64. WinDivert is bundled in the executable. Windows continues to resolve DNS. The interception backend is experimental.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.7.0/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.8.0/docs/branding/slint-badge.png)](https://slint.dev)

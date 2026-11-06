@@ -60,13 +60,13 @@ pub fn tcp_snapshot(candidates: &HashSet<FlowKey>) -> Result<HashMap<FlowKey, u3
         let status = unsafe { GetExtendedTcpTable(ptr::null_mut(), &mut size, 0, family, 5, 0) };
         ensure!(
             status == 0 || status == 122,
-            "Не удалось прочитать размер TCP-таблицы ({status})"
+            "Could not read the TCP table size ({status})"
         );
         let mut complete = false;
         for _ in 0..3 {
             ensure!(
                 (4..=16 * 1024 * 1024).contains(&size),
-                "Некорректный размер TCP-таблицы"
+                "Invalid TCP table size"
             );
             // u32 storage has the alignment required by both MIB owner tables.
             let mut words = vec![0u32; (size as usize).div_ceil(4)];
@@ -76,16 +76,16 @@ pub fn tcp_snapshot(candidates: &HashSet<FlowKey>) -> Result<HashMap<FlowKey, u3
             if status == 122 {
                 continue;
             }
-            ensure!(status == 0, "Не удалось прочитать TCP-таблицу ({status})");
+            ensure!(status == 0, "Could not read the TCP table ({status})");
             ensure!(
                 size as usize <= words.len() * 4,
-                "TCP-таблица вышла за границы буфера"
+                "The TCP table exceeded the buffer"
             );
             let bytes =
                 unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size as usize) };
             let count = words[0] as usize;
             let stride = if ipv4 { 24 } else { 56 };
-            ensure!(4 + count * stride <= bytes.len(), "Обрезанная TCP-таблица");
+            ensure!(4 + count * stride <= bytes.len(), "Truncated TCP table");
             for row in bytes[4..4 + count * stride].chunks_exact(stride) {
                 let (local, local_port, remote, remote_port, state, pid) = if ipv4 {
                     (4, 8, 12, 16, 0, 20)
@@ -113,13 +113,13 @@ pub fn tcp_snapshot(candidates: &HashSet<FlowKey>) -> Result<HashMap<FlowKey, u3
                 }
                 let pid = u32::from_ne_bytes(row[pid..pid + 4].try_into()?);
                 if let Some(previous) = owners.insert(flow, pid) {
-                    ensure!(previous == pid, "Противоречивые владельцы TCP-соединения");
+                    ensure!(previous == pid, "Conflicting TCP connection owners");
                 }
             }
             complete = true;
             break;
         }
-        ensure!(complete, "TCP-таблица меняется слишком быстро");
+        ensure!(complete, "The TCP table is changing too quickly");
     }
     Ok(owners)
 }
@@ -128,7 +128,7 @@ pub fn running_processes() -> Result<Vec<crate::platform::RunningProcess>> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     ensure!(
         snapshot != INVALID_HANDLE_VALUE,
-        "Не удалось получить список процессов: {}",
+        "Could not list running processes: {}",
         std::io::Error::last_os_error()
     );
     struct Snapshot(windows_sys::Win32::Foundation::HANDLE);
@@ -173,12 +173,18 @@ pub fn running_processes() -> Result<Vec<crate::platform::RunningProcess>> {
 fn image_path(pid: u32) -> Result<String> {
     // Query-only access; the owned handle is closed before any parsing can fail.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    ensure!(!handle.is_null(), "Не удалось прочитать путь PID {pid}");
+    ensure!(
+        !handle.is_null(),
+        "Could not read the executable path for PID {pid}"
+    );
     let mut path = vec![0u16; 32768];
     let mut length = path.len() as u32;
     let result = unsafe { QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut length) };
     unsafe { CloseHandle(handle) };
-    ensure!(result != 0, "Не удалось прочитать путь PID {pid}");
+    ensure!(
+        result != 0,
+        "Could not read the executable path for PID {pid}"
+    );
     Ok(String::from_utf16(&path[..length as usize])?)
 }
 
@@ -222,14 +228,14 @@ fn owner_pid(flow: FlowKey, protocol: Protocol) -> Result<u32> {
     unsafe { call(ptr::null_mut(), &mut size, 0, family, class, 0) };
     ensure!(
         (4..=16 * 1024 * 1024).contains(&size),
-        "Некорректный размер таблицы соединений"
+        "Invalid connection table size"
     );
     // u32 storage provides the alignment expected by MIB_*TABLE structs.
     let mut words = vec![0u32; (size as usize).div_ceil(4)];
     let status = unsafe { call(words.as_mut_ptr().cast(), &mut size, 0, family, class, 0) };
     ensure!(
         status == 0,
-        "Не удалось прочитать таблицу соединений ({status})"
+        "Could not read the connection table ({status})"
     );
     let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size as usize) };
     let count = words[0] as usize;
@@ -241,7 +247,7 @@ fn owner_pid(flow: FlowKey, protocol: Protocol) -> Result<u32> {
     };
     ensure!(
         4 + count * stride <= bytes.len(),
-        "Обрезанная таблица соединений"
+        "Truncated connection table"
     );
     let mut found = None;
     for row in bytes[4..4 + count * stride].chunks_exact(stride) {
@@ -271,14 +277,14 @@ fn owner_pid(flow: FlowKey, protocol: Protocol) -> Result<u32> {
         if let Some(other) = found {
             ensure!(
                 other == pid,
-                "UDP-порт принадлежит нескольким процессам; соединение заблокировано"
+                "The UDP connection was blocked because multiple processes share its port"
             );
         }
         found = Some(pid);
     }
     match found {
         Some(pid) => Ok(pid),
-        None => bail!("Не найден процесс соединения"),
+        None => bail!("Could not identify the process that owns the connection"),
     }
 }
 

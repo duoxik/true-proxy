@@ -59,12 +59,12 @@ fn id() -> String {
 }
 fn route_name(config: &Config, action: &Action) -> String {
     match action {
-        Action::Direct => "Напрямую".into(),
-        Action::Block => "Блокировать".into(),
+        Action::Direct => "Direct".into(),
+        Action::Block => "Block".into(),
         Action::Proxy(id) => config
             .proxy(id)
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|_| "Прокси отсутствует".into()),
+            .map(|p| format!("Proxy · {}", p.name))
+            .unwrap_or_else(|_| "Proxy missing".into()),
     }
 }
 fn selected_proxy(config: &Config, index: i32) -> Result<String> {
@@ -72,7 +72,7 @@ fn selected_proxy(config: &Config, index: i32) -> Result<String> {
         .proxies
         .get(index.max(0) as usize)
         .map(|p| p.id.clone())
-        .context("Сначала добавьте SOCKS5-подключение")
+        .context("Add a SOCKS5 proxy first")
 }
 fn index_of(config: &Config, id: Option<&str>) -> i32 {
     config
@@ -83,6 +83,7 @@ fn index_of(config: &Config, id: Option<&str>) -> i32 {
 }
 
 fn refresh(ui: &MainWindow, config: &Config, statuses: &proxies::Statuses) {
+    ui.set_enabled_rule_count(config.rules.iter().filter(|rule| rule.enabled).count() as i32);
     ui.set_local_networks(true_proxy::local_network::NETWORKS.join(", ").into());
     ui.set_proxy_names(model(
         config
@@ -144,7 +145,7 @@ fn remember_routing(state: &State, path: &std::path::Path, enabled: bool) -> Res
     if next.routing_enabled != enabled {
         next.routing_enabled = enabled;
         next.save(path)
-            .context("Не удалось запомнить состояние тумблера")?;
+            .context("Could not save the routing state")?;
         *state.borrow_mut() = next;
     }
     Ok(())
@@ -176,23 +177,11 @@ fn focus_window(ui: &impl ComponentHandle) {
         .with_winit_window(|window| window.focus_window());
 }
 
-fn show_panel(ui: &MainWindow, tray: &Tray) -> Result<()> {
-    #[cfg(windows)]
-    if let Some(bounds) = tray.popup_geometry(420, 720) {
-        ui.window()
-            .set_position(slint::PhysicalPosition::new(bounds.x, bounds.y));
-        ui.window()
-            .set_size(slint::PhysicalSize::new(bounds.width, bounds.height));
-    }
-    #[cfg(not(windows))]
-    let _ = tray;
+fn show_main_window(ui: &MainWindow) -> Result<()> {
     ui.window().set_minimized(false);
     ui.show()?;
-    #[cfg(windows)]
     ui.window().with_winit_window(|window| {
-        use slint::winit_030::winit::platform::windows::{CornerPreference, WindowExtWindows};
-        window.set_corner_preference(CornerPreference::Round);
-        window.set_skip_taskbar(true);
+        window.set_theme(Some(slint::winit_030::winit::window::Theme::Light));
     });
     focus_window(ui);
     appearance::refresh(ui);
@@ -281,19 +270,15 @@ fn wire_connection_window(
     }
     {
         let weak = view.as_weak();
-        let main_weak = main.as_weak();
         main.on_open_connections(move || {
             if let Some(view) = weak.upgrade() {
                 view.window().set_minimized(false);
                 if view.show().is_ok() {
                     view.window().with_winit_window(|window| {
-                        window.set_theme(Some(slint::winit_030::winit::window::Theme::Dark));
+                        window.set_theme(Some(slint::winit_030::winit::window::Theme::Light));
                     });
                     focus_window(&view);
                     view.invoke_resume_observation();
-                    if let Some(main) = main_weak.upgrade() {
-                        main.invoke_hide_window();
-                    }
                 }
             }
         });
@@ -338,13 +323,7 @@ fn worker(
         match command {
             Command::Start(config) => {
                 generation = generation.wrapping_add(1);
-                update_status(
-                    ui.clone(),
-                    false,
-                    true,
-                    "Запускаем сетевой слой…".into(),
-                    false,
-                );
+                update_status(ui.clone(), false, true, "Starting routing…".into(), false);
                 drop(engine.take());
                 stats.routing_active(false);
                 let sender = sender.clone();
@@ -356,7 +335,9 @@ fn worker(
                     });
                 });
                 let result = if preview {
-                    Err(anyhow::anyhow!("В режиме проверки UI перехват отключен"))
+                    Err(anyhow::anyhow!(
+                        "Interception is disabled in UI preview mode"
+                    ))
                 } else {
                     Engine::start(config, stats.clone(), failure)
                 };
@@ -364,13 +345,7 @@ fn worker(
                     Ok(running) => {
                         engine = Some(running);
                         stats.routing_active(true);
-                        update_status(
-                            ui.clone(),
-                            true,
-                            false,
-                            "Маршрутизация работает. Приложение можно свернуть в трей.".into(),
-                            false,
-                        );
+                        update_status(ui.clone(), true, false, "Routing is active".into(), false);
                     }
                     Err(error) => {
                         update_status(ui.clone(), false, false, format!("{error:#}"), true)
@@ -381,7 +356,7 @@ fn worker(
                 generation = generation.wrapping_add(1);
                 drop(engine.take());
                 stats.routing_active(false);
-                update_status(ui.clone(), false, false, "Приостановлено".into(), false);
+                update_status(ui.clone(), false, false, "Paused".into(), false);
             }
             Command::Failed {
                 generation: failed_generation,
@@ -418,7 +393,7 @@ fn worker(
                             let _ = slint::invoke_from_event_loop(move || {
                                 if let Some(ui) = weak.upgrade() {
                                     ui.set_probe_busy(false);
-                                    ui.set_notice("Не удалось запустить проверку прокси".into());
+                                    ui.set_notice("Could not start the proxy check".into());
                                 }
                             });
                         }
@@ -428,7 +403,7 @@ fn worker(
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = weak.upgrade() {
                             ui.set_probe_busy(false);
-                            ui.set_notice(format!("Не удалось запустить проверку: {error}").into());
+                            ui.set_notice(format!("Could not start the check: {error}").into());
                         }
                     });
                 }
@@ -465,7 +440,7 @@ fn worker(
                                     Err(error) => {
                                         ui.set_autostart_enabled(previous.unwrap_or(false));
                                         ui.set_notice(
-                                            format!("Не удалось настроить автозапуск: {error:#}")
+                                            format!("Could not update startup settings: {error:#}")
                                                 .into(),
                                         );
                                     }
@@ -479,8 +454,7 @@ fn worker(
                         if let Some(ui) = weak.upgrade() {
                             ui.set_autostart_busy(false);
                             ui.set_notice(
-                                format!("Не удалось запустить настройку автозапуска: {error}")
-                                    .into(),
+                                format!("Could not start the startup setup: {error}").into(),
                             );
                         }
                     });
@@ -546,12 +520,12 @@ pub fn run() -> Result<()> {
     }
     let ui = MainWindow::new()?;
     let connections = ConnectionsWindow::new()?;
-    appearance::wire(&ui, &connections, preview.is_some());
+    appearance::wire(&ui);
     let _updates = match updating::wire(&ui, path.with_file_name("updates.json"), preview.is_some())
     {
         Ok(controller) => controller,
         Err(error) => {
-            ui.set_update_status(format!("Проверка обновлений недоступна: {error:#}").into());
+            ui.set_update_status(format!("Update check unavailable: {error:#}").into());
             None
         }
     };
@@ -560,9 +534,9 @@ pub fn run() -> Result<()> {
     #[cfg(not(windows))]
     let tray = Rc::new(Tray::new()?);
     let initial_status = if state.borrow().proxies.is_empty() {
-        "Настройте подключение"
+        "Add a proxy to get started"
     } else {
-        "Приостановлено"
+        "Paused"
     };
     ui.set_status(initial_status.into());
     sync_tray(&tray, false, initial_status);
@@ -582,14 +556,16 @@ pub fn run() -> Result<()> {
             if let Some(ui) = weak.upgrade() {
                 if is_preview {
                     ui.set_autostart_enabled(false);
-                    ui.set_notice("В режиме проверки UI автозапуск Windows не изменяется.".into());
+                    ui.set_notice(
+                        "Windows startup settings are read-only in UI preview mode.".into(),
+                    );
                     return;
                 }
                 if sender.try_send(Command::Autostart(Some(enabled))).is_ok() {
                     ui.set_autostart_busy(true);
                 } else {
                     ui.set_autostart_enabled(!enabled);
-                    ui.set_notice("Приложение занято. Повторите настройку автозапуска.".into());
+                    ui.set_notice("The app is busy. Try changing startup settings again.".into());
                 }
             }
         });
@@ -693,10 +669,9 @@ pub fn run() -> Result<()> {
     {
         let weak = ui.as_weak();
         let restart = restart_stats.clone();
-        let placement_tray = tray.clone();
         tray.on_open(move || {
             if let Some(ui) = weak.upgrade() {
-                let _ = show_panel(&ui, &placement_tray);
+                let _ = show_main_window(&ui);
                 restart();
             }
         });
@@ -727,7 +702,7 @@ pub fn run() -> Result<()> {
                     Ok(()) => ui.set_busy(true),
                     Err(_) => {
                         let _ = remember_routing(&state, &path, ui.get_active());
-                        ui.set_notice("Сетевой слой занят. Повторите действие.".into());
+                        ui.set_notice("Routing is busy. Try again.".into());
                     }
                 }
             }
@@ -851,13 +826,13 @@ pub fn run() -> Result<()> {
                 let result = (|| {
                     ensure!(
                         !is_preview,
-                        "В режиме проверки UI сетевые проверки отключены"
+                        "Network checks are disabled in UI preview mode"
                     );
-                    ensure!(!ui.get_probe_busy(), "Проверка уже выполняется");
+                    ensure!(!ui.get_probe_busy(), "A check is already in progress");
                     let proxy = state.borrow().proxy(&id)?.clone();
                     sender
                         .try_send(Command::Probe(proxy, None))
-                        .context("Проверка уже выполняется")?;
+                        .context("A check is already in progress")?;
                     ui.set_probe_busy(true);
                     Ok(())
                 })();
@@ -972,7 +947,7 @@ pub fn run() -> Result<()> {
                             .iter()
                             .map(|n| {
                                 n.parse()
-                                    .with_context(|| format!("Некорректный IP/CIDR: {n}"))
+                                    .with_context(|| format!("Invalid IP address or CIDR: {n}"))
                             })
                             .collect::<Result<_>>()?,
                         ports: routing::values(ui.get_form_ports())
@@ -1071,7 +1046,7 @@ pub fn run() -> Result<()> {
         stats_timer.stop();
         ui.hide()?;
     } else {
-        show_panel(&ui, &tray)?;
+        show_main_window(&ui)?;
     }
     let preview_timer = slint::Timer::default();
     if let Some(dir) = preview {
@@ -1088,7 +1063,7 @@ pub fn run() -> Result<()> {
     preview_timer.stop();
     let _ = sender.send(Command::Quit);
     let _ = worker.join();
-    result.context("Ошибка цикла интерфейса")
+    result.context("UI event loop failed")
 }
 
 fn reset_rule(ui: &MainWindow) {
@@ -1125,13 +1100,13 @@ fn uptime(duration: Duration) -> String {
 fn bytes(value: u64) -> String {
     let value = value as f64;
     if value < 1024.0 {
-        format!("{value:.0} Б")
+        format!("{value:.0} B")
     } else if value < 1048576.0 {
-        format!("{:.1} КБ", value / 1024.0)
+        format!("{:.1} KB", value / 1024.0)
     } else if value < 1073741824.0 {
-        format!("{:.1} МБ", value / 1048576.0)
+        format!("{:.1} MB", value / 1048576.0)
     } else {
-        format!("{:.2} ГБ", value / 1073741824.0)
+        format!("{:.2} GB", value / 1073741824.0)
     }
 }
 
@@ -1168,9 +1143,9 @@ fn smoke_ui(
         let result = (|| -> Result<()> {
             match step {
                 0 => {
-                    ensure!(ui.window().is_visible(), "Трей не открыл скрытое окно");
+                    ensure!(ui.window().is_visible(), "The tray did not open the hidden window");
                     #[cfg(windows)]
-                    ensure!(weak_tray.upgrade().is_some_and(|tray| tray.registered()), "Значок не зарегистрирован в Windows");
+                    ensure!(weak_tray.upgrade().is_some_and(|tray| tray.registered()), "Tray icon is not registered");
                     snapshot(&ui, &dir.join("01-overview.png"))?;
                     for (name, active) in [("logo.png", None), ("tray-on.png", Some(true)), ("tray-off.png", Some(false))] {
                         let file = std::fs::File::create(dir.join(name))?;
@@ -1182,13 +1157,13 @@ fn smoke_ui(
                 }
                 1 => {
                     snapshot(&ui, &dir.join("02-proxy-editor.png"))?;
-                    ui.set_form_name("Локальный VPN".into()); ui.set_form_port("1080".into()); ui.invoke_save_proxy();
-                    ensure!(ui.get_dialog() == 0, "Не сохраняется прокси: {}", ui.get_notice());
+                    ui.set_form_name("Local VPN".into()); ui.set_form_port("1080".into()); ui.invoke_save_proxy();
+                    ensure!(ui.get_dialog() == 0, "Proxy was not saved: {}", ui.get_notice());
                 }
                 2 => {
                     snapshot(&ui, &dir.join("03-proxies.png"))?; ui.invoke_add_rule();
                     snapshot(&ui, &dir.join("03b-empty-rule-editor.png"))?;
-                    ui.set_form_name("Браузер через VPN".into()); ui.invoke_add_condition(0, "firefox.exe, chrome.exe".into()); ui.invoke_add_condition(4, "80, 443, 8000-9000".into());
+                    ui.set_form_name("Browser via VPN".into()); ui.invoke_add_condition(0, "firefox.exe, chrome.exe".into()); ui.invoke_add_condition(4, "80, 443, 8000-9000".into());
                     ui.invoke_add_condition(2, "*.steamserver.net; *.deadorbit.net; *.gravityshavings.net; exact.example.com".into());
                 }
                 3 => {
@@ -1201,18 +1176,18 @@ fn smoke_ui(
                     routing::set_processes(&ui, vec![platform::RunningProcess { name: "destiny2.exe".into(), path: "C:\\Games\\Destiny 2\\destiny2.exe".into(), pids: vec![100] }, platform::RunningProcess { name: "steam.exe".into(), path: "C:\\Apps\\Steam\\steam.exe".into(), pids: vec![101, 102] }]);
                     ui.set_process_picker(true); snapshot(&ui, &dir.join("04a-process-picker.png"))?; ui.set_process_picker(false);
                     ui.set_form_manual(false);
-                    ui.set_form_new_process("steam.exe".into()); ui.set_form_advanced(false); ui.invoke_save_rule(); ensure!(ui.get_dialog() == 0, "Не сохраняется правило: {}", ui.get_notice());
+                    ui.set_form_new_process("steam.exe".into()); ui.set_form_advanced(false); ui.invoke_save_rule(); ensure!(ui.get_dialog() == 0, "Rule was not saved: {}", ui.get_notice());
                 }
                 4 => {
                     snapshot(&ui, &dir.join("05-rules.png"))?;
                     // Explicit preview fixture: no backend is running in this mode.
-                    ui.set_notice("Проверка UI: перехват отключён".into());
+                    ui.set_notice("UI preview: interception disabled".into());
                     ui.set_active(true);
                     ui.invoke_edit_rule(ui.get_rules().row_data(0).unwrap().id);
-                    ui.set_form_name("Браузер через VPN · изменено".into());
+                    ui.set_form_name("Browser via VPN · edited".into());
                     ui.invoke_save_rule();
-                    ensure!(ui.get_dialog() == 0 && ui.get_restart_prompt() && ui.get_routing_pending(), "Нет предложения применить сохранённые правила");
-                    ui.set_notice("Проверка UI: перехват отключён".into());
+                    ensure!(ui.get_dialog() == 0 && ui.get_restart_prompt() && ui.get_routing_pending(), "Missing prompt to apply saved rules");
+                    ui.set_notice("UI preview: interception disabled".into());
                     snapshot(&ui, &dir.join("05a-restart-prompt.png"))?;
                     ui.set_restart_prompt(false);
                     snapshot(&ui, &dir.join("05b-pending-rules.png"))?;
@@ -1227,49 +1202,49 @@ fn smoke_ui(
                     let config=Config::load(&dir.join("config.json"))?;
                     ui.set_import_json(true_proxy::profile::Profile::export(&config)?.into());
                     ui.invoke_format_import();
-                    ensure!(ui.get_import_valid(), "Импорт отклонил экспортированную конфигурацию: {}", ui.get_import_error());
+                    ensure!(ui.get_import_valid(), "Import rejected the exported configuration: {}", ui.get_import_error());
                     snapshot(&ui,&dir.join("06a-json-import.png"))?;
                     ui.set_import_json("{\n  \"proxies\": [\n}".into());ui.invoke_format_import();
-                    ensure!(!ui.get_import_valid() && !ui.get_import_error().is_empty(), "Нет ошибки некорректного JSON");
+                    ensure!(!ui.get_import_valid() && !ui.get_import_error().is_empty(), "Invalid JSON error was not shown");
                     snapshot(&ui,&dir.join("06b-json-error.png"))?;
                     ui.invoke_cancel_import();
                     ui.invoke_select_fallback(0, "".into()); ui.invoke_open_connections();
                 }
                 6 => {
-                    let view = weak_connections.upgrade().context("Окно соединений исчезло")?;
+                    let view = weak_connections.upgrade().context("Connections window disappeared")?;
                     activity::sync_tracking(&view, &stats);
-                        let fixture_proxy = ui.get_proxies().row_data(0).context("Нет тестового прокси")?.id.to_string();
+                        let fixture_proxy = ui.get_proxies().row_data(0).context("Missing test proxy")?.id.to_string();
                     for (index,(process,destination,protocol)) in [("firefox.exe","203.0.113.1:443",Protocol::Tcp),("firefox.exe","203.0.113.2:443",Protocol::Udp),("steam.exe","203.0.113.3:443",Protocol::Tcp)].into_iter().enumerate() {
-                        if let Some(record)=stats.activity.start(true_proxy::connections::Info {pid:100,process:process.into(),source:format!("192.0.2.1:{}",5000+index).parse()?,destination:destination.parse()?,protocol,route:"Локальный VPN".into(),detail:"Тестовое соединение".into(),action:Action::Proxy(fixture_proxy.clone()),stamp:0},true_proxy::connections::Status::Active) {fixture_records.push(record);}
+                        if let Some(record)=stats.activity.start(true_proxy::connections::Info {pid:100,process:process.into(),source:format!("192.0.2.1:{}",5000+index).parse()?,destination:destination.parse()?,protocol,route:"Local VPN".into(),detail:"Test connection".into(),action:Action::Proxy(fixture_proxy.clone()),stamp:0},true_proxy::connections::Status::Active) {fixture_records.push(record);}
                     }
                     activity::render(&view, &stats);
-                    view.set_connection_query("FIREFOX".into()); view.invoke_filter_connections(); ensure!(view.get_filtered_event_count() == 2, "Не работает поиск процесса");
-                    view.set_connection_query("steam".into()); view.invoke_filter_connections(); ensure!(view.get_filtered_event_count() == 1, "Не работает поиск процесса по подстроке");
+                    view.set_connection_query("FIREFOX".into()); view.invoke_filter_connections(); ensure!(view.get_filtered_event_count() == 2, "Process search failed");
+                    view.set_connection_query("steam".into()); view.invoke_filter_connections(); ensure!(view.get_filtered_event_count() == 1, "Process substring search failed");
                     view.set_connection_query("".into()); view.invoke_filter_connections();
                     view.invoke_expand_process("firefox.exe".into());
-                    ui.set_notice("Проверка UI: тестовые события, перехват отключён".into());
+                    ui.set_notice("UI preview: test events, interception disabled".into());
                     snapshot(&view, &dir.join("07-connections.png"))?;
                     view.set_only_active(false);view.invoke_set_only_active(false);
-                    fixture_records[0].finish(true_proxy::connections::Status::Closed,"Тестовое завершение");
-                    fixture_records[1].finish(true_proxy::connections::Status::Failed,"Тестовый отказ SOCKS");
+                    fixture_records[0].finish(true_proxy::connections::Status::Closed,"Test completion");
+                    fixture_records[1].finish(true_proxy::connections::Status::Failed,"Test SOCKS failure");
                     activity::render(&view,&stats);snapshot(&view,&dir.join("07b-history.png"))?;
-                    view.set_only_active(true);view.invoke_set_only_active(true);ensure!(view.get_filtered_event_count()==1,"Завершённые соединения не очищены");
-                    view.set_only_active(false);view.invoke_set_only_active(false);ensure!(view.get_filtered_event_count()==1,"Старая история вернулась");
+                    view.set_only_active(true);view.invoke_set_only_active(true);ensure!(view.get_filtered_event_count()==1,"Completed connections were not cleared");
+                    view.set_only_active(false);view.invoke_set_only_active(false);ensure!(view.get_filtered_event_count()==1,"Old history reappeared");
                     view.set_only_active(true);view.invoke_set_only_active(true);
                     let config = Config::load(&dir.join("config.json"))?;
-                    ensure!(config.proxies.len() == 1 && config.rules.len() == 1, "Не пройдена проверка сохранения UI");
-                    ensure!(config.rules[0].process_names.iter().any(|name| name == "steam.exe"), "Не сохранён незавершённый ввод списка");
-                    ensure!(config.rules[0].domains == ["exact.example.com"] && config.rules[0].domain_suffixes.len() == 3, "Неверная семантика явных доменных масок");
+                    ensure!(config.proxies.len() == 1 && config.rules.len() == 1, "UI persistence check failed");
+                    ensure!(config.rules[0].process_names.iter().any(|name| name == "steam.exe"), "An edited condition was not saved");
+                    ensure!(config.rules[0].domains == ["exact.example.com"] && config.rules[0].domain_suffixes.len() == 3, "Domain wildcard behavior changed");
                     view.invoke_hide_window();
                     ui.invoke_toggle();
                 }
                 7 => {
-                    ensure!(!ui.get_active() && !ui.get_busy(), "UI не отобразил отказ запуска: active={}, busy={}, notice={}",ui.get_active(),ui.get_busy(),ui.get_notice());
-                    ensure!(ui.get_notice().contains("перехват отключен"), "Нет сообщения об отказе запуска");
-                    ensure!(!Config::load(&dir.join("config.json"))?.routing_enabled, "Отказ запуска должен сохранить выключенное состояние");
+                    ensure!(!ui.get_active() && !ui.get_busy(), "UI did not report startup failure: active={}, busy={}, notice={}",ui.get_active(),ui.get_busy(),ui.get_notice());
+                    ensure!(ui.get_notice().contains("Interception is disabled"), "Missing startup error");
+                    ensure!(!Config::load(&dir.join("config.json"))?.routing_enabled, "Startup failure should persist routing as disabled");
                     snapshot(&ui, &dir.join("08-engine-error.png"))?; ui.invoke_hide_window();
                 }
-                8 => { weak_tray.upgrade().context("Значок трея исчез")?.invoke_open(); ui.set_notice("".into()); ui.set_page(0); }
+                8 => { weak_tray.upgrade().context("Tray icon disappeared")?.invoke_open(); ui.set_notice("".into()); ui.set_page(0); }
                 9 => {
                     snapshot(&ui, &dir.join("09-restored-from-tray.png"))?;
                     #[cfg(windows)] { surface_probe = Some(appearance::mark_surface(&ui)?); }
@@ -1277,11 +1252,11 @@ fn smoke_ui(
                 }
                 10 => {ui.window().set_minimized(false);}
                 11 => {
-                    #[cfg(windows)] appearance::verify_surface(&ui, surface_probe.as_ref().context("Нет меток перерисовки")?)?;
-                    ui.set_notice("Проверка UI: пример уведомления об обновлении; запросы к GitHub и установка отключены.".into());
-                    ui.set_update_available(true); ui.set_update_version(true_proxy::updates::VERSION.into()); ui.set_update_text("Новая версия готова к загрузке.".into());
+                    #[cfg(windows)] appearance::verify_surface(&ui, surface_probe.as_ref().context("Missing repaint probes")?)?;
+                    ui.set_notice("UI preview: update notification fixture.".into());
+                    ui.set_update_available(true); ui.set_update_version(true_proxy::updates::VERSION.into()); ui.set_update_text("A new version is ready to download.".into());
                     snapshot(&ui, &dir.join("10-update-available.png"))?;
-                    ui.set_update_ready(true); ui.set_update_text("Обновление загружено. Для установки приостановите маршрутизацию.".into());
+                    ui.set_update_ready(true); ui.set_update_text("Update downloaded. Stop routing to install it.".into());
                     ui.set_page(4); snapshot(&ui, &dir.join("11-update-ready.png"))?;
                     std::fs::write(dir.join("result.txt"), "PASS: editors, persistence, connection history, startup failure, tray restore and native minimize repaint; interception was disabled.")?;
                     slint::quit_event_loop()?;
@@ -1341,20 +1316,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opening_connections_hides_only_the_panel_and_close_stops_its_journal() {
+    fn opening_connections_keeps_main_visible_and_close_stops_its_journal() {
         i_slint_backend_testing::init_no_event_loop();
         let main = MainWindow::new().unwrap();
         let view = ConnectionsWindow::new().unwrap();
         let statistics = Arc::new(Statistics::default());
         let timer = wire_connection_window(&main, &view, statistics.clone());
-        let weak = main.as_weak();
-        main.on_hide_window(move || {
-            weak.unwrap().hide().unwrap();
-        });
         main.show().unwrap();
         assert!(!statistics.activity.tracking());
         main.invoke_open_connections();
-        assert!(!main.window().is_visible());
+        assert!(main.window().is_visible());
         assert!(view.window().is_visible() && statistics.activity.tracking());
         assert!(timer.running());
         let record = statistics

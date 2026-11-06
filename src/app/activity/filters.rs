@@ -71,7 +71,7 @@ pub fn refresh(ui: &ConnectionsWindow, snapshots: &[Snapshot]) {
     let selected = routing::values(ui.get_connection_route_selection())
         .into_iter()
         .collect::<HashSet<_>>();
-    let mut choices = vec![option(ALL.into(), "Все".into(), all)];
+    let mut choices = vec![option(ALL.into(), "All".into(), all)];
     let mut known = HashSet::new();
     for proxy in ui.get_proxies().iter().take(64) {
         if known.insert(proxy.id.to_string()) {
@@ -99,14 +99,11 @@ pub fn refresh(ui: &ConnectionsWindow, snapshots: &[Snapshot]) {
         let key = route_key(&Action::Proxy(id));
         choices.push(option(
             key.clone(),
-            format!("{label} (из журнала)"),
+            format!("{label} (from history)"),
             all || selected.contains(&key),
         ));
     }
-    for (action, label) in [
-        (Action::Direct, "Прямые"),
-        (Action::Block, "Заблокированные"),
-    ] {
+    for (action, label) in [(Action::Direct, "Direct"), (Action::Block, "Blocked")] {
         let key = route_key(&action);
         choices.push(option(
             key.clone(),
@@ -119,7 +116,7 @@ pub fn refresh(ui: &ConnectionsWindow, snapshots: &[Snapshot]) {
     let statuses = selected_statuses(ui);
     let mut choices = vec![option(
         ALL.into(),
-        "Все".into(),
+        "All".into(),
         statuses.len() == STATUSES.len(),
     )];
     choices.extend(STATUSES.iter().map(|status| {

@@ -608,9 +608,9 @@ impl Network {
                         tokio::net::lookup_host((proxy.host.as_str(), proxy.port)),
                     )
                     .await
-                    .context("Таймаут разрешения адреса прокси")??
+                    .context("Proxy address resolution timed out")??
                     .next()
-                    .context("Не найден IP-адрес прокси")?;
+                    .context("Could not resolve the proxy's IP address")?;
                     proxy.host = address.ip().to_string();
                 }
             }
@@ -672,8 +672,8 @@ impl Network {
                 if let Err(error) = result
                     && !worker_stopping.load(Ordering::Acquire)
                 {
-                    worker_stats.log("Система", "", "Ошибка", format!("{error:#}"));
-                    failure(format!("Перехват остановился: {error:#}"));
+                    worker_stats.log("System", "", "Error", format!("{error:#}"));
+                    failure(format!("Traffic interception stopped: {error:#}"));
                 }
             })?;
         Ok(Self {
@@ -896,7 +896,7 @@ fn capture(context: CaptureContext) -> Result<()> {
             if let Some(d) = decisions.remove(&key)
                 && let Some(record) = d.record
             {
-                record.finish(Status::Closed, "Новый экземпляр соединения");
+                record.finish(Status::Closed, "New connection on the same endpoints");
             }
             udp.cleanup();
             let mut table = nat.lock().unwrap();
@@ -934,21 +934,21 @@ fn capture(context: CaptureContext) -> Result<()> {
                     );
                     if stats.activity.tracking() {
                         let route = match &action {
-                            Action::Direct => "Напрямую".into(),
-                            Action::Block => "Блокировка".into(),
+                            Action::Direct => "Direct".into(),
+                            Action::Block => "Block".into(),
                             Action::Proxy(id) => config
                                 .proxy(id)
                                 .map(|proxy| proxy.name.clone())
-                                .unwrap_or_else(|_| "Прокси отсутствует".into()),
+                                .unwrap_or_else(|_| "Proxy not found".into()),
                         };
                         stats.log(
                             &d.owner.name,
                             packet.flow.destination.to_string(),
                             route.clone(),
-                            format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
+                            format!("UDP · Route updated using DNS: {}", names.join(", ")),
                         );
                         if let Some(old) = d.record.take() {
-                            old.finish(Status::Closed, "Маршрут изменён");
+                            old.finish(Status::Closed, "Route changed");
                         }
                         let info = Info {
                             pid: d.owner.pid,
@@ -957,7 +957,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                             destination: packet.flow.destination,
                             protocol: Protocol::Udp,
                             route,
-                            detail: format!("UDP · маршрут уточнён по DNS: {}", names.join(", ")),
+                            detail: format!("UDP · Route updated using DNS: {}", names.join(", ")),
                             action: action.clone(),
                             stamp: address.timestamp(),
                         };
@@ -1000,10 +1000,10 @@ fn capture(context: CaptureContext) -> Result<()> {
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     if last_lookup_error.elapsed() > Duration::from_secs(5) {
                         stats.log(
-                            "Неизвестный процесс",
+                            "Unknown process",
                             packet.flow.destination.to_string(),
-                            "Блокировка",
-                            "Не удалось надежно определить владельца соединения",
+                            "Block",
+                            "Could not identify the connection owner reliably",
                         );
                         last_lookup_error = now;
                     }
@@ -1031,12 +1031,12 @@ fn capture(context: CaptureContext) -> Result<()> {
             let mut record = None;
             if owner.pid != std::process::id() && stats.activity.tracking() {
                 let route = match &action {
-                    Action::Direct => "Напрямую".into(),
-                    Action::Block => "Блокировка".into(),
+                    Action::Direct => "Direct".into(),
+                    Action::Block => "Block".into(),
                     Action::Proxy(id) => config
                         .proxy(id)
                         .map(|p| p.name.clone())
-                        .unwrap_or_else(|_| "Прокси отсутствует".into()),
+                        .unwrap_or_else(|_| "Proxy not found".into()),
                 };
                 let names = domains.lock().unwrap().lookup(packet.flow.destination.ip());
                 let explanation = rules::explanation(
@@ -1085,7 +1085,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 // Do not take over a TCP connection established before interception began.
                 if !packet.is_syn() {
                     if let Some(c) = &record {
-                        c.finish(Status::Blocked, "Требуется новое TCP-соединение");
+                        c.finish(Status::Blocked, "A new TCP connection is required");
                     }
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -1127,7 +1127,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                     );
                 } else {
                     if let Some(c) = &record {
-                        c.finish(Status::Failed, "Лимит TCP-соединений");
+                        c.finish(Status::Failed, "TCP connection limit reached");
                     }
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     continue;
@@ -1264,7 +1264,7 @@ async fn accept_loop(
                     stats.log(
                         mapping.process,
                         mapping.original.destination.to_string(),
-                        "Ошибка",
+                        "Error",
                         format!("{error:#}"),
                     );
                 }

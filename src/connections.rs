@@ -33,13 +33,13 @@ impl Status {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Connecting => "Подключение",
-            Self::Active => "Активно",
-            Self::Closing => "Завершается",
-            Self::Closed => "Завершено",
-            Self::Failed => "Ошибка",
-            Self::Blocked => "Заблокировано",
-            Self::Stopped => "Остановлено",
+            Self::Connecting => "Connecting",
+            Self::Active => "Active",
+            Self::Closing => "Closing",
+            Self::Closed => "Closed",
+            Self::Failed => "Failed",
+            Self::Blocked => "Blocked",
+            Self::Stopped => "Stopped",
         }
     }
     fn decode(value: u8) -> Self {
@@ -396,7 +396,7 @@ impl Connections {
                 } else {
                     Status::Closed
                 },
-                "Сокет закрыт",
+                "Socket closed",
             );
         }
     }
@@ -424,12 +424,12 @@ impl Connections {
                         && now.saturating_sub(e.started)
                             >= Duration::from_secs(30).as_millis() as u64
                     {
-                        Some((id, Status::Failed, "Таймаут подключения"))
+                        Some((id, Status::Failed, "Connection timed out"))
                     } else if e.info.action == Action::Direct
                         && e.info.protocol == Protocol::Udp
                         && now.saturating_sub(e.last.load(Ordering::Relaxed)) >= 90_000
                     {
-                        Some((id, Status::Closed, "90 с без исходящих датаграмм"))
+                        Some((id, Status::Closed, "No outgoing datagrams for 90 s"))
                     } else {
                         None
                     }

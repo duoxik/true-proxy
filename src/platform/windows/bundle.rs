@@ -37,28 +37,30 @@ pub(super) fn prepare() -> Result<PreparedDriver> {
     let executable = std::env::current_exe()?;
     let local_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
     prepare_at(&executable, local_data.as_deref())
-        .context("Не удалось подготовить сетевой компонент WinDivert")
+        .context("Could not prepare the WinDivert network component")
 }
 
 fn prepare_at(executable: &Path, local_data: Option<&Path>) -> Result<PreparedDriver> {
-    let adjacent = executable.parent().context("Не найдена папка приложения")?;
+    let adjacent = executable
+        .parent()
+        .context("Could not find the application directory")?;
     ensure!(
         adjacent.is_absolute(),
-        "Папка приложения должна иметь полный путь"
+        "The application directory path must be absolute"
     );
     // A complete adjacent pair is an intentional, replaceable DLL installation
     // (also supports upstream LGPL replacement). Never search the working directory.
     if adjacent.join(DLL_NAME).is_file() && adjacent.join(SYS_NAME).is_file() {
         return lock_pair(adjacent, false);
     }
-    let local_data = local_data.context("Не найдена локальная папка пользователя Windows")?;
+    let local_data = local_data.context("Could not find the Windows local user directory")?;
     ensure!(
         local_data.is_absolute(),
-        "Локальная папка пользователя должна иметь полный путь"
+        "The local user directory path must be absolute"
     );
     let directory = local_data.join("TrueProxy").join("runtime").join(VERSION);
     fs::create_dir_all(&directory)
-        .with_context(|| format!("Нет доступа к папке {}", directory.display()))?;
+        .with_context(|| format!("Could not access directory {}", directory.display()))?;
     for (name, bytes) in [
         (DLL_NAME, DLL),
         (SYS_NAME, SYS),
@@ -101,13 +103,12 @@ fn write_if_changed(path: &Path, expected: &[u8]) -> Result<()> {
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("Не удалось записать {}", path.display()));
+                return Err(error).with_context(|| format!("Could not write {}", path.display()));
             }
         }
     }
     let (temporary, mut file) =
-        temporary.context("Не удалось создать временный файл сетевого компонента")?;
+        temporary.context("Could not create a temporary file for the network component")?;
     let result = (|| {
         file.write_all(expected)?;
         file.sync_all()?;
@@ -117,7 +118,7 @@ fn write_if_changed(path: &Path, expected: &[u8]) -> Result<()> {
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.with_context(|| format!("Не удалось подготовить {}", path.display()))
+    result.with_context(|| format!("Could not prepare {}", path.display()))
 }
 
 fn lock_pair(directory: &Path, verify: bool) -> Result<PreparedDriver> {
@@ -128,11 +129,11 @@ fn lock_pair(directory: &Path, verify: bool) -> Result<PreparedDriver> {
             .read(true)
             .share_mode(FILE_SHARE_READ)
             .open(&path)
-            .with_context(|| format!("Не удалось открыть {}", path.display()))?;
+            .with_context(|| format!("Could not open {}", path.display()))?;
         if verify {
             ensure!(
                 matches(&mut file, expected)?,
-                "Поврежден сетевой компонент {}",
+                "Corrupt network component {}",
                 path.display()
             );
         }

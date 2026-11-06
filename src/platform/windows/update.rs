@@ -37,7 +37,7 @@ impl Drop for Hash {
     }
 }
 fn crypto(status: i32) -> Result<()> {
-    ensure!(status >= 0, "Ошибка SHA-256 Windows ({status})");
+    ensure!(status >= 0, "Windows SHA-256 error ({status})");
     Ok(())
 }
 
@@ -63,7 +63,7 @@ pub fn sha256(path: &Path) -> Result<String> {
     })?;
     ensure!(
         returned == 4 && (1..=65536).contains(&length),
-        "Некорректный размер SHA-256 Windows"
+        "Invalid Windows SHA-256 size"
     );
     let mut object = vec![0; length as usize];
     let mut handle = ptr::null_mut();
@@ -86,7 +86,7 @@ pub fn sha256(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     ensure!(
         file.metadata()?.len() <= crate::updates::MAX_EXE_SIZE,
-        "Слишком большой EXE"
+        "The executable is too large"
     );
     let mut buffer = [0u8; 32768];
     loop {
@@ -110,7 +110,7 @@ fn created(handle: HANDLE) -> Result<u64> {
     );
     ensure!(
         unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) } != 0,
-        "Не удалось проверить время создания процесса"
+        "Could not verify the process creation time"
     );
     Ok((creation.dwHighDateTime as u64) << 32 | creation.dwLowDateTime as u64)
 }
@@ -133,23 +133,26 @@ impl Parent {
     pub fn open(pid: u32, creation: u64) -> Result<Self> {
         ensure!(
             pid != 0 && pid != std::process::id(),
-            "Некорректный процесс обновления"
+            "Invalid update target process"
         );
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | 0x00100000, 0, pid) };
-        ensure!(!handle.is_null(), "Не удалось открыть обновляемый процесс");
+        ensure!(
+            !handle.is_null(),
+            "Could not open the update target process"
+        );
         let mut parent = Self {
             handle,
             image: PathBuf::new(),
         };
         ensure!(
             created(handle)? == creation,
-            "PID уже принадлежит другому процессу; обновление отменено"
+            "Update canceled because the PID now belongs to a different process"
         );
         let mut path = vec![0u16; 32768];
         let mut size = path.len() as u32;
         ensure!(
             unsafe { QueryFullProcessImageNameW(handle, 0, path.as_mut_ptr(), &mut size) } != 0,
-            "Не удалось определить обновляемый EXE"
+            "Could not identify the executable to update"
         );
         use std::os::windows::ffi::OsStringExt;
         parent.image = PathBuf::from(std::ffi::OsString::from_wide(&path[..size as usize]));
@@ -158,7 +161,7 @@ impl Parent {
     pub fn wait(&self) -> Result<()> {
         ensure!(
             unsafe { WaitForSingleObject(self.handle, 60000) } == 0,
-            "Предыдущая версия не завершилась; обновление отменено"
+            "Update canceled because the previous version did not exit"
         );
         Ok(())
     }
@@ -176,7 +179,7 @@ pub fn spawn_hidden(
         .args(arguments)
         .creation_flags(0x08000000)
         .spawn()
-        .context("Не удалось запустить компонент обновления")
+        .context("Could not start the update helper")
 }
 
 #[cfg(test)]

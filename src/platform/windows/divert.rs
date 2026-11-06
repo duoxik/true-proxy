@@ -70,7 +70,7 @@ impl Driver {
         let bundle = bundle::prepare()?;
         // SAFETY: an absolute application-owned path is used; symbols stay valid while Library lives.
         let library = unsafe { Library::new(&bundle.dll) }
-            .with_context(|| format!("Не удалось загрузить {}", bundle.dll.display()))?;
+            .with_context(|| format!("Could not load {}", bundle.dll.display()))?;
         unsafe {
             Ok(Arc::new(Self {
                 open: *library.get(b"WinDivertOpen\0")?,
@@ -94,7 +94,7 @@ impl Driver {
         let handle = unsafe { (self.open)(filter.as_ptr(), 0, 123, 0) };
         ensure!(
             !handle.is_null() && handle as isize != -1,
-            "Не удалось открыть WinDivert: {}. Требуются права администратора и подписанный драйвер.",
+            "Could not open WinDivert: {}. Administrator rights and a signed driver are required.",
             std::io::Error::last_os_error()
         );
         Ok(Arc::new(Device {
@@ -118,7 +118,7 @@ impl Driver {
                     &mut offset,
                 )
             } != 0,
-            "Некорректный фильтр WinDivert на позиции {offset}"
+            "Invalid WinDivert filter at position {offset}"
         );
         Ok(())
     }
@@ -128,7 +128,7 @@ impl Driver {
         let handle = unsafe { (self.open)(filter.as_ptr(), 3, 0, 1 | 4) };
         ensure!(
             !handle.is_null() && handle as isize != -1,
-            "Не удалось запустить отслеживание сокетов: {}",
+            "Could not start socket tracking: {}",
             std::io::Error::last_os_error()
         );
         Ok(Arc::new(Device {
@@ -169,7 +169,7 @@ impl Driver {
                     buffer.len() as u32,
                 )
             } != 0,
-            "Некорректный адрес сокета"
+            "Invalid socket address"
         );
         let ip: IpAddr = unsafe { CStr::from_ptr(buffer.as_ptr()) }
             .to_str()?
@@ -209,7 +209,7 @@ impl Device {
                     &mut address,
                 )
             } != 0,
-            "Монитор сокетов остановился: {}",
+            "Socket monitoring stopped: {}",
             std::io::Error::last_os_error()
         );
         self.driver.decode_socket_close(&address)
@@ -227,7 +227,7 @@ impl Device {
                     &mut addr,
                 )
             } != 0,
-            "Ошибка чтения WinDivert: {}",
+            "WinDivert read error: {}",
             std::io::Error::last_os_error()
         );
         Ok((len as usize, addr))
@@ -243,7 +243,7 @@ impl Device {
                     address,
                 )
             } != 0,
-            "Ошибка отправки WinDivert: {}",
+            "WinDivert send error: {}",
             std::io::Error::last_os_error()
         );
         Ok(())
@@ -254,7 +254,7 @@ impl Device {
             unsafe {
                 (self.driver.checksums)(bytes.as_mut_ptr(), bytes.len() as u32, &mut address, 0)
             } != 0,
-            "Ошибка контрольной суммы"
+            "Checksum error"
         );
         self.send(&bytes, &address)
     }
@@ -263,7 +263,7 @@ impl Device {
         ensure!(
             unsafe { (self.driver.checksums)(bytes.as_mut_ptr(), bytes.len() as u32, address, 0) }
                 != 0,
-            "Ошибка контрольной суммы"
+            "Checksum error"
         );
         self.send(bytes, address)
     }

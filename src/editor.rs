@@ -13,14 +13,14 @@ pub fn entries(kind: i32, input: &str) -> Result<Vec<String>> {
                 0 => {
                     ensure!(
                         !value.contains(['/', '\\', '*', '?']),
-                        "Укажите имя EXE, например destiny2.exe, или добавьте полный путь отдельно"
+                        "Enter an EXE filename such as destiny2.exe, or add the full path separately"
                     );
                     value.to_string()
                 }
                 1 => {
                     ensure!(
                         Path::new(value).is_absolute(),
-                        "Укажите полный путь приложения"
+                        "Enter the full path to the application"
                     );
                     value.to_string()
                 }
@@ -39,7 +39,7 @@ pub fn entries(kind: i32, input: &str) -> Result<Vec<String>> {
                                 && label
                                     .bytes()
                                     .all(|b| b.is_ascii_alphanumeric() || b == b'-')),
-                        "Укажите домен без https://, пути и порта"
+                        "Enter a domain without https://, a path, or a port"
                     );
                     if wildcard {
                         format!("*.{domain}")
@@ -53,7 +53,7 @@ pub fn entries(kind: i32, input: &str) -> Result<Vec<String>> {
                     } else {
                         value
                             .parse::<ipnet::IpNet>()
-                            .map_err(|_| anyhow::anyhow!("Некорректный IP или CIDR: {value}"))?
+                            .map_err(|_| anyhow::anyhow!("Invalid IP address or CIDR: {value}"))?
                             .to_string()
                     }
                 }
@@ -65,7 +65,7 @@ pub fn entries(kind: i32, input: &str) -> Result<Vec<String>> {
                         format!("{}-{}", range.start, range.end)
                     }
                 }
-                _ => bail!("Неизвестный тип условия"),
+                _ => bail!("Unknown condition type"),
             })
         })
         .collect()

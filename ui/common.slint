@@ -10,33 +10,36 @@ export struct ConnectionFilterOption { key: string, label: string, checked: bool
 export struct ConnectionFilterRow { options: [ConnectionFilterOption] }
 
 export global Theme {
-    out property <color> background: #201b2d;
-    out property <color> background-refresh: #201b2e;
-    out property <color> sidebar: #29213b;
-    out property <color> surface: #2b243a;
-    out property <color> surface-hover: #372e49;
-    out property <color> pressed: #403552;
-    out property <color> field: #1d1829;
-    out property <color> border: #463a55;
-    out property <color> text: #f2eef8;
-    out property <color> secondary: #c3b9d2;
-    out property <color> muted: #a99db9;
-    out property <color> accent: #7aa7ff;
-    out property <color> accent-hover: #a8c5ff;
-    out property <color> accent-soft: #363051;
-    out property <color> primary: #3969d5;
-    out property <color> primary-hover: #426ed9;
-    out property <color> primary-pressed: #3058b7;
+    out property <color> background: #f1f3f5;
+    out property <color> background-refresh: #f1f3f6;
+    out property <color> sidebar: #ffffff;
+    out property <color> surface: #ffffff;
+    out property <color> surface-hover: #f7f5ff;
+    out property <color> pressed: #ede7ff;
+    out property <color> field: #f7f8f9;
+    out property <color> border: #e0e3e7;
+    out property <color> text: #141d2d;
+    out property <color> secondary: #4f5c6c;
+    out property <color> muted: #687585;
+    out property <color> accent: #7846db;
+    out property <color> accent-hover: #6235bf;
+    out property <color> accent-soft: #f3efff;
+    out property <color> primary: #8354ea;
+    out property <color> primary-hover: #7546d9;
+    out property <color> primary-pressed: #6739c9;
     out property <color> primary-text: #ffffff;
-    out property <color> disabled: #292338;
-    out property <color> disabled-text: #8f839f;
-    out property <color> success: #85dfb5;
-    out property <color> warning: #f3c583;
-    out property <color> warning-surface: #413031;
-    out property <color> danger: #ff9eaf;
-    out property <color> switch-off: #534761;
-    out property <color> selection: #435684;
-    out property <color> overlay: #100a19bd;
+    out property <color> disabled: #eff1f4;
+    out property <color> disabled-text: #758191;
+    out property <color> success: #167b45;
+    out property <color> warning: #8c5808;
+    out property <color> warning-surface: #fff7e5;
+    out property <color> danger: #b72b40;
+    out property <color> switch-off: #cbd0d6;
+    out property <color> selection: #e9ddff;
+    out property <color> overlay: #19212e82;
+    out property <color> success-soft: #ebf9f0;
+    out property <color> danger-soft: #fff1f2;
+    out property <color> blue: #2864ca;
     out property <length> radius-small: 10px;
     out property <length> radius-medium: 14px;
     out property <length> radius-large: 18px;
@@ -44,12 +47,66 @@ export global Theme {
     out property <length> scroll-gutter: 15px;
 }
 
+// Small, independently drawn outline icons for the desktop UI.
+export component UiIcon inherits Rectangle {
+    in property <string> name;
+    in property <color> ink: Theme.secondary;
+    width: 18px;
+    height: 18px;
+    accessible-role: none;
+    Path {
+        width: parent.width;
+        height: parent.height;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        stroke: root.ink;
+        stroke-width: 1.8px;
+        commands: root.glyph(root.name);
+    }
+    pure function glyph(name: string) -> string {
+        if name == "dashboard" { return "M3 3 H9 V9 H3 Z M15 3 H21 V9 H15 Z M3 15 H9 V21 H3 Z M15 15 H21 V21 H15 Z"; }
+        if name == "server" { return "M5 4 H19 Q21 4 21 6 V9 Q21 11 19 11 H5 Q3 11 3 9 V6 Q3 4 5 4 Z M5 13 H19 Q21 13 21 15 V18 Q21 20 19 20 H5 Q3 20 3 18 V15 Q3 13 5 13 Z M7 7.5 H8 M7 16.5 H8 M12 7.5 H17 M12 16.5 H17"; }
+        if name == "rules" { return "M5 3 H19 Q21 3 21 5 V19 Q21 21 19 21 H5 Q3 21 3 19 V5 Q3 3 5 3 Z M7 7 L8 8 L10 6 M13 7 H17 M7 12 L8 13 L10 11 M13 12 H17 M7 17 L8 18 L10 16 M13 17 H17"; }
+        if name == "activity" { return "M2 12 H7 L10 5 L14 19 L17 12 H22"; }
+        if name == "settings" { return "M12 8 A4 4 0 1 0 12 16 A4 4 0 1 0 12 8 M12 2 V5 M12 19 V22 M2 12 H5 M19 12 H22 M5 5 L7 7 M17 17 L19 19 M5 19 L7 17 M17 7 L19 5"; }
+        if name == "plus" { return "M12 5 V19 M5 12 H19"; }
+        if name == "play" { return "M7 4 L20 12 L7 20 Z"; }
+        if name == "stop" { return "M6 6 H18 V18 H6 Z"; }
+        if name == "edit" { return "M4 17 L3 21 L7 20 L20 7 L17 4 Z M14 7 L17 10"; }
+        if name == "trash" { return "M4 7 H20 M9 7 V4 H15 V7 M6 7 L7 21 H17 L18 7 M10 11 V17 M14 11 V17"; }
+        if name == "chevron-up" { return "M6 15 L12 9 L18 15"; }
+        if name == "chevron-down" { return "M6 9 L12 15 L18 9"; }
+        if name == "chevron-right" { return "M9 6 L15 12 L9 18"; }
+        if name == "lock" { return "M6 11 H18 V21 H6 Z M8 11 V7 A4 4 0 0 1 16 7 V11 M12 15 V17"; }
+        if name == "clock" { return "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 M12 7 V12 L15 14"; }
+        if name == "shield" { return "M12 3 L20 6 V12 Q20 18 12 21 Q4 18 4 12 V6 Z M8 12 L11 15 L16 9"; }
+        if name == "check" { return "M5 12 L10 17 L19 7"; }
+        if name == "search" { return "M10 4 A6 6 0 1 0 10 16 A6 6 0 1 0 10 4 M14.5 14.5 L20 20"; }
+        if name == "close" { return "M6 6 L18 18 M18 6 L6 18"; }
+        if name == "refresh" { return "M20 4 V9 H15 M20 9 A8 8 0 1 0 20 16"; }
+        if name == "arrow-right" { return "M4 12 H20 M14 6 L20 12 L14 18"; }
+        if name == "direct" { return "M4 12 H20 M14 6 L20 12 L14 18"; }
+        if name == "arrow-up" { return "M12 20 V4 M6 10 L12 4 L18 10"; }
+        if name == "arrow-down" { return "M12 4 V20 M6 14 L12 20 L18 14"; }
+        if name == "upload" { return "M12 17 V4 M7 9 L12 4 L17 9 M4 16 V21 H20 V16"; }
+        if name == "download" { return "M12 4 V17 M7 12 L12 17 L17 12 M4 16 V21 H20 V16"; }
+        if name == "block" { return "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 M6 6 L18 18"; }
+        if name == "globe" { return "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 M3 12 H21 M12 3 C6 7 6 17 12 21 C18 17 18 7 12 3"; }
+        if name == "file" { return "M6 3 H14 L19 8 V21 H6 Z M14 3 V8 H19 M9 13 H16 M9 17 H16"; }
+        if name == "app" { return "M4 5 H20 V19 H4 Z M4 9 H20 M7 7 H8 M10 7 H11"; }
+        return "";
+    }
+}
+
 export component ActionButton inherits Rectangle {
     in property <string> label;
+    in property <string> icon;
+    in property <bool> icon-only: false;
     in property <bool> primary: false;
     in property <bool> enabled: true;
+    property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text;
     callback clicked;
-    min-width: max(38px, label-text.preferred-width + 30px); max-width: self.min-width;
+    min-width: root.icon-only ? 36px : max(38px, label-text.preferred-width + 26px + (root.icon == "" ? 0px : 23px)); max-width: self.min-width;
     height: 38px; horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: Theme.radius-small; border-width: 1px;
     border-color: focus.has-focus ? Theme.accent : root.primary ? transparent : Theme.border;
@@ -60,7 +117,15 @@ export component ActionButton inherits Rectangle {
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
-    label-text := Text { text: root.label; color: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
+    HorizontalLayout {
+        alignment: center;
+        spacing: root.icon-only || root.label == "" ? 0px : 6px;
+        if root.icon != "": Rectangle {
+            width: 17px;
+            UiIcon { name: root.icon; ink: root.ink; width: 17px; height: 17px; y: (parent.height - self.height) / 2; }
+        }
+        label-text := Text { text: root.icon-only ? "" : root.label; color: root.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
+    }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
     // Like Slint's standard Button: keyboard focus must not cover the pointer target.
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
@@ -69,6 +134,7 @@ export component ActionButton inherits Rectangle {
 export component Field inherits VerticalLayout {
     in property <string> label;
     in property <string> placeholder;
+    in property <string> icon;
     in property <bool> secret: false;
     in-out property <string> value;
     spacing: 6px;
@@ -77,11 +143,70 @@ export component Field inherits VerticalLayout {
     vertical-stretch: 0;
     callback edited;
     callback accepted;
-    if root.label != "": Text { text: root.label; font-size: 11px; font-weight: 600; color: Theme.secondary; }
-    Rectangle { height: 40px; border-radius: Theme.radius-small; border-width: 1px; border-color: input.has-focus ? Theme.accent : Theme.border; background: Theme.field;
-        if root.value == "": Text { x: 11px; width: parent.width - 22px; text: root.placeholder; font-size: 12px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
-        input := TextInput { x: 11px; width: parent.width - 22px; height: parent.height; text <=> root.value; font-size: 12px; color: Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
+    if root.label != "": Text { text: root.label; font-size: 13px; font-weight: 500; color: Theme.secondary; }
+    Rectangle {
+        height: 40px;
+        border-radius: Theme.radius-small;
+        border-width: 1px;
+        border-color: input.has-focus ? Theme.accent : Theme.border;
+        background: Theme.field;
+        property <length> inset: root.icon == "" ? 12px : 36px;
+        if root.icon != "": UiIcon { name: root.icon; x: 12px; y: (parent.height - self.height) / 2; width: 16px; height: 16px; }
+        if root.value == "": Text { x: parent.inset; width: parent.width - parent.inset - 12px; text: root.placeholder; font-size: 13px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
+        input := TextInput { x: parent.inset; width: parent.width - parent.inset - 12px; height: parent.height; text <=> root.value; font-size: 13px; color: Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
     }
+}
+
+export component DialogHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> icon;
+    callback close;
+    height: 70px;
+    background: Theme.field;
+    border-radius: Theme.radius-large;
+    Rectangle { y: parent.height / 2; height: parent.height / 2; background: Theme.field; }
+    HorizontalLayout {
+        padding-left: 20px;
+        padding-right: 18px;
+        spacing: 14px;
+        Rectangle {
+            width: 40px;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 40px; height: 40px;
+                border-radius: Theme.radius-small;
+                background: Theme.accent-soft;
+                UiIcon { name: root.icon; ink: Theme.accent; x: 10px; y: 10px; width: 20px; height: 20px; }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 3px;
+            horizontal-stretch: 1;
+            Text { text: root.title; color: Theme.text; font-size: 18px; font-weight: 650; min-width: 0px; overflow: elide; }
+            Text { text: root.subtitle; color: Theme.muted; font-size: 12px; min-width: 0px; overflow: elide; }
+        }
+        Rectangle {
+            width: 34px;
+            ActionButton {
+                label: "Close"; icon: "close"; icon-only: true;
+                y: (parent.height - self.height) / 2;
+                min-width: 34px; max-width: 34px; height: 34px;
+                clicked => { root.close(); }
+            }
+        }
+    }
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+}
+
+export component DialogActions inherits Rectangle {
+    height: 64px;
+    background: Theme.field;
+    border-radius: Theme.radius-large;
+    Rectangle { y: 0px; height: parent.height / 2; background: Theme.field; }
+    Rectangle { y: 0px; height: 1px; background: Theme.border; }
+    HorizontalLayout { padding: 12px; spacing: 9px; alignment: end; @children }
 }
 
 export component ThemedComboBox inherits Rectangle {

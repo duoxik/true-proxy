@@ -29,10 +29,10 @@ pub struct PortableProxy {
 
 impl Profile {
     pub fn parse(text: &str) -> Result<Self> {
-        ensure!(text.len() <= MAX_BYTES, "Конфигурация превышает 2 МиБ");
+        ensure!(text.len() <= MAX_BYTES, "The configuration exceeds 2 MiB");
         let mut profile: Self = serde_json::from_str(text).map_err(|error| {
             anyhow::anyhow!(
-                "JSON, строка {}, столбец {}: {}",
+                "JSON at line {}, column {}: {}",
                 error.line(),
                 error.column(),
                 error
@@ -57,7 +57,7 @@ impl Profile {
                     port: proxy.port,
                     username: proxy.username.clone(),
                     password: proxy.password().with_context(|| {
-                        format!("Не удалось прочитать пароль прокси «{}»", proxy.name)
+                        format!("Could not read the password for proxy '{}'", proxy.name)
                     })?,
                 })
             })
@@ -72,7 +72,7 @@ impl Profile {
     }
     pub fn pretty(&self) -> Result<String> {
         let result = serde_json::to_string_pretty(self)?;
-        ensure!(result.len() <= MAX_BYTES, "Конфигурация превышает 2 МиБ");
+        ensure!(result.len() <= MAX_BYTES, "The configuration exceeds 2 MiB");
         Ok(result)
     }
     fn unprotected_proxy(proxy: &PortableProxy) -> Proxy {
@@ -92,7 +92,7 @@ impl Profile {
                     .password
                     .as_ref()
                     .is_none_or(|password| password.len() <= 255),
-                "proxies[{index}].password: пароль SOCKS5 длиннее 255 байт"
+                "proxies[{index}].password: the SOCKS5 password exceeds 255 bytes"
             );
         }
         Config {
@@ -103,7 +103,7 @@ impl Profile {
             ..Config::default()
         }
         .validate()
-        .context("Некорректная конфигурация")
+        .context("Invalid configuration")
     }
     pub fn apply(self, config: &mut Config) -> Result<()> {
         self.validate()?;
@@ -124,7 +124,10 @@ impl Profile {
                         .map(crate::platform::protect)
                         .transpose()
                         .with_context(|| {
-                            format!("Не удалось защитить пароль прокси «{}»", portable.name)
+                            format!(
+                                "Could not protect the password for proxy '{}'",
+                                portable.name
+                            )
                         })?
                 };
                 Ok(proxy)
@@ -151,7 +154,7 @@ mod tests {
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("строка")
+                .contains("line")
         );
         for invalid in [
             text().replace("1080", "0"),

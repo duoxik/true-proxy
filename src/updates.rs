@@ -42,14 +42,17 @@ struct GithubAsset {
 }
 
 pub fn parse_release(bytes: &[u8]) -> Result<Option<Release>> {
-    ensure!(bytes.len() <= 512 * 1024, "Слишком большой ответ GitHub");
+    ensure!(
+        bytes.len() <= 512 * 1024,
+        "The GitHub response is too large"
+    );
     let raw: GithubRelease =
-        serde_json::from_slice(bytes).context("Некорректный ответ GitHub Releases")?;
+        serde_json::from_slice(bytes).context("Invalid GitHub Releases response")?;
     if raw.draft || raw.prerelease {
         return Ok(None);
     }
     let version = Version::parse(raw.tag_name.strip_prefix('v').unwrap_or(&raw.tag_name))
-        .context("Некорректная версия релиза")?;
+        .context("Invalid release version")?;
     if !version.pre.is_empty() {
         return Ok(None);
     }
@@ -62,17 +65,17 @@ pub fn parse_release(bytes: &[u8]) -> Result<Option<Release>> {
     };
     ensure!(
         assets.next().is_none(),
-        "В релизе несколько файлов TrueProxy.exe"
+        "The release contains multiple TrueProxy.exe files"
     );
     ensure!(
         asset.id > 0 && (1024..=MAX_EXE_SIZE).contains(&asset.size),
-        "Некорректный размер обновления"
+        "Invalid update size"
     );
     let digest = asset
         .digest
         .as_deref()
         .and_then(|digest| digest.strip_prefix("sha256:"))
-        .context("GitHub не предоставил SHA-256 обновления")?;
+        .context("GitHub did not provide the update SHA-256 hash")?;
     validate_digest(digest)?;
     Ok(Some(Release {
         version: version.to_string(),
@@ -88,7 +91,7 @@ pub fn is_newer(release: &Release, installed: &str) -> Result<bool> {
 pub fn validate_digest(digest: &str) -> Result<()> {
     ensure!(
         digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        "Некорректный SHA-256 обновления"
+        "Invalid update SHA-256 hash"
     );
     Ok(())
 }
@@ -110,13 +113,12 @@ impl Preferences {
         }
         ensure!(
             fs::metadata(path)?.len() < 4096,
-            "Слишком большой файл настроек обновлений"
+            "The update preferences file is too large"
         );
-        serde_json::from_slice(&fs::read(path)?)
-            .context("Не удалось прочитать настройки обновлений")
+        serde_json::from_slice(&fs::read(path)?).context("Could not read update preferences")
     }
     pub fn save(self, path: &Path) -> Result<()> {
-        fs::create_dir_all(path.parent().context("Не задана папка настроек")?)?;
+        fs::create_dir_all(path.parent().context("The settings directory is missing")?)?;
         let temporary = path.with_extension("tmp");
         let mut file = fs::File::create(&temporary)?;
         file.write_all(&serde_json::to_vec(&self)?)?;
@@ -133,14 +135,12 @@ pub fn split_https(url: &str) -> Result<(&str, &str)> {
             && !url
                 .bytes()
                 .any(|byte| byte <= b' ' || byte == 127 || byte == b'\\' || byte == b'#'),
-        "Некорректная ссылка обновления"
+        "Invalid update URL"
     );
     let remainder = url
         .strip_prefix("https://")
-        .context("Обновления требуют HTTPS")?;
-    let (host, path) = remainder
-        .split_once('/')
-        .context("Некорректная ссылка обновления")?;
+        .context("Updates require HTTPS")?;
+    let (host, path) = remainder.split_once('/').context("Invalid update URL")?;
     ensure!(
         matches!(
             host,
@@ -149,7 +149,7 @@ pub fn split_https(url: &str) -> Result<(&str, &str)> {
                 | "release-assets.githubusercontent.com"
                 | "objects.githubusercontent.com"
         ),
-        "Ссылка обновления ведёт за пределы GitHub"
+        "The update URL points outside GitHub"
     );
     Ok((host, &url[url.len() - path.len() - 1..]))
 }
@@ -166,24 +166,24 @@ pub fn latest() -> Result<Option<Release>> {
     }
     ensure!(
         status == 200,
-        "GitHub ответил HTTP {status}; повторите проверку позже"
+        "GitHub returned HTTP {status}. Check again later."
     );
     parse_release(&bytes)
 }
 #[cfg(not(windows))]
 pub fn latest() -> Result<Option<Release>> {
-    anyhow::bail!("Проверка обновлений пока поддерживается только в Windows")
+    anyhow::bail!("Update checks are currently available only on Windows")
 }
 
 pub fn validate_pe(path: &Path) -> Result<()> {
     let mut file = fs::File::open(path)?;
     let mut dos = [0u8; 64];
     file.read_exact(&mut dos)?;
-    ensure!(&dos[..2] == b"MZ", "Обновление не является Windows EXE");
+    ensure!(&dos[..2] == b"MZ", "The update is not a Windows executable");
     let offset = u32::from_le_bytes(dos[60..64].try_into()?);
     ensure!(
         (64..=1024 * 1024).contains(&offset),
-        "Некорректный EXE-заголовок"
+        "Invalid executable header"
     );
     use std::io::{Seek, SeekFrom};
     file.seek(SeekFrom::Start(offset as u64))?;
@@ -191,11 +191,11 @@ pub fn validate_pe(path: &Path) -> Result<()> {
     file.read_exact(&mut pe)?;
     ensure!(
         &pe[..4] == b"PE\0\0" && pe[4..6] == [0x64, 0x86],
-        "Обновление должно быть Windows x64 EXE"
+        "The update must be a Windows x64 executable"
     );
     ensure!(
         u16::from_le_bytes(pe[22..24].try_into()?) & 0x2002 == 2,
-        "Обновление не является исполняемым приложением"
+        "The update is not an executable application"
     );
     Ok(())
 }
@@ -243,7 +243,7 @@ pub fn stage_directory(root: &Path) -> Result<PathBuf> {
     }
     ensure!(
         fs::read_dir(root)?.count() < 8,
-        "Не удалось очистить папку обновлений; освободите её перед загрузкой"
+        "Could not clear the updates directory. Clear it before downloading again."
     );
     let id = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let directory = root.join(format!("true-proxy-update-{id}-{}", std::process::id()));
@@ -271,7 +271,7 @@ pub fn download(
 ) -> Result<Staged> {
     ensure!(
         (1024..=MAX_EXE_SIZE).contains(&release.size),
-        "Некорректный размер обновления"
+        "Invalid update size"
     );
     validate_digest(&release.sha256)?;
     let directory = stage_directory(root)?;
@@ -296,13 +296,10 @@ pub fn download(
             }
             Ok(())
         })?;
-        ensure!(
-            status == 200,
-            "Не удалось скачать обновление: HTTP {status}"
-        );
+        ensure!(status == 200, "Update download failed with HTTP {status}");
         ensure!(
             received == release.size,
-            "Обновление загружено не полностью"
+            "The update download is incomplete"
         );
         file.sync_all()?;
         drop(file);
@@ -326,7 +323,7 @@ pub fn verify_file(path: &Path, expected: &str) -> Result<()> {
     validate_digest(expected)?;
     ensure!(
         crate::platform::windows::update::sha256(path)?.eq_ignore_ascii_case(expected),
-        "SHA-256 обновления не совпадает; установка отменена"
+        "Installation canceled because the update SHA-256 hash did not match"
     );
     Ok(())
 }

@@ -154,9 +154,12 @@ impl Packet {
 }
 
 pub fn udp_reply(flow: FlowKey, payload: &[u8]) -> Result<Vec<u8>> {
-    ensure!(payload.len() <= 65507, "UDP-ответ слишком большой");
+    ensure!(payload.len() <= 65507, "The UDP reply is too large");
     let ipv4 = flow.source.is_ipv4();
-    ensure!(ipv4 == flow.destination.is_ipv4(), "Разные семейства IP");
+    ensure!(
+        ipv4 == flow.destination.is_ipv4(),
+        "Mismatched IP address families"
+    );
     let offset = if ipv4 { 20 } else { 40 };
     let mut bytes = vec![0; offset + 8 + payload.len()];
     if let (IpAddr::V4(source), IpAddr::V4(destination)) = (flow.source.ip(), flow.destination.ip())

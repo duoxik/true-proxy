@@ -22,7 +22,7 @@ fn wide(text: &str) -> Vec<u16> {
 fn success(result: i32) -> Result<()> {
     ensure!(
         result != 0,
-        "Ошибка HTTPS: {}",
+        "HTTPS error: {}",
         std::io::Error::last_os_error()
     );
     Ok(())
@@ -30,7 +30,7 @@ fn success(result: i32) -> Result<()> {
 fn owned(handle: *mut c_void) -> Result<Handle> {
     ensure!(
         !handle.is_null(),
-        "Ошибка WinHTTP: {}",
+        "WinHTTP error: {}",
         std::io::Error::last_os_error()
     );
     Ok(Handle(handle))
@@ -129,10 +129,7 @@ pub fn get(
                     ptr::null_mut(),
                 );
             }
-            ensure!(
-                (2..=32768).contains(&length),
-                "Некорректное перенаправление GitHub"
-            );
+            ensure!((2..=32768).contains(&length), "Invalid GitHub redirect");
             let mut location = vec![0u16; (length as usize).div_ceil(2)];
             success(unsafe {
                 WinHttpQueryHeaders(
@@ -148,12 +145,11 @@ pub fn get(
                 .iter()
                 .position(|c| *c == 0)
                 .unwrap_or(location.len());
-            next = String::from_utf16(&location[..end])
-                .context("Некорректное перенаправление GitHub")?;
+            next = String::from_utf16(&location[..end]).context("Invalid GitHub redirect")?;
             crate::updates::split_https(&next)?;
             ensure!(
                 started.elapsed() < Duration::from_secs(120),
-                "Истёк срок загрузки обновления"
+                "The update download timed out"
             );
             continue;
         }
@@ -165,7 +161,7 @@ pub fn get(
         loop {
             ensure!(
                 started.elapsed() < Duration::from_secs(120),
-                "Истёк срок загрузки обновления"
+                "The update download timed out"
             );
             let mut read = 0;
             success(unsafe {
@@ -180,9 +176,12 @@ pub fn get(
                 return Ok(status);
             }
             received += read as u64;
-            ensure!(received <= limit, "Ответ GitHub превысил допустимый размер");
+            ensure!(
+                received <= limit,
+                "The GitHub response exceeded the size limit"
+            );
             receive(&buffer[..read as usize])?;
         }
     }
-    anyhow::bail!("Слишком много перенаправлений GitHub")
+    anyhow::bail!("Too many GitHub redirects")
 }

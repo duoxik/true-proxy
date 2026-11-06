@@ -233,7 +233,9 @@ pub fn wire(ui: &MainWindow, sender: SyncSender<Command>) {
         {
             match sender.try_send(Command::Processes) {
                 Ok(()) => ui.set_processes_busy(true),
-                Err(_) => ui.set_notice("Сетевой слой занят. Повторите обновление списка.".into()),
+                Err(_) => ui.set_notice(
+                    "The network engine is busy. Try refreshing the list again.".into(),
+                ),
             }
         }
     });
@@ -258,13 +260,13 @@ pub fn wire(ui: &MainWindow, sender: SyncSender<Command>) {
                         .iter()
                         .filter(|row| row.selected)
                         .collect::<Vec<_>>();
-                    ensure!(!selected.is_empty(), "Выберите хотя бы один процесс");
+                    ensure!(!selected.is_empty(), "Select at least one process");
                     let kind = i32::from(ui.get_process_by_path());
                     let mut rows = values(get(&ui, kind));
                     for row in selected {
                         ensure!(
                             kind == 0 || !row.path.is_empty(),
-                            "Для {} путь недоступен. Добавьте процесс по имени EXE.",
+                            "The path for {} is unavailable. Add it by EXE name.",
                             row.name
                         );
                         editor::append(
@@ -316,10 +318,10 @@ mod tests {
         let (sender, _receiver) = std::sync::mpsc::sync_channel(2);
         wire(&ui, sender);
         ui.show().unwrap();
-        click(&ui, "Добавить Домены");
+        click(&ui, "Add domain");
         assert_eq!(values(ui.get_form_domains()), [""]);
         let before = ui.get_form_domains();
-        click(&ui, "Домены · строка 1");
+        click(&ui, "Domains · row 1");
         for text in [
             "a".into(),
             "b".into(),
@@ -345,19 +347,19 @@ mod tests {
                 .downcast_ref::<VecModel<SharedString>>()
                 .unwrap()
         ));
-        click(&ui, "Удалить axb");
+        click(&ui, "Remove axb");
         assert_eq!(ui.get_form_domains().row_count(), 0);
-        click(&ui, "Добавить приложение");
-        click(&ui, "Вручную");
+        click(&ui, "Add application");
+        click(&ui, "Manual entry");
         assert_eq!(values(ui.get_form_processes()), [""]);
-        click(&ui, "Приложения по имени EXE · строка 1");
+        click(&ui, "Applications by EXE name · row 1");
         for text in ["g", "a"] {
             ui.window()
                 .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
         }
         assert_eq!(values(ui.get_form_processes()), ["ga"]);
-        click(&ui, "Добавить приложение");
-        click(&ui, "Из запущенных процессов");
+        click(&ui, "Add application");
+        click(&ui, "Running processes");
         assert!(ui.get_process_picker());
         // File selection remains the third menu entry; other UI tests replace
         // its callback so checking it never opens a real native file dialog.

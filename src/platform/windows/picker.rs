@@ -7,10 +7,10 @@ pub fn choose_executable() -> Result<Option<String>> {
     let mut dialog = OPENFILENAMEW {
         lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: unsafe { GetActiveWindow() },
-        lpstrFilter: windows_sys::core::w!("Исполняемые файлы (*.exe)\0*.exe\0\0"),
+        lpstrFilter: windows_sys::core::w!("Executable files (*.exe)\0*.exe\0\0"),
         lpstrFile: buffer.as_mut_ptr(),
         nMaxFile: buffer.len() as u32,
-        lpstrTitle: windows_sys::core::w!("Выберите приложение"),
+        lpstrTitle: windows_sys::core::w!("Choose an application"),
         Flags: OFN_EXPLORER
             | OFN_FILEMUSTEXIST
             | OFN_PATHMUSTEXIST
@@ -21,7 +21,7 @@ pub fn choose_executable() -> Result<Option<String>> {
     // The buffer/filter and owner window remain live for the modal call.
     if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
         let error = unsafe { CommDlgExtendedError() };
-        ensure!(error == 0, "Не удалось выбрать файл ({error})");
+        ensure!(error == 0, "Could not select the file ({error})");
         return Ok(None);
     }
     let end = buffer.iter().position(|c| *c == 0).unwrap_or(buffer.len());
@@ -30,7 +30,7 @@ pub fn choose_executable() -> Result<Option<String>> {
         std::path::Path::new(&path)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("exe")),
-        "Выберите исполняемый файл .exe"
+        "Select an .exe file"
     );
     Ok(Some(path))
 }

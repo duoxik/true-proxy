@@ -16,7 +16,7 @@ const TIMEOUT: Duration = Duration::from_secs(8);
 async fn negotiate(proxy: &Proxy) -> Result<TcpStream> {
     let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
         .await
-        .context("SOCKS5-сервер недоступен")?;
+        .context("The SOCKS5 server is unreachable")?;
     stream.set_nodelay(true)?;
     let password = proxy.password()?;
     let authenticated = !proxy.username.is_empty() || password.is_some();
@@ -26,13 +26,13 @@ async fn negotiate(proxy: &Proxy) -> Result<TcpStream> {
     stream.read_exact(&mut reply).await?;
     ensure!(
         reply == [5, method],
-        "SOCKS5-сервер отклонил метод аутентификации"
+        "The SOCKS5 server rejected the authentication method"
     );
     if authenticated {
         let password = password.as_deref().unwrap_or("");
         ensure!(
             proxy.username.len() <= 255 && password.len() <= 255,
-            "Логин или пароль SOCKS5 длиннее 255 байт"
+            "The SOCKS5 username or password exceeds 255 bytes"
         );
         let mut auth = vec![1, proxy.username.len() as u8];
         auth.extend_from_slice(proxy.username.as_bytes());
@@ -41,7 +41,7 @@ async fn negotiate(proxy: &Proxy) -> Result<TcpStream> {
         stream.write_all(&auth).await?;
         auth.fill(0);
         stream.read_exact(&mut reply).await?;
-        ensure!(reply == [1, 0], "Неверный логин или пароль SOCKS5");
+        ensure!(reply == [1, 0], "Incorrect SOCKS5 username or password");
     }
     Ok(stream)
 }
@@ -67,18 +67,18 @@ async fn command(proxy: &Proxy, cmd: u8, target: SocketAddr) -> Result<(TcpStrea
     stream.write_all(&request).await?;
     let mut head = [0; 4];
     stream.read_exact(&mut head).await?;
-    ensure!(head[0] == 5 && head[2] == 0, "Некорректный ответ SOCKS5");
+    ensure!(head[0] == 5 && head[2] == 0, "Invalid SOCKS5 reply");
     ensure!(
         head[1] == 0,
         "SOCKS5: {}",
         match head[1] {
-            1 => "общая ошибка сервера",
-            2 => "соединение запрещено",
-            3 => "сеть недоступна",
-            4 => "узел недоступен",
-            5 => "соединение отклонено",
-            7 => "команда не поддерживается (проверьте UDP ASSOCIATE)",
-            _ => "сервер отказал в соединении",
+            1 => "general server failure",
+            2 => "connection forbidden",
+            3 => "network unreachable",
+            4 => "host unreachable",
+            5 => "connection refused",
+            7 => "command not supported (check UDP ASSOCIATE support)",
+            _ => "the server rejected the connection",
         }
     );
     let ip = match head[3] {
@@ -94,18 +94,18 @@ async fn command(proxy: &Proxy, cmd: u8, target: SocketAddr) -> Result<(TcpStrea
         }
         3 => {
             let size = stream.read_u8().await? as usize;
-            ensure!(size > 0, "Пустой адрес SOCKS5");
+            ensure!(size > 0, "Empty SOCKS5 address");
             let mut b = vec![0; size];
             stream.read_exact(&mut b).await?;
-            let hostname = String::from_utf8(b).context("Некорректный адрес relay")?;
+            let hostname = String::from_utf8(b).context("Invalid relay address")?;
             let port = stream.read_u16().await?;
             let address = tokio::net::lookup_host((hostname, port))
                 .await?
                 .next()
-                .context("Адрес relay не найден")?;
+                .context("Relay address not found")?;
             return Ok((stream, address));
         }
-        _ => bail!("Неизвестный тип адреса SOCKS5"),
+        _ => bail!("Unknown SOCKS5 address type"),
     };
     let port = stream.read_u16().await?;
     let ip = if ip.is_unspecified() {
@@ -119,7 +119,7 @@ async fn command(proxy: &Proxy, cmd: u8, target: SocketAddr) -> Result<(TcpStrea
 pub async fn connect(proxy: &Proxy, target: SocketAddr) -> Result<TcpStream> {
     timeout(TIMEOUT, command(proxy, 1, target))
         .await
-        .context("Таймаут SOCKS5 CONNECT")?
+        .context("SOCKS5 CONNECT timed out")?
         .map(|(stream, _)| stream)
 }
 
@@ -145,7 +145,7 @@ pub async fn associate(proxy: &Proxy) -> Result<UdpAssociation> {
         control.read_exact(&mut head).await?;
         ensure!(
             head[0] == 5 && head[1] == 0 && head[2] == 0,
-            "SOCKS5-сервер не поддерживает UDP ASSOCIATE или отклонил запрос"
+            "The SOCKS5 server rejected UDP ASSOCIATE or does not support it"
         );
         let relay_ip = match head[3] {
             1 => {
@@ -167,14 +167,14 @@ pub async fn associate(proxy: &Proxy) -> Result<UdpAssociation> {
                 let relay = tokio::net::lookup_host((host, port))
                     .await?
                     .next()
-                    .context("Не найден UDP relay")?;
+                    .context("UDP relay not found")?;
                 socket.connect(relay).await?;
                 return Ok(UdpAssociation { control, socket });
             }
-            _ => bail!("Некорректный UDP relay"),
+            _ => bail!("Invalid UDP relay"),
         };
         let relay_port = control.read_u16().await?;
-        ensure!(relay_port != 0, "Сервер вернул нулевой порт UDP relay");
+        ensure!(relay_port != 0, "The server returned a zero UDP relay port");
         let relay_ip = if relay_ip.is_unspecified() {
             control.peer_addr()?.ip()
         } else {
@@ -186,13 +186,13 @@ pub async fn associate(proxy: &Proxy) -> Result<UdpAssociation> {
         Ok(UdpAssociation { control, socket })
     })
     .await
-    .context("Таймаут SOCKS5 UDP ASSOCIATE")?
+    .context("SOCKS5 UDP ASSOCIATE timed out")?
 }
 
 pub fn udp_payload(bytes: &[u8]) -> Result<(SocketAddr, &[u8])> {
     ensure!(
         bytes.len() >= 4 && bytes[..3] == [0, 0, 0],
-        "Некорректная или фрагментированная SOCKS5 UDP-датаграмма"
+        "Invalid or fragmented SOCKS5 UDP datagram"
     );
     let (ip, offset) = match bytes[3] {
         1 if bytes.len() >= 10 => (
@@ -203,7 +203,7 @@ pub fn udp_payload(bytes: &[u8]) -> Result<(SocketAddr, &[u8])> {
             IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&bytes[4..20])?)),
             20,
         ),
-        _ => bail!("Неподдерживаемый адрес UDP-ответа SOCKS5"),
+        _ => bail!("Unsupported address in the SOCKS5 UDP reply"),
     };
     Ok((
         SocketAddr::new(ip, u16::from_be_bytes([bytes[offset], bytes[offset + 1]])),
@@ -215,7 +215,7 @@ pub async fn probe(proxy: &Proxy) -> Result<(u128, bool)> {
     let start = Instant::now();
     let stream = timeout(TIMEOUT, negotiate(proxy))
         .await
-        .context("Таймаут SOCKS5")??;
+        .context("SOCKS5 timed out")??;
     let latency = start.elapsed().as_millis();
     drop(stream);
     let udp = associate(proxy).await.is_ok();

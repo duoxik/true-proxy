@@ -118,16 +118,33 @@ impl SocketMonitor {
         let worker_device = device.clone();
         let worker_generations = SocketGenerations(generations.clone());
         let worker_stopping = stopping.clone();
-        let thread=thread::Builder::new().name("socket-monitor".into()).spawn(move||{
-            loop {match worker_device.recv_socket_change() {
-                Ok(event)=>{
-                    if event.source.port()==0 {continue;}
-                    worker_generations.closed(&event);
-                    stats.activity.close_socket(event.pid,event.source,event.destination,event.tcp,event.stamp);
-                },
-                Err(error)=>{if !worker_stopping.load(Ordering::Acquire){failure(format!("Не удалось продолжить отслеживание владельцев сокетов: {error:#}"));}break;}
-            }}
-        })?;
+        let thread = thread::Builder::new()
+            .name("socket-monitor".into())
+            .spawn(move || {
+                loop {
+                    match worker_device.recv_socket_change() {
+                        Ok(event) => {
+                            if event.source.port() == 0 {
+                                continue;
+                            }
+                            worker_generations.closed(&event);
+                            stats.activity.close_socket(
+                                event.pid,
+                                event.source,
+                                event.destination,
+                                event.tcp,
+                                event.stamp,
+                            );
+                        }
+                        Err(error) => {
+                            if !worker_stopping.load(Ordering::Acquire) {
+                                failure(format!("Socket owner tracking stopped: {error:#}"));
+                            }
+                            break;
+                        }
+                    }
+                }
+            })?;
         Ok(Self {
             device,
             thread: Some(thread),

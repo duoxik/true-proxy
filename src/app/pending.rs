@@ -15,7 +15,7 @@ pub fn persist(
 ) -> Result<()> {
     ensure!(
         !ui.get_busy(),
-        "Дождитесь завершения запуска или остановки прокси."
+        "Wait for the proxy to finish starting or stopping."
     );
     let mut next = state.borrow().clone();
     mutate(&mut next)?;
@@ -54,13 +54,13 @@ pub fn wire(ui: &MainWindow, state: State, sender: SyncSender<Command>) {
             let result = (|| -> Result<()> {
                 ensure!(
                     ui.get_active() && !ui.get_busy(),
-                    "Прокси уже остановлен или перезапускается."
+                    "The proxy is already stopped or restarting."
                 );
                 // One worker command stops/joins the previous engine before starting
                 // the latest saved profile. Saving alone never sends this command.
                 sender
                     .try_send(Command::Start(state.borrow().clone()))
-                    .context("Не удалось перезапустить прокси. Повторите действие.")?;
+                    .context("Could not restart the proxy. Try again.")?;
                 ui.set_busy(true);
                 Ok(())
             })();
@@ -159,7 +159,7 @@ mod tests {
             commands.try_recv().is_err(),
             "Saving must not stop or start the engine"
         );
-        click(&ui, "Применить позже");
+        click(&ui, "Apply Later");
         assert!(!ui.get_restart_prompt() && ui.get_routing_pending() && ui.get_active());
         assert!(commands.try_recv().is_err());
         profile.save(&ui, |_| Ok(())).unwrap();
@@ -173,10 +173,10 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        click(&ui, "Применить позже");
-        click(&ui, "Перезапустить…");
+        click(&ui, "Apply Later");
+        click(&ui, "Restart…");
         assert!(ui.get_restart_prompt());
-        click(&ui, "Перезапустить прокси");
+        click(&ui, "Restart Proxy");
         assert!(ui.get_busy() && ui.get_routing_pending() && !ui.get_restart_prompt());
         let Command::Start(latest) = commands.try_recv().unwrap() else {
             panic!("Expected one start command")
@@ -210,7 +210,7 @@ mod tests {
         }
         // The banner is hidden during a restart, so no second request can be sent.
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Перезапустить…").count(),
+            ElementHandle::find_by_accessible_label(&ui, "Restart…").count(),
             0
         );
         assert!(commands.try_recv().is_err());
@@ -282,10 +282,10 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        click(&ui, "Перезапустить прокси");
+        click(&ui, "Restart Proxy");
         assert!(ui.get_active() && !ui.get_busy() && ui.get_routing_pending());
         assert!(!ui.get_restart_prompt());
-        assert!(ui.get_notice().contains("Повторите"));
+        assert!(ui.get_notice().contains("Try again"));
         assert!(matches!(commands.try_recv(), Ok(Command::Stop)));
         assert!(commands.try_recv().is_err());
     }

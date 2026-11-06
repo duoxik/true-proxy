@@ -154,7 +154,7 @@ impl<A: Copy + Send + Sync + 'static> Pool<A> {
             || !self.shared.allows(&key, owner, outgoing.destination)
         {
             self.shared.blocked();
-            bail!("UDP-адрес не разрешён для этой SOCKS-ассоциации");
+            bail!("The UDP address is forbidden for this SOCKS association");
         }
         let memory = self
             .shared
@@ -163,7 +163,7 @@ impl<A: Copy + Send + Sync + 'static> Pool<A> {
             .try_acquire_many_owned(outgoing.payload.len() as u32)
             .map_err(|_| {
                 self.shared.blocked();
-                anyhow::anyhow!("Лимит памяти очередей UDP")
+                anyhow::anyhow!("UDP queue memory limit reached")
             })?;
         if self.entries.get(&key).is_some_and(|entry| {
             entry.sender.is_closed() || !(self.shared.context.valid)(entry.socket, entry.birth)
@@ -178,7 +178,7 @@ impl<A: Copy + Send + Sync + 'static> Pool<A> {
                 .retain(|old, _| old.local != socket.local || old.pid == socket.pid);
             if self.entries.len() >= MAX_ASSOCIATIONS {
                 self.shared.blocked();
-                bail!("Лимит UDP-ассоциаций");
+                bail!("UDP association limit reached");
             }
             let (tx, rx) = mpsc::channel(16);
             let alive = Arc::new(AtomicBool::new(true));
@@ -217,7 +217,7 @@ impl<A: Copy + Send + Sync + 'static> Pool<A> {
             }))
             .map_err(|_| {
                 self.shared.blocked();
-                anyhow::anyhow!("Очередь UDP заполнена или закрыта")
+                anyhow::anyhow!("The UDP queue is full or closed")
             })
     }
     /// A destination changing route must not tear down other compatible peers.
@@ -481,7 +481,7 @@ async fn session<A: Copy + Send + Sync + 'static>(
                 _ = timer.tick() => {
                     if !state.valid() || state.expire(Instant::now()) { break; }
                 }
-                _ = control.read(&mut control_byte) => bail!("SOCKS5-сервер закрыл UDP ASSOCIATE"),
+                _ = control.read(&mut control_byte) => bail!("The SOCKS5 server closed the UDP association"),
             }
         }
         Ok::<_, anyhow::Error>(())
@@ -496,7 +496,7 @@ async fn session<A: Copy + Send + Sync + 'static>(
         state.shared.context.stats.log(
             &state.name,
             state.key.local.to_string(),
-            "Ошибка",
+            "Error",
             format!("{error:#}"),
         );
         state.shared.blocked();

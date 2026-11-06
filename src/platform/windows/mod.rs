@@ -4,7 +4,6 @@ pub mod divert;
 pub mod http;
 pub mod monitor;
 pub mod network;
-pub mod panel;
 pub mod picker;
 pub mod presentation;
 pub mod process;
@@ -40,14 +39,14 @@ impl SingleInstance {
             unsafe { CreateMutexW(ptr::null(), 0, wide("Local\\TrueProxy.Desktop.v1").as_ptr()) };
         ensure!(
             !handle.is_null(),
-            "Не удалось создать блокировку экземпляра"
+            "Could not acquire the application instance lock"
         );
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             unsafe { CloseHandle(handle) };
             if tray::activate_existing() {
                 return Ok(None);
             }
-            anyhow::bail!("True Proxy уже запущен. Откройте приложение через значок в трее.");
+            anyhow::bail!("True Proxy is already running. Open it from the tray icon.");
         }
         Ok(Some(Self(handle)))
     }
@@ -94,7 +93,7 @@ pub fn relaunch_elevated() -> Result<()> {
     };
     ensure!(
         result as isize > 32,
-        "Запуск от администратора отменен или недоступен"
+        "Administrator launch was canceled or unavailable"
     );
     Ok(())
 }
@@ -104,7 +103,7 @@ pub fn wait_for_parent(pid: u32) -> Result<()> {
     if !handle.is_null() {
         let result = unsafe { WaitForSingleObject(handle, 15000) };
         unsafe { CloseHandle(handle) };
-        ensure!(result == 0, "Предыдущий экземпляр еще завершает работу");
+        ensure!(result == 0, "The previous instance is still shutting down");
     }
     Ok(())
 }
@@ -125,7 +124,7 @@ pub fn replace_file(source: &Path, target: &Path) -> Result<()> {
 }
 
 pub fn protect(secret: &str) -> Result<String> {
-    ensure!(secret.len() <= 255, "Пароль SOCKS5 длиннее 255 байт");
+    ensure!(secret.len() <= 255, "The SOCKS5 password exceeds 255 bytes");
     let input = CRYPT_INTEGER_BLOB {
         cbData: secret.len() as u32,
         pbData: secret.as_ptr() as *mut u8,
@@ -147,7 +146,7 @@ pub fn protect(secret: &str) -> Result<String> {
                 &mut output,
             )
         } != 0,
-        "Не удалось защитить пароль: {}",
+        "Could not protect the password: {}",
         std::io::Error::last_os_error()
     );
     let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) };
@@ -162,10 +161,10 @@ pub fn protect(secret: &str) -> Result<String> {
 pub fn unprotect(secret: &str) -> Result<String> {
     let hex = secret
         .strip_prefix("dpapi:")
-        .context("Неизвестный формат защищенного пароля")?;
+        .context("Unknown protected password format")?;
     ensure!(
         hex.len() % 2 == 0 && hex.len() <= 65536 && hex.is_ascii(),
-        "Некорректный защищенный пароль"
+        "Invalid protected password"
     );
     let mut bytes = (0..hex.len())
         .step_by(2)
@@ -191,10 +190,10 @@ pub fn unprotect(secret: &str) -> Result<String> {
                 &mut output,
             )
         } != 0,
-        "Пароль недоступен для текущей учетной записи Windows"
+        "The password is unavailable to this Windows account"
     );
     let plain = unsafe { std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize) };
-    let result = String::from_utf8(plain.to_vec()).context("Некорректная кодировка пароля");
+    let result = String::from_utf8(plain.to_vec()).context("Invalid password encoding");
     plain.fill(0);
     unsafe { LocalFree(output.pbData as _) };
     result

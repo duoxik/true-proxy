@@ -57,7 +57,7 @@ export component JsonEditor inherits Rectangle {
             text <=> root.text; font-family: "Consolas"; font-size: 13px;
             color: root.colored ? transparent : Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text;
             wrap: no-wrap; single-line: false; page-height: scroll.visible-height;
-            accessible-label: "JSON конфигурации";
+            accessible-label: "Configuration JSON";
             edited => { root.edited(); }
             cursor-position-changed(cpos) => {
                 root.caret-x = cpos.x; root.caret-y = cpos.y;

@@ -80,7 +80,7 @@ fn icon(active: bool) -> Result<Icon> {
     });
     ensure!(
         !color.0.is_null() && !bits.is_null(),
-        "Не удалось создать изображение трея"
+        "Could not create the tray bitmap"
     );
     // SAFETY: the DIB owns size*size BGRA pixels; both bitmaps remain live until
     // CreateIconIndirect copies their data. The resulting HICON has its own RAII guard.
@@ -94,7 +94,7 @@ fn icon(active: bool) -> Result<Icon> {
         target.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
     }
     let mask = Bitmap(unsafe { CreateBitmap(size as i32, size as i32, 1, 1, ptr::null()) });
-    ensure!(!mask.0.is_null(), "Не удалось создать маску трея");
+    ensure!(!mask.0.is_null(), "Could not create the tray icon mask");
     let handle = unsafe {
         CreateIconIndirect(&ICONINFO {
             fIcon: 1,
@@ -104,7 +104,7 @@ fn icon(active: bool) -> Result<Icon> {
             hbmColor: color.0,
         })
     };
-    ensure!(!handle.is_null(), "Не удалось создать значок трея");
+    ensure!(!handle.is_null(), "Could not create the tray icon");
     Ok(Icon(handle))
 }
 
@@ -157,7 +157,7 @@ impl State {
             if !self.retrying.get() {
                 ensure!(
                     unsafe { SetTimer(self.hwnd.get(), RETRY, 2000, None) } != 0,
-                    "Не удалось запустить восстановление трея"
+                    "Could not start tray icon recovery"
                 );
                 self.retrying.set(true);
             }
@@ -176,15 +176,15 @@ impl State {
             return;
         }
         let pause = if self.active.get() {
-            w!("Приостановить")
+            w!("Pause")
         } else {
-            w!("Включить")
+            w!("Enable")
         };
         unsafe {
-            AppendMenuW(menu, MF_STRING, 1, w!("Открыть True Proxy"));
+            AppendMenuW(menu, MF_STRING, 1, w!("Open True Proxy"));
             AppendMenuW(menu, MF_STRING, 2, pause);
             AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-            AppendMenuW(menu, MF_STRING, 3, w!("Выход"));
+            AppendMenuW(menu, MF_STRING, 3, w!("Exit"));
         }
         let mut point = POINT::default();
         let action = unsafe {
@@ -222,7 +222,7 @@ impl Tray {
     }
     fn with_notify(preview: bool, notify: Notify) -> Result<Self> {
         let module = unsafe { GetModuleHandleW(ptr::null()) };
-        ensure!(!module.is_null(), "Не удалось получить модуль трея");
+        ensure!(!module.is_null(), "Could not get the tray module handle");
         let class = if preview { PREVIEW_CLASS } else { CLASS };
         let definition = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
@@ -237,13 +237,13 @@ impl Tray {
         let taskbar_message = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
         ensure!(
             taskbar_message != 0,
-            "Не удалось подписаться на восстановление панели задач"
+            "Could not register for taskbar recovery notifications"
         );
         let state = Box::new(State {
             hwnd: Cell::new(ptr::null_mut()),
             icons: [icon(false)?, icon(true)?],
             active: Cell::new(false),
-            status: RefCell::new("Запуск…".into()),
+            status: RefCell::new("Starting…".into()),
             registered: Cell::new(false),
             retrying: Cell::new(false),
             taskbar_message,
@@ -268,7 +268,7 @@ impl Tray {
                 ptr::null(),
             )
         };
-        ensure!(!hwnd.is_null(), "Не удалось создать окно трея");
+        ensure!(!hwnd.is_null(), "Could not create the tray window");
         state.hwnd.set(hwnd);
         unsafe {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*state as *const State as isize);
@@ -281,12 +281,12 @@ impl Tray {
                 unsafe {
                     ChangeWindowMessageFilterEx(hwnd, message, MSGFLT_ALLOW, ptr::null_mut())
                 } != 0,
-                "Не удалось настроить сообщения трея"
+                "Could not configure tray messages"
             );
         }
         tray.state
             .register()
-            .context("Не удалось восстановить значок трея")?;
+            .context("Could not restore the tray icon")?;
         Ok(tray)
     }
     pub fn update(&self, active: bool, status: &str) {
@@ -314,20 +314,6 @@ impl Tray {
     }
     pub fn registered(&self) -> bool {
         self.state.registered.get()
-    }
-    /// Position and size a logical popup at the lower right of the tray
-    /// monitor's physical work area, using that monitor's DPI.
-    pub fn popup_geometry(
-        &self,
-        logical_width: u32,
-        logical_height: u32,
-    ) -> Option<super::panel::PopupGeometry> {
-        super::panel::from_tray(
-            self.state.hwnd.get(),
-            ICON_ID,
-            logical_width,
-            logical_height,
-        )
     }
 }
 impl Drop for Tray {
@@ -426,14 +412,14 @@ mod tests {
             EnumWindows(Some(find), &mut found as *mut _ as LPARAM);
         }
         assert!(found.1, "The listener must receive top-level broadcasts");
-        tray.update(true, "Проверка: включено");
+        tray.update(true, "Test: enabled");
         ready.set(true);
         unsafe {
             SendMessageW(hwnd, WM_TIMER, RETRY, 0);
         }
         assert!(tray.registered());
         assert!(!tray.state.retrying.get());
-        assert!(status.borrow().contains("Проверка: включено"));
+        assert!(status.borrow().contains("Test: enabled"));
         let count = calls.borrow().len();
         unsafe {
             SendMessageW(hwnd, WM_TIMER, RETRY, 0);

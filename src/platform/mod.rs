@@ -24,7 +24,7 @@ pub use windows::process::running_processes;
 pub use windows::startup::{autostart_enabled, set_autostart};
 #[cfg(not(windows))]
 pub fn choose_executable() -> anyhow::Result<Option<String>> {
-    anyhow::bail!("Выбор EXE пока поддерживается только в Windows")
+    anyhow::bail!("Executable selection is currently available only on Windows")
 }
 #[cfg(not(windows))]
 pub fn autostart_enabled() -> Result<bool> {
@@ -32,20 +32,20 @@ pub fn autostart_enabled() -> Result<bool> {
 }
 #[cfg(not(windows))]
 pub fn set_autostart(_: bool) -> Result<bool> {
-    anyhow::bail!("Автозапуск пока поддерживается только в Windows")
+    anyhow::bail!("Automatic startup is currently available only on Windows")
 }
 #[cfg(not(windows))]
 pub fn running_processes() -> anyhow::Result<Vec<RunningProcess>> {
-    anyhow::bail!("Выбор запущенных процессов пока поддерживается только в Windows")
+    anyhow::bail!("Running process selection is currently available only on Windows")
 }
 
 #[cfg(not(windows))]
 pub fn protect(_: &str) -> Result<String> {
-    anyhow::bail!("Хранилище паролей пока реализовано только для Windows")
+    anyhow::bail!("Password storage is currently available only on Windows")
 }
 #[cfg(not(windows))]
 pub fn unprotect(_: &str) -> Result<String> {
-    anyhow::bail!("Хранилище паролей пока реализовано только для Windows")
+    anyhow::bail!("Password storage is currently available only on Windows")
 }
 #[cfg(not(windows))]
 pub fn replace_file(source: &Path, target: &Path) -> Result<()> {
@@ -61,7 +61,7 @@ pub fn is_admin() -> bool {
 }
 #[cfg(not(windows))]
 pub fn relaunch_elevated() -> Result<()> {
-    anyhow::bail!("Перехват macOS пока не реализован")
+    anyhow::bail!("Traffic interception is not yet available on macOS")
 }
 #[cfg(not(windows))]
 pub struct SingleInstance;

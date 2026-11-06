@@ -15,7 +15,7 @@ use std::{
 fn copy_new(source: &Path, destination: &Path) -> Result<()> {
     ensure!(
         !super::is_reparse(source),
-        "Обновление не должно ссылаться на другой файл"
+        "The update must not be a link to another file"
     );
     let mut input = fs::File::open(source)?.take(MAX_EXE_SIZE + 1);
     let mut output = fs::OpenOptions::new()
@@ -23,7 +23,7 @@ fn copy_new(source: &Path, destination: &Path) -> Result<()> {
         .create_new(true)
         .open(destination)?;
     let written = std::io::copy(&mut input, &mut output)?;
-    ensure!(written <= MAX_EXE_SIZE, "Слишком большой файл обновления");
+    ensure!(written <= MAX_EXE_SIZE, "The update file is too large");
     output.sync_all()?;
     Ok(())
 }
@@ -38,7 +38,7 @@ pub fn prepare(staged: &Staged) -> Result<()> {
     if helper.exists() {
         ensure!(
             update::sha256(&helper)? == update::sha256(&current)?,
-            "Повреждён компонент обновления"
+            "The update helper is corrupt"
         );
     } else {
         copy_new(&current, &helper)?;
@@ -65,12 +65,12 @@ pub fn prepare(staged: &Staged) -> Result<()> {
             }
             if let Some(status) = child.try_wait()? {
                 let error = read_error(&staged.directory)
-                    .unwrap_or_else(|| format!("Компонент обновления завершился: {status}"));
+                    .unwrap_or_else(|| format!("The update helper exited with status {status}"));
                 anyhow::bail!(error);
             }
             ensure!(
                 started.elapsed() < Duration::from_secs(20),
-                "Компонент обновления не подтвердил готовность"
+                "The update helper did not confirm it was ready"
             );
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -112,9 +112,9 @@ fn replace_and_launch(
         // sibling of the target, then use the same atomic replacement operation.
         copy_new(backup, replacement)?;
         verify_file(replacement, expected_old)?;
-        replace_file(replacement, target).context("Не удалось восстановить предыдущий EXE")?;
+        replace_file(replacement, target).context("Could not restore the previous executable")?;
         return Err(error)
-            .context("Не удалось запустить новую версию; предыдущий EXE восстановлен");
+            .context("Could not start the new version. The previous executable was restored.");
     }
     Ok(())
 }
@@ -123,9 +123,11 @@ pub fn apply(pid: u32, creation: u64, digest: &str) -> Result<()> {
     let helper = std::env::current_exe()?;
     ensure!(
         helper.file_name() == Some(std::ffi::OsStr::new("updater.exe")),
-        "Некорректный компонент обновления"
+        "Invalid update helper"
     );
-    let directory = helper.parent().context("Не найдена папка обновления")?;
+    let directory = helper
+        .parent()
+        .context("Could not find the updates directory")?;
     let result = apply_inner(&helper, directory, pid, creation, digest);
     if let Err(error) = &result {
         let _ = fs::write(directory.join("error.txt"), format!("{error:#}"));
@@ -141,17 +143,14 @@ fn apply_inner(
     digest: &str,
 ) -> Result<()> {
     super::validate_digest(digest)?;
-    ensure!(
-        !super::is_reparse(directory),
-        "Некорректная папка обновления"
-    );
+    ensure!(!super::is_reparse(directory), "Invalid updates directory");
     let parent = Parent::open(pid, creation)?;
     // The destination is obtained from an OS process handle, never from a job
     // file or a target-path command argument. It must be this exact old binary.
     let old_hash = update::sha256(helper)?;
     ensure!(
         !super::is_reparse(&parent.image),
-        "Нельзя обновить EXE-ссылку"
+        "Cannot update a link to an executable"
     );
     verify_file(&parent.image, &old_hash)?;
     let payload = directory.join("payload.exe");
@@ -161,7 +160,7 @@ fn apply_inner(
     let backup = directory.join("previous.exe");
     ensure!(
         !backup.exists(),
-        "Предыдущая попытка обновления уже создала резервную копию"
+        "A previous update attempt already created a backup"
     );
     copy_new(&payload, &replacement)?;
     let result = (|| {

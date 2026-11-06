@@ -54,7 +54,7 @@ fn validate(ui: &MainWindow, document: &RefCell<Document>) {
     ui.set_import_error("".into());
     ui.set_import_valid(false);
     if text.is_empty() {
-        ui.set_import_summary("Вставьте JSON конфигурации для проверки.".into());
+        ui.set_import_summary("Paste configuration JSON to validate it.".into());
         *document.borrow_mut() = Document::default();
         ui.set_import_lines(model(vec![]));
         return;
@@ -78,7 +78,7 @@ fn validate(ui: &MainWindow, document: &RefCell<Document>) {
             ui.set_import_valid(true);
             ui.set_import_summary(
                 format!(
-                    "Конфигурация корректна · прокси: {} · правил: {}",
+                    "Configuration is valid · Proxies: {} · Rules: {}",
                     profile.proxies.len(),
                     profile.rules.len()
                 )
@@ -111,10 +111,7 @@ pub fn wire(
         path,
         statuses,
         Rc::new(move |ui, text| {
-            anyhow::ensure!(
-                !preview,
-                "В режиме проверки UI системный буфер обмена не изменяется"
-            );
+            anyhow::ensure!(!preview, "Clipboard writes are disabled in UI preview mode");
             #[cfg(windows)]
             {
                 true_proxy::platform::windows::clipboard::copy(
@@ -125,7 +122,7 @@ pub fn wire(
             #[cfg(not(windows))]
             {
                 let _ = (ui, text);
-                anyhow::bail!("Системный буфер обмена пока поддерживается только в Windows")
+                anyhow::bail!("Clipboard access is currently available only on Windows")
             }
         }),
     );
@@ -148,7 +145,7 @@ fn wire_copy(
                 let json = Profile::export(&export_state.borrow())?;
                 copy(&ui, &json)?;
                 ui.set_notice("".into());
-                super::show_toast(&ui, "Конфигурация скопирована в буфер обмена".into(), false);
+                super::show_toast(&ui, "Configuration copied to the clipboard".into(), false);
                 Ok(())
             })();
             report(&ui, result);
@@ -162,7 +159,7 @@ fn wire_copy(
             clear(&ui, &open_document, &open_timer);
             ui.set_import_first_line(0);
             ui.set_import_visible_lines(40);
-            ui.set_import_summary("Вставьте JSON конфигурации для проверки.".into());
+            ui.set_import_summary("Paste configuration JSON to validate it.".into());
             ui.set_dialog(3);
         }
     });
@@ -182,7 +179,7 @@ fn wire_copy(
         if let Some(ui) = weak.upgrade() {
             ui.set_import_valid(false);
             ui.set_import_error("".into());
-            ui.set_import_summary("Проверяем конфигурацию…".into());
+            ui.set_import_summary("Validating configuration…".into());
             ui.set_import_lines(model(vec![]));
             let weak = ui.as_weak();
             let document = edit_document.clone();
@@ -266,6 +263,7 @@ mod tests {
         ui.window().set_size(slint::LogicalSize::new(1120., 780.));
         ui.set_page(4);
         ui.show().unwrap();
+        click(&ui, "Profiles");
         ui
     }
     fn validate_now(ui: &MainWindow, text: &str) {
@@ -289,9 +287,9 @@ mod tests {
                 Ok(())
             }),
         );
-        click(&ui, "Экспортировать");
+        click(&ui, "Export");
         assert!(Profile::parse(&copied.borrow()).is_ok());
-        assert!(ui.get_toast().contains("скопирована"));
+        assert!(ui.get_toast().contains("copied"));
         i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(5));
         slint::platform::update_timers_and_animations();
         assert!(ui.get_toast().is_empty());
@@ -302,7 +300,7 @@ mod tests {
             Arc::default(),
             Rc::new(|_, _| anyhow::bail!("Clipboard busy")),
         );
-        click(&ui, "Экспортировать");
+        click(&ui, "Export");
         assert!(ui.get_toast().is_empty() && ui.get_notice().contains("Clipboard busy"));
     }
     #[test]
@@ -321,12 +319,12 @@ mod tests {
             Arc::default(),
             Rc::new(|_, _| Ok(())),
         );
-        click(&ui, "Импортировать");
+        click(&ui, "Import");
         assert_eq!(ui.get_dialog(), 3);
         let valid = r#"{"version":2,"proxies":[{"id":"new","name":"New VPN","host":"127.0.0.1","port":1081}],"rules":[],"default_action":{"kind":"proxy","proxy_id":"new"}}"#;
         validate_now(&ui, valid);
         assert!(ui.get_import_valid(), "{}", ui.get_import_error());
-        click(&ui, "JSON конфигурации");
+        click(&ui, "Configuration JSON");
         ui.window()
             .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: " ".into() });
         assert!(
@@ -334,13 +332,13 @@ mod tests {
             "Editing invalidates the previous validation immediately"
         );
         validate_now(&ui, valid);
-        click(&ui, "Форматировать");
+        click(&ui, "Format");
         assert!(ui.get_import_json().contains('\n') && ui.get_import_lines().row_count() > 1);
         // A click on a painted glyph must reach the native input, not the color layer.
-        let editor = ElementHandle::find_by_accessible_label(&ui, "JSON конфигурации")
+        let editor = ElementHandle::find_by_accessible_label(&ui, "Configuration JSON")
             .next()
             .unwrap();
-        click(&ui, "JSON конфигурации");
+        click(&ui, "Configuration JSON");
         ui.window()
             .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: " ".into() });
         i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(200));
@@ -370,23 +368,23 @@ mod tests {
         );
         validate_now(&ui, valid);
         ui.set_import_json("{".into());
-        click(&ui, "Сохранить");
+        click(&ui, "Save");
         assert_eq!(ui.get_dialog(), 3);
         assert!(state.borrow().proxies.is_empty());
-        assert!(ui.get_import_error().contains("строка"));
+        assert!(ui.get_import_error().contains("line"));
         validate_now(&ui, valid);
         ui.set_active(true);
-        click(&ui, "Сохранить");
+        click(&ui, "Save");
         assert_eq!(ui.get_dialog(), 0);
         assert!(ui.get_routing_pending() && ui.get_restart_prompt() && ui.get_active());
         assert_eq!(Config::load(&path).unwrap().proxies[0].port, 1081);
         assert!(state.borrow().routing_enabled && commands.try_recv().is_err());
-        click(&ui, "Применить позже");
+        click(&ui, "Apply Later");
         assert!(ui.get_routing_pending());
         assert!(ui.get_import_json().is_empty() && ui.get_import_lines().row_count() == 0);
-        click(&ui, "Импортировать");
+        click(&ui, "Import");
         validate_now(&ui, "{broken}");
-        click(&ui, "Отмена");
+        click(&ui, "Cancel");
         assert_eq!(ui.get_dialog(), 0);
         assert_eq!(Config::load(&path).unwrap().proxies[0].port, 1081);
         std::fs::remove_file(&path).unwrap();
@@ -402,7 +400,7 @@ mod tests {
             Arc::default(),
             Rc::new(|_, _| Ok(())),
         );
-        click(&ui, "Импортировать");
+        click(&ui, "Import");
         validate_now(&ui, &"  \"key\": true,\n".repeat(2000));
         let scroll = ElementHandle::find_by_element_id(&ui, "JsonEditor::scroll")
             .next()
@@ -431,7 +429,7 @@ mod tests {
         );
         ui.set_import_json("{".into());
         ui.invoke_import_edited();
-        click(&ui, "Отмена");
+        click(&ui, "Cancel");
         i_slint_backend_testing::mock_elapsed_time(Duration::from_secs(1));
         slint::platform::update_timers_and_animations();
         assert!(ui.get_import_json().is_empty() && ui.get_import_lines().row_count() == 0);

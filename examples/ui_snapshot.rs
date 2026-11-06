@@ -36,7 +36,7 @@ impl MemoryWindow {
         Rc::new_cyclic(|weak: &Weak<Self>| Self {
             window: Window::new(weak.clone()),
             renderer: SoftwareRenderer::new_with_repaint_buffer_type(RepaintBufferType::NewBuffer),
-            size: Cell::new(PhysicalSize::new(420, 720)),
+            size: Cell::new(PhysicalSize::new(1240, 780)),
             visible: Cell::new(false),
         })
     }
@@ -147,28 +147,28 @@ fn main() -> Result<()> {
         .cloned()
         .context("No memory window")?;
     ui.set_active(true);
-    ui.set_status("Маршрутизация работает".into());
+    ui.set_status("Routing is active".into());
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
     ui.set_uptime("00:14:37".into());
-    ui.set_uploaded("2.1 МБ".into());
-    ui.set_downloaded("16.4 МБ".into());
+    ui.set_uploaded("2.1 MB".into());
+    ui.set_downloaded("16.4 MB".into());
     ui.set_connection_count("4".into());
     ui.set_local_networks(true_proxy::local_network::NETWORKS.join(" · ").into());
-    ui.set_proxy_names(model(vec!["VPN".into(), "Рабочий".into()]));
+    ui.set_proxy_names(model(vec!["VPN".into(), "Work".into()]));
     ui.set_proxies(model(vec![
         ProxyRow {
             id: "p".into(),
             key: "proxy:p".into(),
             name: "VPN".into(),
             address: "192.0.2.10:1080".into(),
-            status: "3 мс".into(),
+            status: "3 ms".into(),
             health: 2,
             udp: true,
         },
         ProxyRow {
             id: "q".into(),
             key: "proxy:q".into(),
-            name: "Рабочий".into(),
+            name: "Work".into(),
             address: "127.0.0.1:1080".into(),
             status: "".into(),
             health: 3,
@@ -178,18 +178,19 @@ fn main() -> Result<()> {
     ui.set_rules(model(vec![
         RuleRow {
             id: "apps".into(),
-            name: "Приложения".into(),
-            route: "VPN".into(),
+            name: "Applications".into(),
+            route: "Proxy · VPN".into(),
             enabled: true,
         },
         RuleRow {
             id: "game".into(),
-            name: "Игра".into(),
-            route: "VPN".into(),
+            name: "Game".into(),
+            route: "Proxy · VPN".into(),
             enabled: false,
         },
     ]));
-    ui.window().set_size(PhysicalSize::new(420, 720));
+    ui.set_enabled_rule_count(1);
+    ui.window().set_size(PhysicalSize::new(1240, 780));
     ui.show()?; // Only MemoryWindow::set_visible; no OS window exists.
     for (page, name) in [(0, "home"), (1, "routes"), (2, "proxies"), (4, "settings")] {
         ui.set_page(page);
@@ -197,7 +198,7 @@ fn main() -> Result<()> {
     }
     ui.set_page(1);
     ui.set_dialog(2);
-    ui.set_form_name("Игра через VPN".into());
+    ui.set_form_name("Game via VPN".into());
     ui.set_form_processes(model(vec![
         "destiny2.exe".into(),
         "destiny2launcher.exe".into(),
@@ -205,6 +206,7 @@ fn main() -> Result<()> {
     ui.set_form_action(0);
     save(&main_adapter, &destination.join("rule-form.png"))?;
     ui.set_dialog(1);
+    ui.set_page(2);
     ui.set_form_name("VPN".into());
     ui.set_form_host("192.0.2.10".into());
     ui.set_form_port("1080".into());
@@ -226,6 +228,7 @@ fn main() -> Result<()> {
 }"#;
     let _ = true_proxy::profile::Profile::parse(import_json)?;
     ui.set_dialog(3);
+    ui.set_page(4);
     ui.set_import_json(import_json.into());
     ui.set_import_lines(model(
         import_json
@@ -238,7 +241,7 @@ fn main() -> Result<()> {
             .collect(),
     ));
     ui.set_import_valid(true);
-    ui.set_import_summary("Прокси: 1 · Правила: 0 · По умолчанию: напрямую".into());
+    ui.set_import_summary("Proxies: 1 · Rules: 0 · Default route: Direct".into());
     save(&main_adapter, &destination.join("json-import.png"))?;
     ui.set_dialog(0);
     ui.hide()?;
@@ -252,31 +255,31 @@ fn main() -> Result<()> {
     connections.set_connection_route_filters(model(vec![
         ConnectionFilterRow {
             options: model(vec![
-                filter("all", "Все", true),
+                filter("all", "All", true),
                 filter("proxy:p", "VPN", true),
-                filter("proxy:q", "Рабочий", true),
-                filter("direct", "Напрямую", true),
+                filter("proxy:q", "Work", true),
+                filter("direct", "Direct", true),
             ]),
         },
         ConnectionFilterRow {
-            options: model(vec![filter("block", "Блокировка", true)]),
+            options: model(vec![filter("block", "Blocked", true)]),
         },
     ]));
     connections.set_connection_status_filters(model(vec![
         ConnectionFilterRow {
             options: model(vec![
-                filter("all", "Все", false),
-                filter("0", "Подключение", true),
-                filter("1", "Активно", true),
-                filter("2", "Завершается", true),
+                filter("all", "All", false),
+                filter("0", "Connecting", true),
+                filter("1", "Active", true),
+                filter("2", "Closing", true),
             ]),
         },
         ConnectionFilterRow {
             options: model(vec![
-                filter("3", "Завершено", false),
-                filter("4", "Ошибка", false),
-                filter("5", "Заблокировано", false),
-                filter("6", "Остановлено", false),
+                filter("3", "Closed", false),
+                filter("4", "Failed", false),
+                filter("5", "Blocked", false),
+                filter("6", "Stopped", false),
             ]),
         },
     ]));
@@ -288,9 +291,9 @@ fn main() -> Result<()> {
             process: "browser.exe".into(),
             destination: "203.0.113.7:443".into(),
             route: "VPN".into(),
-            message: "TCP · Приложения · example.com".into(),
+            message: "TCP · Applications · example.com".into(),
             source: "192.0.2.30:51001 · PID 100".into(),
-            status: "Активно".into(),
+            status: "Active".into(),
             state: 1,
         },
         LogRow {
@@ -298,9 +301,9 @@ fn main() -> Result<()> {
             process: "browser.exe".into(),
             destination: "198.51.100.9:443".into(),
             route: "VPN".into(),
-            message: "TCP · Приложения · имя DNS неизвестно".into(),
+            message: "TCP · Applications · DNS name unknown".into(),
             source: "192.0.2.30:51002 · PID 100".into(),
-            status: "Подключение".into(),
+            status: "Connecting".into(),
             state: 0,
         },
     ]);
@@ -309,8 +312,8 @@ fn main() -> Result<()> {
             name: "browser.exe".into(),
             active: 2,
             events: 2,
-            uploaded: "1.2 МБ".into(),
-            downloaded: "8.6 МБ".into(),
+            uploaded: "1.2 MB".into(),
+            downloaded: "8.6 MB".into(),
             expanded: true,
             connections: rows,
         },
@@ -318,8 +321,8 @@ fn main() -> Result<()> {
             name: "game.exe".into(),
             active: 1,
             events: 1,
-            uploaded: "856 КБ".into(),
-            downloaded: "7.8 МБ".into(),
+            uploaded: "856 KB".into(),
+            downloaded: "7.8 MB".into(),
             expanded: false,
             connections: model(vec![]),
         },

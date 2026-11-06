@@ -3,7 +3,6 @@ use slint::{
     ComponentHandle,
     winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent},
 };
-use std::{cell::Cell, rc::Rc, time::Duration};
 
 /// Invalidate the full opaque surface only when it may have been discarded.
 /// request_redraw alone only schedules partial rendering of changed items.
@@ -11,61 +10,9 @@ pub fn refresh(ui: &MainWindow) {
     ui.set_surface_fresh(!ui.get_surface_fresh());
     ui.window().request_redraw();
 }
-pub fn wire(ui: &MainWindow, connections: &ConnectionsWindow, preview: bool) {
+pub fn wire(ui: &MainWindow) {
     let weak = ui.as_weak();
-    #[cfg(windows)]
-    let connections = connections.as_weak();
-    #[cfg(not(windows))]
-    let _ = connections;
-    let focused = Rc::new(Cell::new(false));
-    let blur_timer = Rc::new(slint::Timer::default());
     ui.window().on_winit_window_event(move |_, event| {
-        if let WindowEvent::Focused(value) = event {
-            focused.set(*value);
-            if *value {
-                blur_timer.stop();
-            } else if !preview {
-                let weak = weak.clone();
-                #[cfg(windows)]
-                let connections = connections.clone();
-                let focused = focused.clone();
-                let weak_timer = Rc::downgrade(&blur_timer);
-                blur_timer.start(
-                    slint::TimerMode::Repeated,
-                    Duration::from_millis(100),
-                    move || {
-                        let stop = || {
-                            if let Some(timer) = weak_timer.upgrade() {
-                                timer.stop();
-                            }
-                        };
-                        let Some(ui) = weak.upgrade() else {
-                            stop();
-                            return;
-                        };
-                        if !ui.window().is_visible() || focused.get() {
-                            stop();
-                            return;
-                        }
-                        #[cfg(windows)]
-                        let own = {
-                            let separate_window = connections
-                                .upgrade()
-                                .and_then(|window| native_handle(&window).ok());
-                            true_proxy::platform::windows::panel::foreground_is_own_process_except(
-                                separate_window,
-                            )
-                        };
-                        #[cfg(not(windows))]
-                        let own = false;
-                        if !own {
-                            ui.invoke_hide_window();
-                            stop();
-                        }
-                    },
-                );
-            }
-        }
         if matches!(
             event,
             WindowEvent::Focused(true)
@@ -120,7 +67,7 @@ pub(super) fn native_handle(
             }
         })
         .flatten()
-        .ok_or_else(|| anyhow::anyhow!("Окно проверки не создано"))
+        .ok_or_else(|| anyhow::anyhow!("Diagnostic window has not been created"))
 }
 /// Smoke-only: exercise the actual presented client surface, not take_snapshot,
 /// which renders a fresh image and cannot detect a lost native backing buffer.

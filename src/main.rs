@@ -66,7 +66,7 @@ fn main() {
                 .is_some_and(|parent| parent.is_running());
             if !parent_running {
                 true_proxy::platform::show_error(&format!(
-                    "Не удалось установить обновление: {error:#}"
+                    "Could not install the update: {error:#}"
                 ));
             }
         }
@@ -180,9 +180,9 @@ mod ui_tests {
     }
 
     #[test]
-    fn compact_panel_navigation_fits_small_work_areas_and_opens_connections_separately() {
+    fn desktop_navigation_fits_supported_sizes_and_opens_connections() {
         i_slint_backend_testing::init_no_event_loop();
-        for (width, height) in [(320., 480.), (420., 720.)] {
+        for (width, height) in [(960., 640.), (1240., 780.)] {
             let ui = MainWindow::new().unwrap();
             ui.window().set_size(slint::LogicalSize::new(width, height));
             let connections = Rc::new(Cell::new(0));
@@ -190,13 +190,16 @@ mod ui_tests {
             ui.on_open_connections(move || calls.set(calls.get() + 1));
             let hides = Rc::new(Cell::new(0));
             let calls = hides.clone();
-            ui.on_hide_window(move || calls.set(calls.get() + 1));
+            ui.window().on_close_requested(move || {
+                calls.set(calls.get() + 1);
+                slint::CloseRequestResponse::HideWindow
+            });
             ui.show().unwrap();
             for (label, page) in [
-                ("Обзор", 0),
-                ("Правила", 1),
-                ("Прокси", 2),
-                ("Настройки", 4),
+                ("Dashboard", 0),
+                ("Rules", 1),
+                ("Proxies", 2),
+                ("Settings", 4),
             ] {
                 let button = ElementHandle::find_by_accessible_label(&ui, label)
                     .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
@@ -209,18 +212,15 @@ mod ui_tests {
                 button.mock_single_click(PointerEventButton::Left);
                 assert_eq!(ui.get_page(), page);
             }
-            click(&ui, "Соединения");
+            click(&ui, "Connections");
             assert_eq!(connections.get(), 1);
-            assert_eq!(
-                ui.get_page(),
-                4,
-                "Connections opens outside the compact panel"
-            );
-            click(&ui, "Скрыть приложение");
-            assert_eq!(hides.get(), 1);
+            assert_eq!(ui.get_page(), 4, "Connections opens in its own window");
             assert!(ui.window().size().width <= width as u32);
             assert!(ui.window().size().height <= height as u32);
-            ui.hide().unwrap();
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+            assert_eq!(hides.get(), 1);
+            assert!(!ui.window().is_visible());
         }
     }
 
@@ -228,7 +228,7 @@ mod ui_tests {
     fn first_click_activates_buttons_navigation_and_dialog_without_focus_interception() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(420., 720.));
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         ui.show().unwrap();
         let calls = Rc::new(Cell::new(0));
         ui.on_add_proxy({
@@ -254,13 +254,13 @@ mod ui_tests {
             move || weak.unwrap().set_dialog(0)
         });
 
-        click(&ui, "Прокси");
-        click(&ui, "+ Добавить прокси");
+        click(&ui, "Proxies");
+        click(&ui, "Add Proxy");
         assert_eq!(calls.get(), 1, "the first click must open the editor");
         assert_eq!(ui.get_dialog(), 1);
-        click(&ui, "+ Добавить прокси");
+        click(&ui, "Add Proxy");
         assert_eq!(calls.get(), 1, "a modal must block controls behind it");
-        click(&ui, "Название");
+        click(&ui, "Proxy Name");
         ui.window()
             .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "X".into() });
         assert_eq!(
@@ -268,7 +268,7 @@ mod ui_tests {
             "X",
             "a single click must focus the field"
         );
-        click(&ui, "Сохранить");
+        click(&ui, "Save");
         assert_eq!(
             saves.get(),
             1,
@@ -279,17 +279,17 @@ mod ui_tests {
                 text: slint::platform::Key::Return.into(),
             });
         assert_eq!(saves.get(), 2, "keyboard activation must still work");
-        click(&ui, "Отмена");
+        click(&ui, "Cancel");
         assert_eq!(ui.get_dialog(), 0);
-        click(&ui, "Правила");
+        click(&ui, "Rules");
         assert_eq!(ui.get_page(), 1);
-        click(&ui, "Прокси");
+        click(&ui, "Proxies");
         assert_eq!(ui.get_page(), 2);
-        click(&ui, "Обзор");
-        click(&ui, "Маршрутизация");
+        click(&ui, "Dashboard");
+        click(&ui, "Routing");
         assert_eq!(toggles.get(), 1);
         ui.set_busy(true);
-        click(&ui, "Маршрутизация");
+        click(&ui, "Routing");
         assert_eq!(toggles.get(), 1, "busy controls must remain disabled");
     }
 
@@ -297,7 +297,7 @@ mod ui_tests {
     fn local_network_card_is_always_first_and_contains_no_mutation_controls() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(420., 720.));
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         ui.set_local_networks(true_proxy::local_network::NETWORKS.join(", ").into());
         ui.set_page(1);
         ui.show().unwrap();
@@ -308,12 +308,12 @@ mod ui_tests {
         assert!(
             labels
                 .iter()
-                .any(|element| element.accessible_label().as_deref() == Some("1. Локальная сеть"))
+                .any(|element| element.accessible_label().as_deref() == Some("1. Local network"))
         );
         assert!(
             labels
                 .iter()
-                .any(|element| element.accessible_label().as_deref() == Some("Напрямую"))
+                .any(|element| element.accessible_label().as_deref() == Some("Direct"))
         );
         assert!(
             labels.iter().all(|element| !matches!(
@@ -328,7 +328,7 @@ mod ui_tests {
             "The fixed route must have no edit, delete, toggle, save or move control"
         );
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Локальная сеть")
+            ElementHandle::find_by_accessible_label(&ui, "Local network")
                 .filter(|element| element.accessible_role() == Some(AccessibleRole::Button))
                 .count(),
             0,
@@ -353,7 +353,7 @@ mod ui_tests {
             .unwrap();
         assert!(card.absolute_position().y + card.size().height <= game.absolute_position().y);
         assert!(game.absolute_position().y < fallback.absolute_position().y);
-        let first_up = ElementHandle::find_by_accessible_label(&ui, "↑")
+        let first_up = ElementHandle::find_by_accessible_label(&ui, "Move rule up")
             .next()
             .unwrap();
         assert_eq!(
@@ -374,7 +374,7 @@ mod ui_tests {
     fn rule_switch_disclosure_and_application_menu_activate_on_first_click() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(420., 720.));
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
             crate::RuleRow {
                 id: "one".into(),
@@ -391,17 +391,17 @@ mod ui_tests {
             assert_eq!(id, "one");
             count.set(count.get() + 1);
         });
-        click(&ui, "Правило Game");
+        click(&ui, "Rule Game");
         assert_eq!(toggles.get(), 1);
         ui.set_active(true);
-        click(&ui, "Правило Game");
+        click(&ui, "Rule Game");
         assert_eq!(
             toggles.get(),
             2,
             "Running routes may be saved for an explicit restart"
         );
         ui.set_busy(true);
-        click(&ui, "Правило Game");
+        click(&ui, "Rule Game");
         assert_eq!(
             toggles.get(),
             2,
@@ -423,18 +423,18 @@ mod ui_tests {
                 .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: key.into() });
         }
         assert_eq!(ui.get_form_protocol(), 1);
-        click(&ui, "Дополнительные условия");
+        click(&ui, "Additional conditions");
         assert!(ui.get_form_advanced());
-        click(&ui, "Дополнительные условия");
+        click(&ui, "Additional conditions");
         assert!(!ui.get_form_advanced());
         let choice = Rc::new(Cell::new(-1));
         let selected = choice.clone();
         ui.on_add_application(move |index| selected.set(index));
-        for (index, label) in ["Вручную", "Из запущенных процессов", "Путь до EXE"]
+        for (index, label) in ["Manual entry", "Running processes", "Executable path"]
             .into_iter()
             .enumerate()
         {
-            click(&ui, "Добавить приложение");
+            click(&ui, "Add application");
             click(&ui, label);
             assert_eq!(choice.get(), index as i32);
         }
@@ -442,10 +442,10 @@ mod ui_tests {
         let calls = Rc::new(Cell::new(0));
         let count = calls.clone();
         ui.on_probe_proxy_form(move || count.set(count.get() + 1));
-        click(&ui, "Проверить соединение");
+        click(&ui, "Check");
         assert_eq!(calls.get(), 1);
         ui.set_probe_busy(true);
-        click(&ui, "Проверяем…");
+        click(&ui, "Checking…");
         assert_eq!(calls.get(), 1);
         ui.set_dialog(0);
         ui.set_page(4);
@@ -455,15 +455,16 @@ mod ui_tests {
         let settings = ElementHandle::find_by_element_id(&ui, "MainWindow::settings-scroll")
             .next()
             .unwrap();
-        let startup = ElementHandle::find_by_accessible_label(&ui, "Запускать при входе в Windows")
-            .find(|element| element.accessible_role() == Some(AccessibleRole::Checkbox))
-            .unwrap();
+        let startup =
+            ElementHandle::find_by_accessible_label(&ui, "Start when I sign in to Windows")
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Checkbox))
+                .unwrap();
         let bottom = startup.absolute_position().y + startup.size().height;
         let viewport_bottom = settings.absolute_position().y + settings.size().height;
         if bottom > viewport_bottom {
             settings.scroll(0., viewport_bottom - bottom - 8.);
         }
-        click(&ui, "Запускать при входе в Windows");
+        click(&ui, "Start when I sign in to Windows");
         assert_eq!(calls.get(), 1);
         assert!(ui.get_autostart_enabled());
     }
@@ -479,7 +480,7 @@ mod ui_tests {
             (4, "4242"),
         ] {
             let ui = MainWindow::new().unwrap();
-            ui.window().set_size(slint::LogicalSize::new(420., 720.));
+            ui.window().set_size(slint::LogicalSize::new(1240., 780.));
             ui.set_dialog(2);
             ui.set_form_show_paths(kind == 1);
             ui.set_form_advanced(kind >= 2);
@@ -513,10 +514,14 @@ mod ui_tests {
             let scroll = ElementHandle::find_by_element_id(&ui, "MainWindow::rule-scroll")
                 .next()
                 .unwrap();
-            let remove_label = format!("Удалить {value}");
-            let remove = ElementHandle::find_by_accessible_label(&ui, &remove_label)
-                .next()
-                .unwrap();
+            let remove_label = format!("Remove {value}");
+            let find_remove = || ElementHandle::find_by_accessible_label(&ui, &remove_label).next();
+            let remove = find_remove()
+                .or_else(|| {
+                    scroll.scroll(0., -500.);
+                    find_remove()
+                })
+                .unwrap_or_else(|| panic!("Missing removal control for kind {kind}: {value}"));
             let scroll_bottom = scroll.absolute_position().y + scroll.size().height;
             let button_bottom = remove.absolute_position().y + remove.size().height;
             if button_bottom > scroll_bottom {
@@ -553,7 +558,7 @@ mod ui_tests {
     #[test]
     fn long_rule_form_scrolls_to_a_fully_visible_clickable_last_control() {
         i_slint_backend_testing::init_no_event_loop();
-        for (width, height) in [(320., 480.), (380., 600.), (420., 720.)] {
+        for (width, height) in [(960., 640.), (1120., 700.), (1240., 780.)] {
             let ui = MainWindow::new().unwrap();
             ui.window().set_size(slint::LogicalSize::new(width, height));
             ui.set_dialog(2);
@@ -592,7 +597,7 @@ mod ui_tests {
                 .unwrap();
             scroll.scroll(0., -10000.);
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
-            let field = ElementHandle::find_by_accessible_label(&ui, "Порты · строка 3")
+            let field = ElementHandle::find_by_accessible_label(&ui, "Ports · row 3")
                 .next()
                 .unwrap();
             let bounds = (scroll.absolute_position(), scroll.size());
@@ -618,25 +623,25 @@ mod ui_tests {
     fn update_banner_clicks_once_and_installation_requires_pause() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(420., 720.));
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         ui.set_update_available(true);
         ui.set_update_version(true_proxy::updates::VERSION.into());
         ui.show().unwrap();
         let calls = Rc::new(Cell::new(0));
         let count = calls.clone();
         ui.on_update_now(move || count.set(count.get() + 1));
-        click(&ui, "Обновить");
+        click(&ui, "Update");
         assert_eq!(calls.get(), 1);
         ui.set_update_ready(true);
         ui.set_active(true);
-        click(&ui, "Установить и перезапустить");
+        click(&ui, "Install and Restart");
         assert_eq!(calls.get(), 1);
         ui.set_active(false);
         ui.set_busy(true);
-        click(&ui, "Установить и перезапустить");
+        click(&ui, "Install and Restart");
         assert_eq!(calls.get(), 1);
         ui.set_busy(false);
-        click(&ui, "Установить и перезапустить");
+        click(&ui, "Install and Restart");
         assert_eq!(calls.get(), 2);
     }
 }

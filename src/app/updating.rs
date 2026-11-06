@@ -45,7 +45,7 @@ pub fn wire(
     ui.set_updates_automatic(automatic);
     let automatic = Arc::new(AtomicBool::new(automatic));
     ui.set_update_status(match preferences {
-        Ok(_) => "Ещё не проверяли обновления.".into(),
+        Ok(_) => "Updates haven't been checked yet.".into(),
         Err(error) => format!("{error:#}").into(),
     });
     let (sender, receiver) = mpsc::sync_channel(4);
@@ -54,15 +54,17 @@ pub fn wire(
     ui.on_check_updates(move || {
         if let Some(ui) = weak.upgrade() {
             if preview {
-                ui.set_update_status("В режиме проверки UI запросы к GitHub отключены.".into());
+                ui.set_update_status("GitHub requests are disabled in UI preview mode.".into());
                 return;
             }
             if !ui.get_update_busy() {
                 if tx.try_send(Command::Check).is_ok() {
                     ui.set_update_busy(true);
-                    ui.set_update_status("Проверяем обновления…".into());
+                    ui.set_update_status("Checking for updates…".into());
                 } else {
-                    ui.set_update_status("Проверка уже выполняется. Повторите позже.".into());
+                    ui.set_update_status(
+                        "An update check is already running. Try again later.".into(),
+                    );
                 }
             }
         }
@@ -81,9 +83,7 @@ pub fn wire(
                 }
                 Err(error) => {
                     ui.set_updates_automatic(setting.load(Ordering::Relaxed));
-                    ui.set_update_status(
-                        format!("Не удалось сохранить настройку: {error:#}").into(),
-                    );
+                    ui.set_update_status(format!("Could not save the setting: {error:#}").into());
                 }
             }
         }
@@ -93,7 +93,7 @@ pub fn wire(
     ui.on_update_now(move || {
         if let Some(ui) = weak.upgrade() {
             if preview {
-                ui.set_update_text("Режим проверки UI: установка отключена.".into());
+                ui.set_update_text("Update installation is disabled in UI preview mode.".into());
                 return;
             }
             if ui.get_update_busy() {
@@ -101,9 +101,7 @@ pub fn wire(
             }
             let install = ui.get_update_ready();
             if install && (ui.get_active() || ui.get_busy()) {
-                ui.set_update_text(
-                    "Приостановите маршрутизацию перед установкой обновления.".into(),
-                );
+                ui.set_update_text("Pause routing before installing the update.".into());
                 return;
             }
             if tx
@@ -120,9 +118,9 @@ pub fn wire(
                 }
                 ui.set_update_text(
                     if install {
-                        "Подготавливаем установку…"
+                        "Preparing the update…"
                     } else {
-                        "Загружаем обновление…"
+                        "Downloading update…"
                     }
                     .into(),
                 );
@@ -150,7 +148,7 @@ pub fn wire(
                 Command::Quit => break,
                 Command::Automatic => { deadline = Instant::now() + Duration::from_secs(1); }
                 Command::Check => {
-                    post(&weak, |ui| { ui.set_update_busy(true); ui.set_update_status("Проверяем обновления…".into()); });
+                    post(&weak, |ui| { ui.set_update_busy(true); ui.set_update_status("Checking for updates…".into()); });
                     let result = (|| -> Result<Option<Release>> {
                         Ok(updates::latest()?.filter(|candidate| updates::is_newer(candidate, updates::VERSION).unwrap_or(false)))
                     })();
@@ -162,37 +160,37 @@ pub fn wire(
                             release = Some(candidate.clone());
                             post(&weak, move |ui| {
                                 ui.set_update_version(candidate.version.into()); ui.set_update_available(true); ui.set_update_ready(already_ready); ui.set_update_busy(false);
-                                ui.set_update_text(if already_ready { "Обновление загружено. Приостановите прокси и перезапустите приложение." } else { "Новая версия готова к загрузке." }.into());
-                                ui.set_update_status("Доступно обновление.".into());
+                                ui.set_update_text(if already_ready { "The update is ready. Pause the proxy and restart the app." } else { "A new version is available to download." }.into());
+                                ui.set_update_status("An update is available.".into());
                             });
                         }
-                        Ok(None) => { release = None; staged = None; post(&weak, |ui| { ui.set_update_available(false); ui.set_update_ready(false); ui.set_update_busy(false); ui.set_update_status("Новых опубликованных версий нет.".into()); }); }
-                        Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_status(format!("Не удалось проверить обновления: {error:#}").into()); }),
+                        Ok(None) => { release = None; staged = None; post(&weak, |ui| { ui.set_update_available(false); ui.set_update_ready(false); ui.set_update_busy(false); ui.set_update_status("You're on the latest published version.".into()); }); }
+                        Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_status(format!("Could not check for updates: {error:#}").into()); }),
                     }
                 }
                 Command::Download => {
                     let result = (|| -> Result<Staged> {
-                        let release = release.as_ref().context("Сначала проверьте наличие обновлений")?;
+                        let release = release.as_ref().context("Check for updates first")?;
                         #[cfg(windows)] { updates::download(release, &root, |downloaded, total| {
                             let percent = downloaded * 100 / total;
-                            post(&weak, move |ui| ui.set_update_text(format!("Загружаем обновление… {percent}%").into()));
+                            post(&weak, move |ui| ui.set_update_text(format!("Downloading update… {percent}%").into()));
                         }) }
-                        #[cfg(not(windows))] { let _ = (&root, release); anyhow::bail!("Обновление пока поддерживается только в Windows") }
+                        #[cfg(not(windows))] { let _ = (&root, release); anyhow::bail!("Updates are currently available only on Windows") }
                     })();
                     match result {
-                        Ok(ready) => { staged = Some(ready); post(&weak, |ui| { ui.set_update_busy(false); ui.set_update_ready(true); ui.set_update_text("Обновление загружено. Для установки приостановите маршрутизацию.".into()); }); }
-                        Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_text(format!("Загрузка не завершена: {error:#}").into()); }),
+                        Ok(ready) => { staged = Some(ready); post(&weak, |ui| { ui.set_update_busy(false); ui.set_update_ready(true); ui.set_update_text("The update is ready. Pause routing to install it.".into()); }); }
+                        Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_text(format!("Download failed: {error:#}").into()); }),
                     }
                 }
                 Command::Install => {
                     let result = (|| -> Result<()> {
-                        let staged = staged.as_ref().context("Сначала загрузите обновление")?;
+                        let staged = staged.as_ref().context("Download the update first")?;
                         #[cfg(windows)] { updates::installer::prepare(staged) }
-                        #[cfg(not(windows))] { let _ = staged; anyhow::bail!("Установка пока поддерживается только в Windows") }
+                        #[cfg(not(windows))] { let _ = staged; anyhow::bail!("Installation is currently available only on Windows") }
                     })();
                     match result {
                         Ok(()) => { let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); }); break; }
-                        Err(error) => post(&weak, move |ui| { ui.set_busy(false); ui.set_update_busy(false); ui.set_update_text(format!("Не удалось подготовить установку: {error:#}").into()); }),
+                        Err(error) => post(&weak, move |ui| { ui.set_busy(false); ui.set_update_busy(false); ui.set_update_text(format!("Could not prepare the update: {error:#}").into()); }),
                     }
                 }
             }
@@ -204,7 +202,7 @@ pub fn wire(
 fn preferences_path_for_cache() -> Result<PathBuf> {
     Ok(true_proxy::config::Config::path()?
         .parent()
-        .context("Не найдена папка True Proxy")?
+        .context("Could not find the True Proxy folder")?
         .to_owned())
 }
 fn post(ui: &slint::Weak<MainWindow>, callback: impl FnOnce(MainWindow) + Send + 'static) {

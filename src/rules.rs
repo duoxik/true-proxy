@@ -92,7 +92,7 @@ pub fn explanation(config: &Config, flow: &Flow<'_>) -> String {
         "UDP"
     };
     if crate::local_network::contains(flow.destination.ip()) {
-        return format!("{protocol} · Локальная сеть");
+        return format!("{protocol} · Local network");
     }
     if flow.destination.port() == 53 {
         return format!("{protocol} · DNS Windows");
@@ -100,9 +100,9 @@ pub fn explanation(config: &Config, flow: &Flow<'_>) -> String {
     let matched = config.rules.iter().find(|rule| matches(rule, flow));
     let rule = matched
         .map(|rule| rule.name.as_str())
-        .unwrap_or("по умолчанию");
+        .unwrap_or("Default route");
     let domains = if flow.domains.is_empty() {
-        "имя DNS неизвестно".into()
+        "DNS name unknown".into()
     } else {
         flow.domains.join(", ")
     };
@@ -233,7 +233,7 @@ mod tests {
                             domains: &names,
                         };
                         assert_eq!(resolve(&config, &f), Action::Direct, "{address}");
-                        assert!(explanation(&config, &f).contains("Локальная сеть"));
+                        assert!(explanation(&config, &f).contains("Local network"));
                     }
                     for address in [
                         "11.0.0.1:443",

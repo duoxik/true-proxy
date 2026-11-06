@@ -37,32 +37,32 @@ pub fn copy(owner: usize, text: &str) -> Result<()> {
     }
     ensure!(
         !owner.is_null() && pid == unsafe { GetCurrentProcessId() } && !text.contains('\0'),
-        "Не удалось подготовить текст для буфера"
+        "Could not prepare text for the clipboard"
     );
     let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     let mut allocation = Allocation(unsafe { GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2) });
     ensure!(
         !allocation.0.is_null(),
-        "Недостаточно памяти для буфера обмена"
+        "Insufficient memory for the clipboard"
     );
     let pointer = unsafe { GlobalLock(allocation.0) };
-    ensure!(!pointer.is_null(), "Не удалось открыть память буфера");
+    ensure!(!pointer.is_null(), "Could not access clipboard memory");
     unsafe {
         std::ptr::copy_nonoverlapping(wide.as_ptr(), pointer.cast::<u16>(), wide.len());
         GlobalUnlock(allocation.0);
     }
     ensure!(
         unsafe { OpenClipboard(owner) } != 0,
-        "Буфер обмена занят. Повторите экспорт."
+        "The clipboard is busy. Try exporting again."
     );
     let _clipboard = Clipboard;
     ensure!(
         unsafe { EmptyClipboard() } != 0,
-        "Не удалось очистить буфер обмена"
+        "Could not clear the clipboard"
     );
     ensure!(
         !unsafe { SetClipboardData(13, allocation.0) }.is_null(),
-        "Не удалось скопировать конфигурацию"
+        "Could not copy the configuration"
     );
     allocation.0 = std::ptr::null_mut();
     Ok(())

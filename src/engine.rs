@@ -60,7 +60,7 @@ impl Drop for ConnectionGuard {
 impl Statistics {
     pub fn routing_active(&self, active: bool) {
         if !active {
-            self.activity.finish_all("Маршрутизация остановлена");
+            self.activity.finish_all("Routing stopped");
         }
         *self.routing_started.lock().unwrap() = active.then(Instant::now);
     }
@@ -79,7 +79,7 @@ impl Statistics {
         let mut label = name;
         if !processes.contains_key(&key) && processes.len() >= 511 {
             key = "\0other".into();
-            label = "Другие процессы";
+            label = "Other processes";
         }
         processes
             .entry(key)
@@ -165,13 +165,13 @@ impl Engine {
         config.validate()?;
         ensure!(
             !config.proxies.is_empty(),
-            "Добавьте SOCKS5-прокси и правило для приложения"
+            "Add a SOCKS5 proxy and an application rule"
         );
         #[cfg(windows)]
         {
             ensure!(
                 crate::platform::is_admin(),
-                "Перехвату нужны права администратора. Запустите True Proxy с повышенными правами."
+                "Traffic interception requires administrator rights. Run True Proxy as administrator."
             );
             Ok(Self {
                 inner: crate::platform::windows::network::Network::start(
@@ -182,7 +182,7 @@ impl Engine {
         #[cfg(not(windows))]
         {
             let _ = (statistics, failure);
-            anyhow::bail!("Перехват трафика пока реализован только для Windows");
+            anyhow::bail!("Traffic interception is currently available only on Windows");
         }
     }
     pub fn stop(self) {

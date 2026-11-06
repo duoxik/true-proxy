@@ -168,7 +168,7 @@ pub fn render(ui: &ConnectionsWindow, statistics: &Statistics) {
             let counters = counters.get(&key);
             ProcessSummary {
                 name: if key == "\0other" {
-                    "Другие процессы".into()
+                    "Other processes".into()
                 } else {
                     rows[0].info.process.clone().into()
                 },
@@ -275,8 +275,8 @@ mod tests {
         status: Status,
     ) -> Connection {
         let route = match &action {
-            Action::Direct => "Напрямую",
-            Action::Block => "Блокировка",
+            Action::Direct => "Direct",
+            Action::Block => "Blocked",
             Action::Proxy(_) => "VPN",
         };
         stats
@@ -346,10 +346,10 @@ mod tests {
         assert!(ui.get_only_active());
         assert_eq!(ui.get_filtered_event_count(), 3);
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Только активные соединения").count(),
+            ElementHandle::find_by_accessible_label(&ui, "Only active connections").count(),
             0
         );
-        click(&ui, "Подключения Game.exe", 0);
+        click(&ui, "Connections for Game.exe", 0);
         query(&ui, "gAmE");
         assert_eq!(ui.get_filtered_event_count(), 2);
         assert!(ui.get_process_summaries().row_data(0).unwrap().expanded);
@@ -362,15 +362,15 @@ mod tests {
             );
         }
         query(&ui, "");
-        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Route: All", 0);
         assert_eq!(ui.get_filtered_event_count(), 0);
-        click(&ui, "Маршрут: VPN", 0);
+        click(&ui, "Route: VPN", 0);
         assert_eq!(ui.get_filtered_event_count(), 1);
         assert_eq!(
             routing::values(ui.get_connection_route_selection()),
             ["proxy:p1"]
         );
-        click(&ui, "Маршрут: VPN", 1);
+        click(&ui, "Route: VPN", 1);
         assert_eq!(ui.get_filtered_event_count(), 2);
         ui.set_proxies(model(vec![
             ProxyRow {
@@ -403,7 +403,7 @@ mod tests {
             "A newly saved proxy must not expand an explicit subset"
         );
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Маршрут: Renamed")
+            ElementHandle::find_by_accessible_label(&ui, "Route: Renamed")
                 .next()
                 .unwrap()
                 .accessible_checked(),
@@ -417,15 +417,15 @@ mod tests {
         render(&ui, &stats);
         assert_eq!(ui.get_filtered_event_count(), 2);
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Маршрут: VPN (из журнала)").count(),
+            ElementHandle::find_by_accessible_label(&ui, "Route: VPN (from history)").count(),
             2,
             "Deleted/pending proxy IDs must remain distinct choices"
         );
         query(&ui, "GAME");
         assert!(ui.get_process_summaries().row_data(0).unwrap().expanded);
-        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Route: All", 0);
         assert_eq!(ui.get_filtered_event_count(), 3);
-        click(&ui, "Маршрут: Все", 0);
+        click(&ui, "Route: All", 0);
         assert_eq!(ui.get_filtered_event_count(), 0);
     }
 
@@ -443,7 +443,7 @@ mod tests {
         );
         let direct = start(&stats, "direct.exe", 1002, Action::Direct, Status::Active);
         render(&ui, &stats);
-        click(&ui, "Статус: Все", 0);
+        click(&ui, "Status: All", 0);
         assert!(!ui.get_only_active());
         game.finish(Status::Failed, "SOCKS rejected");
         direct.finish(Status::Closed, "");
@@ -452,40 +452,40 @@ mod tests {
         let _active = start(&stats, "active.exe", 1004, Action::Direct, Status::Active);
         render(&ui, &stats);
         assert_eq!(ui.get_filtered_event_count(), 4);
-        click(&ui, "Маршрут: Все", 0);
-        click(&ui, "Маршрут: Заблокированные", 0);
+        click(&ui, "Route: All", 0);
+        click(&ui, "Route: Blocked", 0);
         assert_eq!(ui.get_filtered_event_count(), 1);
         assert_eq!(
             ui.get_process_summaries().row_data(0).unwrap().name,
             "block.exe"
         );
-        click(&ui, "Маршрут: Заблокированные", 0);
-        click(&ui, "Маршрут: VPN", 0);
+        click(&ui, "Route: Blocked", 0);
+        click(&ui, "Route: VPN", 0);
         assert_eq!(ui.get_filtered_event_count(), 1);
         assert_eq!(
             ui.get_process_summaries().row_data(0).unwrap().name,
             "game.exe"
         );
-        click(&ui, "Маршрут: Все", 0);
-        click(&ui, "Статус: Подключение", 0);
+        click(&ui, "Route: All", 0);
+        click(&ui, "Status: Connecting", 0);
         assert!(!ui.get_only_active());
         assert_eq!(
             stats.activity.snapshots().len(),
             4,
             "Changing a nonterminal filter must not clear history"
         );
-        click(&ui, "Статус: Все", 0); // Some unchecked -> select all.
-        click(&ui, "Статус: Все", 0); // All checked -> select none, clear history.
+        click(&ui, "Status: All", 0); // Some unchecked -> select all.
+        click(&ui, "Status: All", 0); // All checked -> select none, clear history.
         assert!(ui.get_only_active());
         assert_eq!(ui.get_filtered_event_count(), 0);
         assert_eq!(stats.activity.snapshots().len(), 1);
-        click(&ui, "Статус: Ошибка", 0);
+        click(&ui, "Status: Failed", 0);
         assert_eq!(
             ui.get_filtered_event_count(),
             0,
             "Old history must not return"
         );
-        click(&ui, "Статус: Активно", 0);
+        click(&ui, "Status: Active", 0);
         assert_eq!(ui.get_filtered_event_count(), 1);
     }
 
@@ -497,10 +497,10 @@ mod tests {
         let _counter = stats.connection("game.exe");
         stats.uploaded.store(42, Ordering::Relaxed);
         render(&ui, &stats);
-        click(&ui, "Подключения game.exe", 0);
-        click(&ui, "Маршрут: Все", 0);
-        click(&ui, "Маршрут: Прямые", 0);
-        click(&ui, "Статус: Ошибка", 0);
+        click(&ui, "Connections for game.exe", 0);
+        click(&ui, "Route: All", 0);
+        click(&ui, "Route: Direct", 0);
+        click(&ui, "Status: Failed", 0);
         query(&ui, "GAME");
         // Hiding/navigating the separate tray popup must not stop this journal.
         let main = crate::MainWindow::new().unwrap();
@@ -548,7 +548,7 @@ mod tests {
             (0..64)
                 .map(|index| ProxyRow {
                     id: format!("proxy-{index}").into(),
-                    name: format!("Очень длинное название подключения номер {index}").into(),
+                    name: format!("Very long proxy connection name number {index}").into(),
                     ..Default::default()
                 })
                 .collect(),
@@ -564,8 +564,7 @@ mod tests {
             list.size().height >= 180.,
             "Filters must leave room for connection rows at the minimum window size"
         );
-        for label in ["Маршрут: Все", "Статус: Все", "Статус: Ошибка"]
-        {
+        for label in ["Route: All", "Status: All", "Status: Failed"] {
             let checkbox = ElementHandle::find_by_accessible_label(&ui, label)
                 .next()
                 .unwrap();
@@ -574,8 +573,8 @@ mod tests {
             assert!(position.x >= 0. && position.x + size.width <= 800.);
             assert!(position.y >= 0. && position.y + size.height <= 600.);
         }
-        click(&ui, "Маршрут: Все", 0);
-        click(&ui, "Статус: Ошибка", 0);
+        click(&ui, "Route: All", 0);
+        click(&ui, "Status: Failed", 0);
         assert!(!ui.get_connection_routes_all());
         assert!(!ui.get_only_active());
     }

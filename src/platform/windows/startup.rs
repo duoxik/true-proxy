@@ -57,7 +57,7 @@ fn user_sid() -> Result<String> {
     // is converted. The OS-allocated SID string and token have owned RAII guards.
     ensure!(
         unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0,
-        "Не удалось определить пользователя автозапуска"
+        "Could not identify the startup user"
     );
     let token = Token(token);
     let mut size = 0;
@@ -66,7 +66,7 @@ fn user_sid() -> Result<String> {
     }
     ensure!(
         (std::mem::size_of::<TOKEN_USER>() as u32..=65536).contains(&size),
-        "Некорректный размер токена пользователя"
+        "Invalid user token size"
     );
     let mut storage = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
     ensure!(
@@ -79,27 +79,27 @@ fn user_sid() -> Result<String> {
                 &mut size,
             )
         } != 0,
-        "Не удалось прочитать пользователя автозапуска"
+        "Could not read the startup user"
     );
     let user = unsafe { &*storage.as_ptr().cast::<TOKEN_USER>() };
     let mut text = ptr::null_mut();
     ensure!(
         unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) } != 0,
-        "Не удалось прочитать SID пользователя"
+        "Could not read the user SID"
     );
     let text = Local(text);
     let mut length = 0;
     while length < 256 && unsafe { *text.0.add(length) } != 0 {
         length += 1;
     }
-    ensure!(length < 256, "Слишком длинный SID пользователя");
+    ensure!(length < 256, "The user SID is too long");
     let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text.0, length) })?;
     ensure!(
         sid.starts_with("S-1-")
             && sid
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || byte == b'S' || byte == b'-'),
-        "Некорректный SID пользователя"
+        "Invalid user SID"
     );
     Ok(sid)
 }
@@ -134,7 +134,7 @@ impl Scheduler {
         let task = match unsafe { self.folder.GetTask(&BSTR::from(name)) } {
             Ok(task) => task,
             Err(error) if error.code().0 as u32 == 0x80070002 => return Ok(None),
-            Err(error) => return Err(error).context("Не удалось прочитать задачу автозапуска"),
+            Err(error) => return Err(error).context("Could not read the startup task"),
         };
         let definition = unsafe { task.Definition()? };
         let mut source = BSTR::new();
@@ -143,7 +143,7 @@ impl Scheduler {
         }
         ensure!(
             source == SOURCE,
-            "Задача с этим именем не принадлежит True Proxy; изменение отменено"
+            "A task with this name belongs to another app. The startup setting was left as is."
         );
         Ok(Some(task))
     }
@@ -164,18 +164,18 @@ fn escape(value: &str) -> String {
 fn task_xml(executable: &Path, sid: &str) -> Result<String> {
     ensure!(
         executable.is_absolute(),
-        "Путь автозапуска должен быть абсолютным"
+        "The startup path must be absolute"
     );
     let exe = escape(
         executable
             .to_str()
-            .context("Не удалось преобразовать путь автозапуска")?,
+            .context("Could not convert the startup path")?,
     );
     let directory = escape(
         executable
             .parent()
             .and_then(Path::to_str)
-            .context("Не найдена папка программы")?,
+            .context("Could not find the application directory")?,
     );
     let sid = escape(sid);
     Ok(format!(
@@ -205,7 +205,7 @@ pub fn autostart_enabled() -> Result<bool> {
 pub fn set_autostart(enabled: bool) -> Result<bool> {
     ensure!(
         super::is_admin(),
-        "Изменение автозапуска требует прав администратора"
+        "Changing the startup setting requires administrator rights"
     );
     let scheduler = Scheduler::connect()?;
     let sid = user_sid()?;
