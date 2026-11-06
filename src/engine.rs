@@ -10,6 +10,20 @@ use std::{
 };
 
 const MAX_LOGS: usize = 256;
+const MAX_LOG_FIELD_BYTES: usize = 512;
+
+fn bounded_log_field(value: String) -> String {
+    let mut value = if value.capacity() > MAX_LOG_FIELD_BYTES {
+        value[..value.floor_char_boundary(MAX_LOG_FIELD_BYTES)].to_owned()
+    } else {
+        value
+    };
+    let separator = |c: char| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}');
+    if value.contains(separator) {
+        value = value.replace(separator, " ");
+    }
+    value
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogSource {
@@ -157,17 +171,23 @@ impl Statistics {
         route: impl Into<String>,
         message: impl Into<String>,
     ) {
+        if !self.log_tracking() {
+            return;
+        }
         let mut entry = LogEntry {
             sequence: 0,
             time: crate::platform::local_clock(),
             source,
             level,
-            process: process.into(),
-            destination: destination.into(),
-            route: route.into(),
-            message: message.into(),
+            process: bounded_log_field(process.into()),
+            destination: bounded_log_field(destination.into()),
+            route: bounded_log_field(route.into()),
+            message: bounded_log_field(message.into()),
         };
         let mut logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
+        if !self.log_tracking() {
+            return;
+        }
         logs.revision = logs.revision.wrapping_add(1);
         entry.sequence = logs.revision;
         if logs.entries.len() == MAX_LOGS {
@@ -175,8 +195,9 @@ impl Statistics {
         }
         logs.entries.push_back(entry);
     }
-    /// Detailed connection events may feed the visible log without tracking sessions.
+    /// Technical logging is independent of the Connections monitor.
     pub fn set_log_tracking(&self, enabled: bool) {
+        let _logs = self.logs.lock().unwrap_or_else(|e| e.into_inner());
         self.log_tracking.store(enabled, Ordering::Relaxed);
     }
     pub fn log_tracking(&self) -> bool {
@@ -263,6 +284,7 @@ mod tests {
     #[test]
     fn per_process_live_counts_survive_log_clear_and_end_on_drop() {
         let stats = Arc::new(Statistics::default());
+        stats.set_log_tracking(true);
         let a = stats.connection("Discord.exe");
         let b = stats.connection("discord.exe");
         a.process.uploaded.store(123, Ordering::Relaxed);
@@ -286,6 +308,7 @@ mod tests {
     #[test]
     fn technical_logs_are_bounded_and_return_only_changed_snapshots() {
         let stats = Statistics::default();
+        stats.set_log_tracking(true);
         for index in 0..=MAX_LOGS {
             stats.log(
                 LogSource::Backend,
@@ -301,8 +324,24 @@ mod tests {
         assert_eq!(entries[0].message, "1");
         assert_eq!(entries[MAX_LOGS - 1].message, MAX_LOGS.to_string());
         assert!(stats.log_snapshot(Some(revision)).is_none());
+        stats.set_log_tracking(false);
+        stats.log(LogSource::Backend, LogLevel::Error, "", "", "", "Paused");
+        assert!(stats.log_snapshot(Some(revision)).is_none());
         stats.clear();
         assert!(stats.log_snapshot(Some(revision)).unwrap().1.is_empty());
+        stats.set_log_tracking(true);
+        stats.log(
+            LogSource::Backend,
+            LogLevel::Info,
+            "",
+            "",
+            "",
+            format!("A\n{}", "€".repeat(MAX_LOG_FIELD_BYTES)),
+        );
+        let (_, entries) = stats.log_snapshot(None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].message.len() <= MAX_LOG_FIELD_BYTES);
+        assert!(entries[0].message.starts_with("A €"));
     }
     #[test]
     fn process_metrics_are_bounded() {

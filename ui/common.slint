@@ -1,8 +1,8 @@
 import { ComboBox } from "std-widgets.slint";
 
 // Shared theme, models and controls for the tray panel and Connections window.
-export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, location: string, health: int, udp: bool }
-export struct RuleRow { id: string, name: string, route: string, enabled: bool, priority: int, apps: int, hosts: int, ports: int, protocol: string }
+export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, location: string, flag-index: int, health: int, udp: bool }
+export struct RuleRow { id: string, name: string, route: string, enabled: bool, priority: int }
 export struct LogRow { id: string, process: string, pid: string, destination: string, route: string, message: string, source: string, started: string, elapsed: string, status: string, state: int }
 export struct ProcessChoice { key: string, name: string, path: string, pids: string, instances: int, selected: bool }
 export struct ProcessSummary { name: string, active: int, events: int, uploaded: string, downloaded: string, expanded: bool, connections: [LogRow] }
@@ -71,8 +71,8 @@ export component UiIcon inherits Rectangle {
         if name == "plus" { return "M12 5 V19 M5 12 H19"; }
         if name == "play" { return "M7 4 L20 12 L7 20 Z"; }
         if name == "stop" { return "M6 6 H18 V18 H6 Z"; }
-        if name == "edit" { return "M4 17 L3 21 L7 20 L20 7 L17 4 Z M14 7 L17 10"; }
-        if name == "trash" { return "M4 7 H20 M9 7 V4 H15 V7 M6 7 L7 21 H17 L18 7 M10 11 V17 M14 11 V17"; }
+        if name == "edit" { return "M4.5 16.5 L3.5 20.5 L7.5 19.5 L20.5 6.5 L17.5 3.5 Z M14.5 6.5 L17.5 9.5"; }
+        if name == "trash" { return "M4 6.5 H20 M9 6.5 V3.5 H15 V6.5 M6 6.5 L7 20.5 H17 L18 6.5 M10 10.5 V16.5 M14 10.5 V16.5"; }
         if name == "chevron-up" { return "M6 15 L12 9 L18 15"; }
         if name == "chevron-down" { return "M6 9 L12 15 L18 9"; }
         if name == "chevron-right" { return "M9 6 L15 12 L9 18"; }
@@ -116,12 +116,20 @@ export component ActionButton inherits Rectangle {
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
+    if root.icon-only && root.icon != "": UiIcon {
+        name: root.icon;
+        ink: root.ink;
+        width: 16px;
+        height: 16px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
     HorizontalLayout {
         alignment: center;
         spacing: root.icon-only || root.label == "" ? 0px : 6px;
-        if root.icon != "": Rectangle {
-            width: 17px;
-            UiIcon { name: root.icon; ink: root.ink; width: 17px; height: 17px; y: (parent.height - self.height) / 2; }
+        if !root.icon-only && root.icon != "": Rectangle {
+            width: 16px;
+            UiIcon { name: root.icon; ink: root.ink; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
         }
         label-text := Text { text: root.icon-only ? "" : root.label; color: root.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
     }

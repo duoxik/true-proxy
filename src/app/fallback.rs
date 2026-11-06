@@ -154,8 +154,7 @@ mod tests {
         );
         assert_eq!(ui.get_fallback_label(), "Proxy · Second");
         assert_eq!(running_snapshot.default_action, Action::Block);
-        assert!(ui.get_routing_pending() && ui.get_restart_prompt());
-        ui.set_restart_prompt(false);
+        assert!(ui.get_routing_pending());
         click(&ui, "Default route: Proxy · Second");
         click(&ui, "Route: Direct");
         assert_eq!(

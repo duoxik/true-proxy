@@ -257,7 +257,20 @@ mod ui_tests {
             move || weak.unwrap().set_dialog(0)
         });
 
-        click(&ui, "Proxies");
+        for label in ["Rule Local", "Rule Fallback"] {
+            let switch = ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Switch))
+                .unwrap();
+            assert_eq!(switch.accessible_checked(), Some(true));
+            assert_eq!(switch.accessible_enabled(), Some(false));
+        }
+        click(&ui, "View Rules");
+        assert_eq!(ui.get_page(), 1);
+        assert_eq!(ui.get_dialog(), 0);
+        click(&ui, "Dashboard");
+        click(&ui, "View Proxies");
+        assert_eq!(ui.get_page(), 2);
+        assert_eq!(ui.get_dialog(), 0);
         click(&ui, "Add Proxy");
         assert_eq!(calls.get(), 1, "the first click must open the editor");
         assert_eq!(ui.get_dialog(), 1);
@@ -320,6 +333,7 @@ mod ui_tests {
         assert_eq!(
             labels
                 .iter()
+                .filter(|element| element.accessible_enabled() != Some(false))
                 .filter_map(|element| {
                     match element.accessible_role() {
                         Some(
@@ -335,14 +349,26 @@ mod ui_tests {
             ["Edit local network"],
             "The local route must only expose CIDR editing"
         );
+        for label in [
+            "Rule Local",
+            "Delete local rule",
+            "Move local rule up",
+            "Move local rule down",
+        ] {
+            let control = labels
+                .iter()
+                .find(|element| element.accessible_label().as_deref() == Some(label))
+                .unwrap();
+            assert_eq!(control.accessible_enabled(), Some(false));
+        }
 
         ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
             crate::RuleRow {
                 id: "game".into(),
                 name: "Game".into(),
+                route: "Direct".into(),
                 enabled: true,
                 priority: 2,
-                ..Default::default()
             },
         ])));
         let game = ElementHandle::find_by_accessible_label(&ui, "2. Game")
@@ -379,9 +405,9 @@ mod ui_tests {
             crate::RuleRow {
                 id: "one".into(),
                 name: "Game".into(),
+                route: "Direct".into(),
                 enabled: true,
                 priority: 2,
-                ..Default::default()
             },
         ])));
         ui.set_page(1);

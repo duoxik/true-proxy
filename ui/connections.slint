@@ -296,9 +296,9 @@ export global ConnectionMonitor {
     in-out property <string> connection-query;
     in property <[ConnectionFilterOption]> connection-route-filters;
     in property <[ConnectionFilterOption]> connection-status-filters;
-    in property <int> selected-route-count;
-    in-out property <bool> connection-routes-all: true;
-    in-out property <[string]> connection-route-selection;
+    in property <string> connection-route-summary: "Proxy";
+    in-out property <bool> connection-routes-all: false;
+    in-out property <[string]> connection-route-selection: ["proxy"];
     in-out property <[string]> connection-status-selection: ["0", "1", "2"];
     in property <bool> connection-filters-default: true;
     in property <int> connection-event-count;
@@ -380,9 +380,9 @@ export component ConnectionsView inherits VerticalLayout {
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if !ConnectionMonitor.connection-filters-default: Rectangle {
+                Rectangle {
                     width: reset.min-width;
-                    reset := ActionButton { y: (parent.height - self.height) / 2; label: "Reset filters"; icon: "refresh"; icon-only: true; height: 34px; clicked => { ConnectionMonitor.reset-connection-filters(); } }
+                    reset := ActionButton { y: (parent.height - self.height) / 2; label: "Reset filters"; icon: "refresh"; icon-only: true; height: 34px; enabled: !ConnectionMonitor.connection-filters-default; clicked => { connection-list.content-y = 0px; ConnectionMonitor.reset-connection-filters(); } }
                 }
                 Rectangle {
                     width: 120px;
@@ -391,7 +391,7 @@ export component ConnectionsView inherits VerticalLayout {
                         title: "Routes";
                         scope: "Route";
                         accessible-label: "Filter routes";
-                        summary: ConnectionMonitor.connection-routes-all ? "All" : "" + ConnectionMonitor.selected-route-count;
+                        summary: ConnectionMonitor.connection-route-summary;
                         options: ConnectionMonitor.connection-route-filters;
                         toggled(key, checked) => { connection-list.content-y = 0px; ConnectionMonitor.toggle-connection-route(key, checked); }
                     }
@@ -434,7 +434,7 @@ export component ConnectionsView inherits VerticalLayout {
                     destination: "TARGET";
                     started: "START";
                     status: "TIME";
-                    route: "RULE / PROXY";
+                    route: "ROUTE";
                     sent: "↑ SENT";
                     received: "↓ RECV";
                 }
@@ -469,7 +469,7 @@ export component ConnectionsView inherits VerticalLayout {
         }
     }
     if !ConnectionMonitor.only-active: Text {
-        text: "History keeps up to 256 connections completed since a finished status was selected.";
+        text: "History keeps up to 256 connections completed while history is enabled.";
         color: Theme.muted;
         font-size: 11px;
         wrap: word-wrap;

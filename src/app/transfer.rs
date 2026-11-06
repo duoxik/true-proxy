@@ -376,11 +376,9 @@ mod tests {
         ui.set_active(true);
         click(&ui, "Save");
         assert_eq!(ui.get_dialog(), 0);
-        assert!(ui.get_routing_pending() && ui.get_restart_prompt() && ui.get_active());
+        assert!(ui.get_routing_pending() && ui.get_active());
         assert_eq!(Config::load(&path).unwrap().proxies[0].port, 1081);
         assert!(state.borrow().routing_enabled && commands.try_recv().is_err());
-        click(&ui, "Apply Later");
-        assert!(ui.get_routing_pending());
         assert!(ui.get_import_json().is_empty() && ui.get_import_lines().row_count() == 0);
         click(&ui, "Import");
         validate_now(&ui, "{broken}");

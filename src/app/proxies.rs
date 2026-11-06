@@ -6,6 +6,8 @@ use std::{
     collections::HashMap,
     hash::{Hash, Hasher},
     sync::{Arc, Mutex, mpsc::SyncSender},
+    thread,
+    time::{Duration, Instant},
 };
 use true_proxy::{
     config::{Config, Proxy},
@@ -15,6 +17,7 @@ use true_proxy::{
 #[derive(Clone)]
 pub struct Health {
     key: String,
+    checked_at: Instant,
     tcp: bool,
     udp: bool,
     latency: u128,
@@ -22,6 +25,9 @@ pub struct Health {
     error: String,
 }
 pub type Statuses = HashMap<String, Health>;
+
+const AUTO_INTERVAL: Duration = Duration::from_secs(20);
+const AUTO_CONCURRENCY: usize = 4;
 
 pub fn key(proxy: &Proxy) -> String {
     let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -55,12 +61,21 @@ fn update_health(row: &mut ProxyRow, health: &Health) {
     row.health = if health.tcp { 2 } else { 3 };
     row.udp = health.udp;
     row.location = health.location.as_deref().unwrap_or_default().into();
+    row.flag_index = flag_index(&row.location);
     row.status = if health.tcp {
         format!("{} ms", health.latency)
     } else {
         health.error.clone()
     }
     .into();
+}
+
+fn flag_index(location: &str) -> i32 {
+    let country = location.rsplit(", ").next().unwrap_or_default();
+    include_str!("../../assets/country-flags.txt")
+        .split_ascii_whitespace()
+        .position(|code| code == country)
+        .map_or(0, |index| index as i32 + 1)
 }
 
 pub fn refresh_table(ui: &MainWindow) {
@@ -134,8 +149,13 @@ pub fn wire_table(ui: &MainWindow) {
     });
 }
 pub async fn check(proxy: &Proxy) -> Health {
+    measure(proxy, Instant::now(), true).await
+}
+
+async fn measure(proxy: &Proxy, checked_at: Instant, locate: bool) -> Health {
     let mut health = Health {
         key: key(proxy),
+        checked_at,
         tcp: false,
         udp: false,
         latency: 0,
@@ -147,17 +167,19 @@ pub async fn check(proxy: &Proxy) -> Health {
             health.tcp = true;
             health.udp = udp;
             health.latency = latency;
-            health.location = platform::proxy_location(proxy).await;
+            if locate {
+                health.location = platform::proxy_location(proxy).await;
+            }
         }
         Err(error) => health.error = format!("{error:#}"),
     }
     health
 }
 
-fn result_text(name: &str, health: &Health) -> (String, bool) {
+fn result_text(health: &Health) -> String {
     if health.tcp {
         let mut message = format!(
-            "{name}: TCP available, {} ms · UDP {}",
+            "TCP available, {} ms · UDP {}",
             health.latency,
             if health.udp {
                 "available"
@@ -169,12 +191,9 @@ fn result_text(name: &str, health: &Health) -> (String, bool) {
             message.push_str(" · ");
             message.push_str(location);
         }
-        (message, !health.udp)
+        message
     } else {
-        (
-            format!("{name}: Connection failed · {}", health.error),
-            true,
-        )
+        format!("Connection failed · {}", health.error)
     }
 }
 
@@ -188,6 +207,7 @@ pub(super) fn preview_statuses(config: &Config) -> Statuses {
                 proxy.id.clone(),
                 Health {
                     key: key(proxy),
+                    checked_at: Instant::now(),
                     tcp: true,
                     udp: true,
                     latency,
@@ -199,64 +219,159 @@ pub(super) fn preview_statuses(config: &Config) -> Statuses {
         .collect()
 }
 
-fn apply_result(ui: &MainWindow, proxy: &Proxy, health: &Health, token: Option<&str>) {
-    if let Some(token) = token {
-        let current = ui.get_form_probe_token();
-        if current == token {
-            ui.set_probe_busy(false);
-            ui.set_form_probe_status("".into());
-            ui.set_form_probe_health(0);
-            if ui.get_dialog() == 1 {
-                let (message, error) = result_text(&proxy.name, health);
-                super::show_toast(ui, message, error);
-            }
-        } else if current.is_empty() {
-            // Editing or closing invalidates the display token, but the one
-            // in-flight check still needs to release its busy state.
-            ui.set_probe_busy(false);
-        }
-    } else {
+fn apply_form_result(ui: &MainWindow, health: &Health, token: &str) {
+    let current = ui.get_form_probe_token();
+    if current == token {
         ui.set_probe_busy(false);
-        let rows = ui.get_proxies();
-        if let Some((index, mut row)) = rows
+        if ui.get_dialog() == 1 {
+            ui.set_form_probe_status(result_text(health).into());
+            ui.set_form_probe_health(if health.tcp { 2 } else { 3 });
+        }
+    } else if current.is_empty() {
+        // Editing or closing invalidates the display token, but the one
+        // in-flight check still needs to release its busy state.
+        ui.set_probe_busy(false);
+    }
+}
+
+fn apply_saved_result(ui: &MainWindow, statuses: &Mutex<Statuses>, id: &str, mut health: Health) {
+    let rows = ui.get_proxies();
+    let Some((index, mut row)) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.id == id && row.key == health.key)
+    else {
+        return;
+    };
+    {
+        let mut cache = statuses.lock().unwrap();
+        if let Some(previous) = cache.get(id).filter(|previous| previous.key == health.key) {
+            if previous.checked_at > health.checked_at {
+                return;
+            }
+            if health.location.is_none() {
+                health.location.clone_from(&previous.location);
+            }
+        }
+        // Deleted proxies must not fill the cache after repeated profile edits.
+        if cache.len() >= 64 && !cache.contains_key(id) {
+            cache.retain(|id, _| rows.iter().any(|row| row.id == id.as_str()));
+        }
+        cache.insert(id.into(), health.clone());
+    }
+    update_health(&mut row, &health);
+    if rows.row_data(index).as_ref() != Some(&row) {
+        if let Some(model) = rows.as_any().downcast_ref::<VecModel<ProxyRow>>() {
+            model.set_row_data(index, row.clone());
+        } else {
+            let mut updated: Vec<_> = rows.iter().collect();
+            updated[index] = row.clone();
+            ui.set_proxies(super::model(updated));
+        }
+        let visible = ui.get_visible_proxies();
+        if let Some((index, _)) = visible
             .iter()
             .enumerate()
-            .find(|(_, row)| row.id == proxy.id && row.key == health.key)
+            .find(|(_, old)| old.id == id && old != &row)
         {
-            let (message, error) = result_text(&row.name, health);
-            update_health(&mut row, health);
-            if let Some(model) = rows.as_any().downcast_ref::<VecModel<ProxyRow>>() {
-                model.set_row_data(index, row);
+            if let Some(model) = visible.as_any().downcast_ref::<VecModel<ProxyRow>>() {
+                model.set_row_data(index, row.clone());
             } else {
-                let mut updated: Vec<_> = rows.iter().collect();
-                updated[index] = row;
-                ui.set_proxies(super::model(updated));
+                refresh_table(ui);
             }
-            refresh_table(ui);
-            super::show_toast(ui, message, error);
         }
     }
 }
 
 pub fn publish(
     weak: slint::Weak<MainWindow>,
-    statuses: &Arc<Mutex<Statuses>>,
-    proxy: Proxy,
+    statuses: Arc<Mutex<Statuses>>,
+    id: String,
     health: Health,
     token: Option<String>,
 ) {
-    if token.is_none() {
-        let mut statuses = statuses.lock().unwrap();
-        // Deleted profiles and old in-flight probes cannot grow the cache indefinitely.
-        if statuses.len() < 64 || statuses.contains_key(&proxy.id) {
-            statuses.insert(proxy.id.clone(), health.clone());
-        }
-    }
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = weak.upgrade() {
-            apply_result(&ui, &proxy, &health, token.as_deref());
+            if let Some(token) = token {
+                apply_form_result(&ui, &health, &token);
+            } else {
+                ui.set_probe_busy(false);
+                apply_saved_result(&ui, &statuses, &id, health);
+            }
         }
     });
+}
+
+pub fn wire_automatic(
+    ui: &MainWindow,
+    state: State,
+    statuses: Arc<Mutex<Statuses>>,
+) -> slint::Timer {
+    let weak = ui.as_weak();
+    let mut batch = None::<thread::JoinHandle<()>>;
+    let mut run = move || {
+        let Some(ui) = weak.upgrade() else { return };
+        if ui.get_probe_busy() || batch.as_ref().is_some_and(|batch| !batch.is_finished()) {
+            return;
+        }
+        let proxies = state.borrow().proxies.clone();
+        if proxies.is_empty() {
+            return;
+        }
+        let started = Instant::now();
+        let weak = weak.clone();
+        let statuses = statuses.clone();
+        batch = thread::Builder::new()
+            .name("automatic-proxy-probes".into())
+            .spawn(move || {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    runtime.block_on(check_automatic(weak, statuses, proxies, started));
+                }
+            })
+            .ok();
+    };
+    run();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, AUTO_INTERVAL, run);
+    timer
+}
+
+async fn check_automatic(
+    weak: slint::Weak<MainWindow>,
+    statuses: Arc<Mutex<Statuses>>,
+    proxies: Vec<Proxy>,
+    started: Instant,
+) {
+    let mut proxies = proxies.into_iter();
+    let mut checks = tokio::task::JoinSet::new();
+    loop {
+        while checks.len() < AUTO_CONCURRENCY {
+            let Some(proxy) = proxies.next() else { break };
+            checks.spawn(async move {
+                let health = measure(&proxy, started, false).await;
+                (proxy.id, health)
+            });
+        }
+        let Some(result) = checks.join_next().await else {
+            break;
+        };
+        if let Ok((id, health)) = result {
+            let weak = weak.clone();
+            let statuses = statuses.clone();
+            if slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    apply_saved_result(&ui, &statuses, &id, health);
+                }
+            })
+            .is_err()
+            {
+                break;
+            }
+        }
+    }
 }
 pub fn from_form(ui: &MainWindow, config: &Config) -> Result<Proxy> {
     let port = ui
@@ -330,9 +445,8 @@ pub fn wire_form_probe(ui: &MainWindow, state: State, sender: SyncSender<Command
                 Ok(())
             })();
             if let Err(error) = result {
-                ui.set_form_probe_health(0);
-                ui.set_form_probe_status("".into());
-                super::show_toast(&ui, format!("{error:#}"), true);
+                ui.set_form_probe_health(3);
+                ui.set_form_probe_status(format!("{error:#}").into());
             }
         }
     });
@@ -398,68 +512,59 @@ mod tests {
     }
 
     #[test]
-    fn manual_saved_results_only_notify_for_the_current_proxy_key() {
+    fn saved_results_preserve_location_and_ignore_stale_checks() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         let proxy = fixture_proxy();
-        let mut renamed = proxy.clone();
-        renamed.name = "Current name".into();
-        ui.set_proxies(super::super::model(vec![row(&renamed, &Statuses::new())]));
+        ui.set_proxies(super::super::model(vec![row(&proxy, &Statuses::new())]));
+        refresh_table(&ui);
+        let statuses = Mutex::new(Statuses::new());
         let mut health = Health {
             key: key(&proxy),
+            checked_at: Instant::now(),
             tcp: true,
             udp: true,
             latency: 7,
             location: Some("Berlin, DE".into()),
             error: String::new(),
         };
-        apply_result(&ui, &proxy, &health, None);
+        apply_saved_result(&ui, &statuses, &proxy.id, health.clone());
         assert_eq!(ui.get_visible_proxies().row_data(0).unwrap().status, "7 ms");
         assert_eq!(ui.get_proxies().row_data(0).unwrap().location, "Berlin, DE");
-        assert!(ui.get_toast().starts_with("Current name:"));
-        assert!(
-            ui.get_toast().contains("TCP available")
-                && ui.get_toast().contains("7 ms")
-                && ui.get_toast().contains("UDP available")
-        );
-        assert!(!ui.get_toast_error());
-        let previous = ui.get_toast();
+        let old_result = health.clone();
+        health.checked_at += Duration::from_secs(1);
         health.key = "old endpoint".into();
         health.tcp = false;
         health.location = None;
         health.error = "connection refused".into();
-        apply_result(&ui, &proxy, &health, None);
+        apply_saved_result(&ui, &statuses, &proxy.id, health.clone());
         assert_eq!(ui.get_visible_proxies().row_data(0).unwrap().status, "7 ms");
-        assert_eq!(ui.get_proxies().row_data(0).unwrap().location, "Berlin, DE");
-        assert_eq!(
-            ui.get_toast(),
-            previous,
-            "An edited endpoint must not receive its old result"
-        );
         health.key = key(&proxy);
+        ui.set_probe_busy(true);
+        apply_saved_result(&ui, &statuses, &proxy.id, health.clone());
+        apply_saved_result(&ui, &statuses, &proxy.id, old_result);
+        let visible = ui.get_visible_proxies().row_data(0).unwrap();
+        assert_eq!(visible.status, "connection refused");
+        assert_eq!(visible.location, "Berlin, DE");
+        assert_eq!(visible.health, 3);
+        assert!(ui.get_probe_busy() && ui.get_toast().is_empty());
         ui.set_proxies(super::super::model(vec![]));
-        apply_result(&ui, &proxy, &health, None);
-        assert_eq!(ui.get_toast(), previous, "A deleted proxy must not notify");
-        ui.set_proxies(super::super::model(vec![row(&proxy, &Statuses::new())]));
-        apply_result(&ui, &proxy, &health, None);
-        assert!(ui.get_toast_error() && ui.get_toast().contains("connection refused"));
-        health.tcp = true;
-        health.udp = false;
-        apply_result(&ui, &proxy, &health, None);
+        health.checked_at += Duration::from_secs(1);
+        apply_saved_result(&ui, &statuses, &proxy.id, health.clone());
         assert!(
-            ui.get_toast_error()
-                && ui.get_toast().contains("TCP available")
-                && ui.get_toast().contains("UDP unavailable")
+            statuses.lock().unwrap()[&proxy.id].checked_at < health.checked_at,
+            "A deleted proxy must not receive an in-flight result"
         );
     }
 
     #[test]
-    fn form_result_is_a_toast_and_stale_tokens_do_not_replace_a_newer_check() {
+    fn form_result_stays_inline_and_stale_tokens_do_not_replace_a_newer_check() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         let proxy = fixture_proxy();
         let health = Health {
             key: key(&proxy),
+            checked_at: Instant::now(),
             tcp: true,
             udp: true,
             latency: 3,
@@ -470,22 +575,25 @@ mod tests {
         ui.set_form_probe_token("current".into());
         ui.set_form_probe_status("Checking…".into());
         ui.set_probe_busy(true);
-        apply_result(&ui, &proxy, &health, Some("old"));
+        apply_form_result(&ui, &health, "old");
         assert!(ui.get_toast().is_empty() && ui.get_probe_busy());
         assert_eq!(ui.get_form_probe_status(), "Checking…");
-        apply_result(&ui, &proxy, &health, Some("current"));
-        assert!(!ui.get_toast().is_empty() && !ui.get_probe_busy());
-        assert!(ui.get_form_probe_status().is_empty());
-        assert!(!ui.get_toast_error());
-        let previous = ui.get_toast();
+        apply_form_result(&ui, &health, "current");
+        assert!(ui.get_toast().is_empty() && !ui.get_probe_busy());
+        assert_eq!(
+            ui.get_form_probe_status(),
+            "TCP available, 3 ms · UDP available"
+        );
+        assert_eq!(ui.get_form_probe_health(), 2);
         ui.set_dialog(0);
         ui.set_form_probe_token("".into());
+        ui.set_form_probe_status("".into());
         ui.set_probe_busy(true);
-        apply_result(&ui, &proxy, &health, Some("current"));
+        apply_form_result(&ui, &health, "current");
         assert_eq!(
-            ui.get_toast(),
-            previous,
-            "Closing the form invalidates its notification"
+            ui.get_form_probe_status(),
+            "",
+            "Closing the form invalidates its result"
         );
         assert!(!ui.get_probe_busy());
     }
@@ -523,6 +631,7 @@ mod tests {
             original.id.clone(),
             Health {
                 key: key(&original),
+                checked_at: Instant::now(),
                 tcp: true,
                 udp: false,
                 latency: 5,

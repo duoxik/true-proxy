@@ -69,7 +69,7 @@ pub(super) fn sample_rules() -> Vec<Rule> {
     vec![browser, games]
 }
 
-/// Populate the isolated monitor after its own observation starts.
+/// Populate the isolated monitor's current connections before it opens.
 /// The live journal and network backend never receive these records.
 pub(super) fn populate_connections(statistics: &Statistics) {
     use Protocol::{Tcp, Udp};

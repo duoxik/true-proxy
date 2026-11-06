@@ -7,10 +7,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use true_proxy::{
-    config::{Config, Protocol},
-    editor,
-};
+use true_proxy::{config::Config, editor};
 
 fn network_text(config: &Config) -> String {
     config
@@ -33,16 +30,6 @@ pub fn refresh(ui: &MainWindow, config: &Config) {
                 route: route_name(config, &rule.action).into(),
                 enabled: rule.enabled,
                 priority: index as i32 + 2,
-                apps: (rule.process_names.len() + rule.process_paths.len()) as i32,
-                hosts: (rule.domains.len() + rule.domain_suffixes.len() + rule.networks.len())
-                    as i32,
-                ports: rule.ports.len() as i32,
-                protocol: match rule.protocol {
-                    Protocol::Both => "TCP + UDP",
-                    Protocol::Tcp => "TCP",
-                    Protocol::Udp => "UDP",
-                }
-                .into(),
             })
             .collect(),
     ));
@@ -175,7 +162,7 @@ mod tests {
         ui.set_local_network_draft("192.0.2.15/24\n192.0.2.0/24, fd00::/8".into());
         click("Save local network");
         assert_eq!(ui.get_dialog(), 0);
-        assert!(ui.get_restart_prompt());
+        assert!(ui.get_routing_pending());
         let saved = Config::load(&path).unwrap();
         assert_eq!(
             saved.local_networks,
@@ -185,7 +172,6 @@ mod tests {
             ]
         );
         assert_eq!(saved.rules, config.rules);
-        ui.set_restart_prompt(false);
         click("Edit local network");
         assert_eq!(ui.get_local_network_draft(), "192.0.2.0/24\nfd00::/8");
         std::fs::remove_file(path).unwrap();

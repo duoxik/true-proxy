@@ -1,10 +1,10 @@
-//! IP Helper snapshots are used only for new flows, not on each packet.
-use crate::{config::Protocol, packet::FlowKey};
+//! IP Helper snapshots for routing ownership and passive TCP observation.
+use crate::{config::Protocol, connections::Status, packet::FlowKey};
 use anyhow::{Result, bail, ensure};
 use std::{
     collections::{HashMap, HashSet},
     ffi::c_void,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
     ptr,
 };
 
@@ -55,73 +55,89 @@ pub fn tcp_snapshot(candidates: &HashSet<FlowKey>) -> Result<HashMap<FlowKey, u3
         if !candidates.iter().any(|flow| flow.source.is_ipv4() == ipv4) {
             continue;
         }
-        let family = if ipv4 { 2 } else { 23 };
-        let mut size = 0;
-        let status = unsafe { GetExtendedTcpTable(ptr::null_mut(), &mut size, 0, family, 5, 0) };
-        ensure!(
-            status == 0 || status == 122,
-            "Could not read the TCP table size ({status})"
-        );
-        let mut complete = false;
-        for _ in 0..3 {
-            ensure!(
-                (4..=16 * 1024 * 1024).contains(&size),
-                "Invalid TCP table size"
-            );
-            // u32 storage has the alignment required by both MIB owner tables.
-            let mut words = vec![0u32; (size as usize).div_ceil(4)];
-            let status = unsafe {
-                GetExtendedTcpTable(words.as_mut_ptr().cast(), &mut size, 0, family, 5, 0)
+        visit_live_tcp(ipv4, |flow, pid, _| {
+            // Packet tuples do not contain IPv6 interface scope IDs.
+            let flow = FlowKey {
+                source: SocketAddr::new(flow.source.ip(), flow.source.port()),
+                destination: SocketAddr::new(flow.destination.ip(), flow.destination.port()),
             };
-            if status == 122 {
-                continue;
+            if candidates.contains(&flow)
+                && let Some(previous) = owners.insert(flow, pid)
+            {
+                ensure!(previous == pid, "Conflicting TCP connection owners");
             }
-            ensure!(status == 0, "Could not read the TCP table ({status})");
-            ensure!(
-                size as usize <= words.len() * 4,
-                "The TCP table exceeded the buffer"
-            );
-            let bytes =
-                unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size as usize) };
-            let count = words[0] as usize;
-            let stride = if ipv4 { 24 } else { 56 };
-            ensure!(4 + count * stride <= bytes.len(), "Truncated TCP table");
-            for row in bytes[4..4 + count * stride].chunks_exact(stride) {
-                let (local, local_port, remote, remote_port, state, pid) = if ipv4 {
-                    (4, 8, 12, 16, 0, 20)
-                } else {
-                    (0, 20, 24, 44, 48, 52)
-                };
-                let state = u32::from_ne_bytes(row[state..state + 4].try_into()?);
-                // SYN through half-close are live. LISTEN, TIME_WAIT and DELETE_TCB
-                // do not preserve a former application's routing decision.
-                if !(3..=10).contains(&state) {
-                    continue;
-                }
-                let flow = FlowKey {
-                    source: std::net::SocketAddr::new(
-                        read_ip(row, local, ipv4),
-                        u16::from_be_bytes([row[local_port], row[local_port + 1]]),
-                    ),
-                    destination: std::net::SocketAddr::new(
-                        read_ip(row, remote, ipv4),
-                        u16::from_be_bytes([row[remote_port], row[remote_port + 1]]),
-                    ),
-                };
-                if !candidates.contains(&flow) {
-                    continue;
-                }
-                let pid = u32::from_ne_bytes(row[pid..pid + 4].try_into()?);
-                if let Some(previous) = owners.insert(flow, pid) {
-                    ensure!(previous == pid, "Conflicting TCP connection owners");
-                }
-            }
-            complete = true;
-            break;
-        }
-        ensure!(complete, "The TCP table is changing too quickly");
+            Ok(())
+        })?;
     }
     Ok(owners)
+}
+
+pub(super) fn visit_live_tcp(
+    ipv4: bool,
+    mut visit: impl FnMut(FlowKey, u32, Status) -> Result<()>,
+) -> Result<()> {
+    let family = if ipv4 { 2 } else { 23 };
+    let mut size = 0;
+    let status = unsafe { GetExtendedTcpTable(ptr::null_mut(), &mut size, 0, family, 5, 0) };
+    ensure!(
+        status == 0 || status == 122,
+        "Could not read the TCP table size ({status})"
+    );
+    for _ in 0..3 {
+        ensure!(
+            (4..=16 * 1024 * 1024).contains(&size),
+            "Invalid TCP table size"
+        );
+        // u32 storage has the alignment required by both MIB owner tables.
+        let mut words = vec![0u32; (size as usize).div_ceil(4)];
+        let status =
+            unsafe { GetExtendedTcpTable(words.as_mut_ptr().cast(), &mut size, 0, family, 5, 0) };
+        if status == 122 {
+            continue;
+        }
+        ensure!(status == 0, "Could not read the TCP table ({status})");
+        ensure!(
+            (4..=words.len() * 4).contains(&(size as usize)),
+            "Invalid TCP table length"
+        );
+        // Windows wrote at most `size` bytes into the aligned buffer above.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), size as usize) };
+        let count = words[0] as usize;
+        let stride = if ipv4 { 24 } else { 56 };
+        ensure!(count <= (bytes.len() - 4) / stride, "Truncated TCP table");
+        for row in bytes[4..4 + count * stride].chunks_exact(stride) {
+            let (local, local_port, remote, remote_port, state, pid) = if ipv4 {
+                (4, 8, 12, 16, 0, 20)
+            } else {
+                (0, 20, 24, 44, 48, 52)
+            };
+            let state = match u32::from_ne_bytes(row[state..state + 4].try_into()?) {
+                3 | 4 => Status::Connecting,
+                5 => Status::Active,
+                6..=10 => Status::Closing,
+                _ => continue,
+            };
+            let endpoint = |addr, port| {
+                let ip = read_ip(row, addr, ipv4);
+                let port = u16::from_be_bytes([row[port], row[port + 1]]);
+                if let IpAddr::V6(ip) = ip {
+                    let scope = u32::from_be_bytes(row[addr + 16..addr + 20].try_into().unwrap());
+                    SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope))
+                } else {
+                    SocketAddr::new(ip, port)
+                }
+            };
+            let flow = FlowKey {
+                source: endpoint(local, local_port),
+                destination: endpoint(remote, remote_port),
+            };
+            let pid = u32::from_ne_bytes(row[pid..pid + 4].try_into()?);
+            visit(flow, pid, state)?;
+        }
+        return Ok(());
+    }
+    bail!("The TCP table is changing too quickly")
 }
 /// One on-demand snapshot; no polling, memory access, or process injection.
 pub fn running_processes() -> Result<Vec<crate::platform::RunningProcess>> {
@@ -192,7 +208,7 @@ pub fn identify(flow: FlowKey, protocol: Protocol) -> Result<Process> {
     identify_pid(owner_pid(flow, protocol)?)
 }
 
-fn identify_pid(pid: u32) -> Result<Process> {
+pub(super) fn identify_pid(pid: u32) -> Result<Process> {
     if pid == 4 {
         // Windows denies OpenProcess(System), including for kernel-owned SMB.
         // The owner table already supplied the PID: retain that known identity,
@@ -354,6 +370,18 @@ mod snapshot_tests {
             assert_eq!(owners.len(), 2);
             assert_eq!(owners.get(&outgoing), Some(&std::process::id()));
             assert_eq!(owners.get(&incoming), Some(&std::process::id()));
+
+            let mut connected = Vec::new();
+            visit_live_tcp(outgoing.source.is_ipv4(), |flow, pid, status| {
+                if flow == outgoing || flow == incoming {
+                    assert_eq!(pid, std::process::id());
+                    assert_eq!(status, Status::Active);
+                    connected.push(flow);
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert!(connected.contains(&outgoing) && connected.contains(&incoming));
         }
     }
 

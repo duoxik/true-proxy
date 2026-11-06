@@ -6,6 +6,8 @@ use std::path::Path;
 #[cfg(windows)]
 pub mod windows;
 #[cfg(windows)]
+pub use windows::passive::PassiveConnections;
+#[cfg(windows)]
 pub use windows::proxy_location;
 #[cfg(windows)]
 pub use windows::{
@@ -21,6 +23,25 @@ pub async fn proxy_location(_: &crate::config::Proxy) -> Option<String> {
 #[cfg(not(windows))]
 pub fn local_clock() -> Option<(u16, u16, u16)> {
     None
+}
+
+#[cfg(not(windows))]
+#[derive(Default)]
+pub struct PassiveConnections {
+    _unsupported: (),
+}
+
+#[cfg(not(windows))]
+impl PassiveConnections {
+    pub fn sample(
+        &mut self,
+        _: &crate::config::Config,
+        _: &std::sync::Arc<crate::connections::Connections>,
+        _: crate::connections::HistoryEvent,
+    ) -> Result<()> {
+        Ok(())
+    }
+    pub fn clear(&mut self) {}
 }
 
 #[derive(Clone)]

@@ -269,7 +269,8 @@ mod tests {
             now + Duration::from_secs(3600),
             Some(&live)
         ));
-        record.finish(Status::Stopped, "Journal hidden");
+        stats.activity.set_tracking(false);
+        assert_eq!(record.status(), Status::Active);
         assert!(
             decision.keep(
                 flow,
@@ -290,7 +291,7 @@ mod tests {
                 now + Duration::from_secs(3600),
                 Some(&live)
             ),
-            "Recording was never enabled for this live socket"
+            "A live socket may be omitted when the monitor reaches its capacity"
         );
         assert!(!decision.keep(
             flow,
@@ -359,8 +360,10 @@ mod tests {
                 .unwrap();
             let (local, _) = listener.accept().await.unwrap();
             let stats = Arc::new(Statistics::default());
-            stats.activity.set_tracking(true);
-            stats.activity.set_only_active(false);
+            if reject {
+                stats.activity.set_tracking(true);
+                stats.activity.set_only_active(false);
+            }
             let flow = FlowKey {
                 source: client.local_addr().unwrap(),
                 destination: "203.0.113.1:443".parse().unwrap(),
@@ -413,6 +416,9 @@ mod tests {
                 .await
                 .unwrap();
                 assert_eq!(record.status(), Status::Active);
+                stats.activity.set_tracking(true);
+                stats.activity.set_only_active(false);
+                assert_eq!(stats.activity.snapshots()[0].status, Status::Active);
                 client.write_all(b"hello").await.unwrap();
                 client.shutdown().await.unwrap();
                 let mut reply = Vec::new();
@@ -896,7 +902,15 @@ fn capture(context: CaptureContext) -> Result<()> {
             {
                 let table = nat.lock().unwrap();
                 decisions.retain(|(flow, tcp), decision| {
-                    decision.keep(*flow, *tcp, &table, now, tcp_owners.as_ref())
+                    let keep = decision.keep(*flow, *tcp, &table, now, tcp_owners.as_ref());
+                    if *tcp
+                        && !keep
+                        && let Some(record) = &decision.record
+                        && !record.status().finished()
+                    {
+                        record.finish(Status::Closed, "Socket no longer present");
+                    }
+                    keep
                 });
             }
             udp.cleanup();
@@ -957,8 +971,15 @@ fn capture(context: CaptureContext) -> Result<()> {
                         },
                         packet.flow.destination,
                     );
-                    let tracking = stats.activity.tracking();
-                    if tracking || stats.log_tracking() {
+                    if let Some(old) = d.record.take() {
+                        old.finish(Status::Closed, "Route changed");
+                    }
+                    let observe = match &action {
+                        Action::Direct => true,
+                        Action::Block => stats.activity.tracking(),
+                        Action::Proxy(_) => false,
+                    };
+                    if observe || stats.log_tracking() {
                         let route = match &action {
                             Action::Direct => "Direct".into(),
                             Action::Block => "Block".into(),
@@ -976,10 +997,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                             &route,
                             &detail,
                         );
-                        if tracking {
-                            if let Some(old) = d.record.take() {
-                                old.finish(Status::Closed, "Route changed");
-                            }
+                        if observe {
                             let info = Info {
                                 pid: d.owner.pid,
                                 process: d.owner.name.clone(),
@@ -1046,24 +1064,32 @@ fn capture(context: CaptureContext) -> Result<()> {
             if !tcp {
                 stamp = generations.stamp(owner.pid, packet.flow, false);
             }
-            let action = if owner.pid == std::process::id() {
+            let own_process = owner.pid == std::process::id();
+            let names = if own_process {
+                Vec::new()
+            } else {
+                domains.lock().unwrap().lookup(packet.flow.destination.ip())
+            };
+            let flow = Flow {
+                process_name: &owner.name,
+                process_path: &owner.path,
+                destination: packet.flow.destination,
+                protocol: packet.protocol,
+                domains: &names,
+            };
+            let action = if own_process {
                 Action::Direct
             } else {
-                let names = domains.lock().unwrap().lookup(packet.flow.destination.ip());
-                rules::resolve(
-                    &config,
-                    &Flow {
-                        process_name: &owner.name,
-                        process_path: &owner.path,
-                        destination: packet.flow.destination,
-                        protocol: packet.protocol,
-                        domains: &names,
-                    },
-                )
+                rules::resolve(&config, &flow)
+            };
+            let needs_syn = tcp && matches!(action, Action::Proxy(_)) && !packet.is_syn();
+            let observe = match &action {
+                Action::Direct => true,
+                Action::Block => stats.activity.tracking(),
+                Action::Proxy(_) => tcp && !needs_syn,
             };
             let mut record = None;
-            let tracking = stats.activity.tracking();
-            if owner.pid != std::process::id() && (tracking || stats.log_tracking()) {
+            if !own_process && (observe || stats.log_tracking()) {
                 let route = match &action {
                     Action::Direct => "Direct".into(),
                     Action::Block => "Block".into(),
@@ -1072,17 +1098,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                         .map(|p| p.name.clone())
                         .unwrap_or_else(|_| "Proxy not found".into()),
                 };
-                let names = domains.lock().unwrap().lookup(packet.flow.destination.ip());
-                let explanation = rules::explanation(
-                    &config,
-                    &Flow {
-                        process_name: &owner.name,
-                        process_path: &owner.path,
-                        destination: packet.flow.destination,
-                        protocol: packet.protocol,
-                        domains: &names,
-                    },
-                );
+                let explanation = rules::explanation(&config, &flow);
                 stats.log(
                     LogSource::Connections,
                     LogLevel::Info,
@@ -1091,7 +1107,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                     &route,
                     &explanation,
                 );
-                if tracking {
+                if observe {
                     let info = Info {
                         pid: owner.pid,
                         process: owner.name.clone(),
@@ -1105,7 +1121,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                     };
                     if action == Action::Block {
                         stats.activity.completed(info, Status::Blocked);
-                    } else if tcp || action == Action::Direct {
+                    } else {
                         record = stats.activity.start(
                             info,
                             if action == Action::Direct && (!tcp || !packet.is_syn()) {
@@ -1121,10 +1137,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 && tcp
             {
                 // Do not take over a TCP connection established before interception began.
-                if !packet.is_syn() {
-                    if let Some(c) = &record {
-                        c.finish(Status::Blocked, "A new TCP connection is required");
-                    }
+                if needs_syn {
                     stats.blocked.fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
@@ -1186,10 +1199,9 @@ fn capture(context: CaptureContext) -> Result<()> {
             action
         };
         if let Some(d) = decisions.get_mut(&key) {
-            if !stats.activity.tracking()
-                || d.record
-                    .as_ref()
-                    .is_some_and(|record| record.status() == Status::Stopped)
+            if d.record
+                .as_ref()
+                .is_some_and(|record| record.status() == Status::Stopped)
             {
                 d.record = None;
             }

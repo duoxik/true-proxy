@@ -196,16 +196,24 @@ fn config(proxies: Vec<Proxy>) -> Config {
 }
 
 #[tokio::test]
-async fn closing_and_reopening_the_journal_preserves_udp_transport_and_does_not_backfill() {
+async fn opening_the_journal_shows_live_udp_peers_without_restarting_transport() {
     let mut mock = Mock::new("p").await;
     let mut f = Fixture::new(config(vec![mock.proxy.clone()]));
+    f.stats.activity.set_tracking(false);
     f.send("p", "203.0.113.7:3478", b"before").unwrap();
     let before = mock.frame().await;
     before.reply("203.0.113.7:3478", b"before reply").await;
     f.packet("203.0.113.7:3478", b"before reply").await;
     assert_eq!(f.stats.connections.load(Ordering::Relaxed), 1);
-    f.stats.activity.set_tracking(false);
+    assert!(f.stats.activity.snapshots().is_empty());
     f.stats.activity.set_tracking(true);
+    let rows = f.stats.activity.snapshots();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].info.destination,
+        "203.0.113.7:3478".parse().unwrap()
+    );
+    assert_eq!(rows[0].status, Status::Active);
     f.send("p", "203.0.113.7:3478", b"after").unwrap();
     let after = mock.frame().await;
     assert_eq!(before.association, after.association);
@@ -213,12 +221,12 @@ async fn closing_and_reopening_the_journal_preserves_udp_transport_and_does_not_
     after.reply("203.0.113.7:3478", b"after reply").await;
     f.packet("203.0.113.7:3478", b"after reply").await;
     assert_eq!(f.stats.connections.load(Ordering::Relaxed), 1);
-    assert!(f.stats.activity.snapshots().is_empty());
+    assert_eq!(f.stats.activity.snapshots()[0].id, rows[0].id);
     f.send("p", "198.51.100.9:3097", b"new peer").unwrap();
     let new = mock.frame().await;
     assert_eq!(new.association, after.association);
     let rows = f.stats.activity.snapshots();
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
     assert_eq!(
         rows[0].info.destination,
         "198.51.100.9:3097".parse().unwrap()

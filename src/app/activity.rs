@@ -1,11 +1,13 @@
-use super::{bytes, model, routing};
+use super::{bytes, model, report, routing};
 use crate::{ConnectionMonitor, LogRow, MainWindow, ProcessSummary};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{
     collections::{BTreeMap, HashSet},
+    path::PathBuf,
+    rc::Rc,
     sync::{Arc, atomic::Ordering},
 };
-use true_proxy::{connections::Snapshot, engine::Statistics};
+use true_proxy::{config::Action, connections::Snapshot, engine::Statistics};
 
 mod filters;
 
@@ -16,19 +18,23 @@ pub fn observable(ui: &MainWindow) -> bool {
 
 pub fn sync_tracking(ui: &MainWindow, statistics: &Statistics) {
     let tracking = observable(ui);
-    if statistics.activity.tracking() != tracking {
-        statistics.activity.set_tracking(tracking);
+    let was_tracking = statistics.activity.tracking();
+    if !tracking && was_tracking {
+        statistics.activity.set_tracking(false);
     }
-    let only_active = !filters::history_enabled(ui);
+    let finished_statuses = filters::selected_finished_statuses(ui);
     ui.global::<ConnectionMonitor>()
-        .set_only_active(only_active);
-    statistics.activity.set_only_active(only_active);
+        .set_only_active(finished_statuses.is_empty());
+    statistics.activity.set_history_statuses(&finished_statuses);
+    if tracking && !was_tracking {
+        statistics.activity.set_tracking(true);
+    }
 }
 
 pub fn suspend_tracking(ui: &MainWindow, statistics: &Statistics) {
     statistics.activity.set_tracking(false);
     clear(ui);
-    filters::refresh(ui, &[]);
+    filters::refresh(ui);
 }
 
 fn clear(ui: &MainWindow) {
@@ -42,7 +48,21 @@ fn clear(ui: &MainWindow) {
     monitor.set_connection_omitted(0);
 }
 
-pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
+pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>, preferences_path: Option<PathBuf>) {
+    if let Some(path) = &preferences_path {
+        match filters::Preferences::load(path) {
+            Ok(Some(preferences)) => preferences.apply(ui),
+            Ok(None) => {}
+            Err(error) => report(ui, Err(error.context("Could not load connection filters"))),
+        }
+    }
+    let save = Rc::new(move |ui: &MainWindow| {
+        if let Some(path) = &preferences_path
+            && let Err(error) = filters::Preferences::save(ui, path)
+        {
+            report(ui, Err(error));
+        }
+    });
     let monitor = ui.global::<ConnectionMonitor>();
     let weak = ui.as_weak();
     let stats = statistics.clone();
@@ -53,35 +73,38 @@ pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
     });
     let weak = ui.as_weak();
     let stats = statistics.clone();
+    let save_statuses = save.clone();
     monitor.on_set_only_active(move |only_active| {
         if let Some(ui) = weak.upgrade() {
             let selected = if only_active {
                 filters::default_statuses()
             } else {
-                filters::STATUSES
-                    .iter()
-                    .map(|status| filters::status_key(*status))
-                    .collect()
+                filters::all_statuses()
             };
             ui.global::<ConnectionMonitor>()
                 .set_connection_status_selection(routing::strings(selected));
             render(&ui, &stats);
+            save_statuses(&ui);
         }
     });
     let weak = ui.as_weak();
     let stats = statistics.clone();
+    let save_routes = save.clone();
     monitor.on_toggle_connection_route(move |key, checked| {
         if let Some(ui) = weak.upgrade() {
             filters::toggle_route(&ui, &key, checked);
             render(&ui, &stats);
+            save_routes(&ui);
         }
     });
     let weak = ui.as_weak();
     let stats = statistics.clone();
+    let save_statuses = save.clone();
     monitor.on_toggle_connection_status(move |key, checked| {
         if let Some(ui) = weak.upgrade() {
             filters::toggle_status(&ui, &key, checked);
             render(&ui, &stats);
+            save_statuses(&ui);
         }
     });
     let weak = ui.as_weak();
@@ -90,6 +113,7 @@ pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
         if let Some(ui) = weak.upgrade() {
             filters::reset(&ui);
             render(&ui, &stats);
+            save(&ui);
         }
     });
     let weak = ui.as_weak();
@@ -114,12 +138,12 @@ pub fn wire(ui: &MainWindow, statistics: Arc<Statistics>) {
 }
 pub fn render(ui: &MainWindow, statistics: &Statistics) {
     sync_tracking(ui, statistics);
-    let rows = statistics.activity.snapshots();
-    filters::refresh(ui, &rows);
+    filters::refresh(ui);
     if !statistics.activity.tracking() {
         clear(ui);
         return;
     }
+    let rows = statistics.activity.snapshots();
     let monitor = ui.global::<ConnectionMonitor>();
     let uploaded = statistics.uploaded.load(Ordering::Relaxed);
     let downloaded = statistics.downloaded.load(Ordering::Relaxed);
@@ -148,7 +172,7 @@ pub fn render(ui: &MainWindow, statistics: &Statistics) {
     for row in &rows {
         let mut key = row.info.process.to_lowercase();
         if (!query.is_empty() && !key.contains(&query))
-            || (!all_routes && !selected_routes.contains(&filters::route_key(&row.info.action)))
+            || (!all_routes && !selected_routes.contains(filters::route_key(&row.info.action)))
             || !selected_statuses.contains(&filters::status_key(row.status))
         {
             continue;
@@ -214,7 +238,11 @@ pub fn render(ui: &MainWindow, statistics: &Statistics) {
                                     },
                                 )
                                 .into(),
-                            route: r.info.route.into(),
+                            route: if matches!(r.info.action, Action::Proxy(_)) {
+                                format!("Proxy · {}", r.info.route).into()
+                            } else {
+                                r.info.route.into()
+                            },
                             message: r.info.detail.into(),
                             status: r.status.label().into(),
                             state: r.status as i32,
@@ -281,6 +309,12 @@ mod tests {
     };
     fn window(proxies: &[(&str, &str)]) -> (MainWindow, Arc<Statistics>) {
         i_slint_backend_testing::init_no_event_loop();
+        window_with_preferences(proxies, None)
+    }
+    fn window_with_preferences(
+        proxies: &[(&str, &str)],
+        preferences: Option<PathBuf>,
+    ) -> (MainWindow, Arc<Statistics>) {
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1120., 780.));
         ui.set_page(3);
@@ -296,7 +330,7 @@ mod tests {
         ));
         ui.show().unwrap();
         let stats = Arc::new(Statistics::default());
-        wire(&ui, stats.clone());
+        wire(&ui, stats.clone(), preferences);
         assert!(stats.activity.tracking());
         (ui, stats)
     }
@@ -343,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn process_search_and_route_checkboxes_preserve_ids_expansion_and_stable_models() {
+    fn process_search_and_route_checkboxes_group_proxies_and_preserve_stable_models() {
         let (ui, stats) = window(&[("p1", "VPN"), ("p2", "VPN")]);
         let monitor = ui.global::<ConnectionMonitor>();
         let _game = start(
@@ -370,6 +404,7 @@ mod tests {
         assert_eq!(monitor.get_total_traffic(), "6.0 KB");
         let stable = monitor.get_process_summaries();
         let children = stable.row_data(0).unwrap().connections;
+        assert_eq!(children.row_data(0).unwrap().route, "Proxy · VPN");
         let route_models = monitor.get_connection_route_filters();
         render(&ui, &stats);
         assert!(stable == monitor.get_process_summaries());
@@ -383,7 +418,29 @@ mod tests {
         );
         assert!(route_models == monitor.get_connection_route_filters());
         assert!(monitor.get_only_active());
-        assert_eq!(monitor.get_filtered_event_count(), 3);
+        assert_eq!(monitor.get_filtered_event_count(), 2);
+        assert_eq!(monitor.get_connection_route_summary(), "Proxy");
+        assert_eq!(
+            route_models
+                .iter()
+                .map(|row| (row.label.to_string(), row.checked))
+                .collect::<Vec<_>>(),
+            [
+                ("All".to_owned(), false),
+                ("Proxy".to_owned(), true),
+                ("Direct".to_owned(), false),
+                ("Blocked".to_owned(), false),
+            ]
+        );
+        assert_eq!(
+            monitor
+                .get_connection_status_filters()
+                .iter()
+                .filter(|row| row.checked)
+                .map(|row| row.label.to_string())
+                .collect::<Vec<_>>(),
+            ["Connecting", "Active", "Closing"]
+        );
         assert_eq!(
             ElementHandle::find_by_accessible_label(&ui, "Only active connections").count(),
             0
@@ -413,33 +470,15 @@ mod tests {
         }
         query(&ui, "");
         click(&ui, "Filter routes", 0);
-        click(&ui, "Route: All", 0);
+        click(&ui, "Route: Proxy", 0);
         assert_eq!(monitor.get_filtered_event_count(), 0);
-        click(&ui, "Route: VPN", 0);
-        assert_eq!(monitor.get_filtered_event_count(), 1);
+        click(&ui, "Route: Proxy", 0);
+        assert_eq!(monitor.get_filtered_event_count(), 2);
         assert_eq!(
             routing::values(monitor.get_connection_route_selection()),
-            ["proxy:p1"]
+            ["proxy"]
         );
-        click(&ui, "Route: VPN", 1);
-        assert_eq!(monitor.get_filtered_event_count(), 2);
-        ui.set_proxies(model(vec![
-            ProxyRow {
-                id: "p1".into(),
-                name: "Renamed".into(),
-                ..Default::default()
-            },
-            ProxyRow {
-                id: "p2".into(),
-                name: "VPN".into(),
-                ..Default::default()
-            },
-            ProxyRow {
-                id: "new".into(),
-                name: "New".into(),
-                ..Default::default()
-            },
-        ]));
+        ui.set_proxies(model(vec![]));
         let _new = start(
             &stats,
             "Game.exe",
@@ -450,27 +489,8 @@ mod tests {
         render(&ui, &stats);
         assert_eq!(
             monitor.get_filtered_event_count(),
-            2,
-            "A newly saved proxy must not expand an explicit subset"
-        );
-        assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Route: Renamed")
-                .next()
-                .unwrap()
-                .accessible_checked(),
-            Some(true)
-        );
-        ui.set_proxies(model(vec![ProxyRow {
-            id: "p2".into(),
-            name: "VPN".into(),
-            ..Default::default()
-        }]));
-        render(&ui, &stats);
-        assert_eq!(monitor.get_filtered_event_count(), 2);
-        assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Route: VPN (from history)").count(),
-            2,
-            "Deleted/pending proxy IDs must remain distinct choices"
+            3,
+            "Proxy includes every proxied connection regardless of the saved profile"
         );
         query(&ui, "GAME");
         assert!(
@@ -484,12 +504,19 @@ mod tests {
         assert_eq!(monitor.get_filtered_event_count(), 3);
         click(&ui, "Route: All", 0);
         assert_eq!(monitor.get_filtered_event_count(), 0);
+        click(&ui, "Search process name", 0);
+        click(&ui, "Reset filters", 0);
+        assert_eq!(monitor.get_connection_query(), "");
+        assert_eq!(monitor.get_connection_route_summary(), "Proxy");
+        assert!(monitor.get_connection_filters_default());
+        assert_eq!(monitor.get_filtered_event_count(), 3);
     }
 
     #[test]
     fn terminal_statuses_start_history_now_and_failed_proxy_is_not_blocked() {
         let (ui, stats) = window(&[("p1", "VPN")]);
         let monitor = ui.global::<ConnectionMonitor>();
+        monitor.invoke_set_only_active(true);
         let old = start(&stats, "old.exe", 1000, Action::Direct, Status::Active);
         old.finish(Status::Closed, "");
         let game = start(
@@ -510,10 +537,10 @@ mod tests {
         blocked.finish(Status::Blocked, "rule");
         let _active = start(&stats, "active.exe", 1004, Action::Direct, Status::Active);
         render(&ui, &stats);
-        assert_eq!(monitor.get_filtered_event_count(), 4);
+        assert_eq!(monitor.get_filtered_event_count(), 1);
         click(&ui, "Search process name", 0);
         click(&ui, "Filter routes", 0);
-        click(&ui, "Route: All", 0);
+        click(&ui, "Route: Proxy", 0);
         click(&ui, "Route: Blocked", 0);
         assert_eq!(monitor.get_filtered_event_count(), 1);
         assert_eq!(
@@ -521,13 +548,14 @@ mod tests {
             "block.exe"
         );
         click(&ui, "Route: Blocked", 0);
-        click(&ui, "Route: VPN", 0);
+        click(&ui, "Route: Proxy", 0);
         assert_eq!(monitor.get_filtered_event_count(), 1);
         assert_eq!(
             monitor.get_process_summaries().row_data(0).unwrap().name,
             "game.exe"
         );
         click(&ui, "Route: All", 0);
+        assert_eq!(monitor.get_filtered_event_count(), 4);
         click(&ui, "Search process name", 0);
         click(&ui, "Filter statuses", 0);
         click(&ui, "Status: Connecting", 0);
@@ -553,23 +581,60 @@ mod tests {
     }
 
     #[test]
-    fn journal_keeps_filters_and_core_counters_across_navigation_and_hide() {
+    fn selecting_another_finished_status_does_not_backfill_it() {
+        let (ui, stats) = window(&[]);
+        let monitor = ui.global::<ConnectionMonitor>();
+        click(&ui, "Filter statuses", 0);
+        click(&ui, "Status: Closed", 0);
+        let old = start(
+            &stats,
+            "old.exe",
+            1000,
+            Action::Proxy("vpn".into()),
+            Status::Connecting,
+        );
+        old.finish(Status::Failed, "");
+        click(&ui, "Status: Failed", 0);
+        assert_eq!(monitor.get_filtered_event_count(), 0);
+        let fresh = start(
+            &stats,
+            "fresh.exe",
+            1001,
+            Action::Proxy("vpn".into()),
+            Status::Connecting,
+        );
+        fresh.finish(Status::Failed, "");
+        render(&ui, &stats);
+        assert_eq!(monitor.get_filtered_event_count(), 1);
+        assert_eq!(
+            monitor.get_process_summaries().row_data(0).unwrap().name,
+            "fresh.exe"
+        );
+    }
+
+    #[test]
+    fn reopening_keeps_live_connections_and_filters_but_discards_completed_history() {
         let (ui, stats) = window(&[]);
         let monitor = ui.global::<ConnectionMonitor>();
         let game = start(&stats, "game.exe", 1001, Action::Direct, Status::Active);
+        let old = start(&stats, "game.exe", 1002, Action::Direct, Status::Active);
+        click(&ui, "Filter statuses", 0);
+        click(&ui, "Status: Closed", 0);
+        click(&ui, "Search process name", 0);
+        old.finish(Status::Closed, "");
         let _counter = stats.connection("game.exe");
         stats.uploaded.store(42, Ordering::Relaxed);
         render(&ui, &stats);
-        click(&ui, "Connections for game.exe", 0);
         click(&ui, "Filter routes", 0);
-        click(&ui, "Route: All", 0);
+        click(&ui, "Route: Proxy", 0);
         click(&ui, "Route: Direct", 0);
         click(&ui, "Search process name", 0);
+        click(&ui, "Connections for game.exe", 0);
         click(&ui, "Filter statuses", 0);
         click(&ui, "Status: Failed", 0);
         click(&ui, "Search process name", 0);
         query(&ui, "GAME");
-        assert_eq!(monitor.get_filtered_event_count(), 1);
+        assert_eq!(monitor.get_filtered_event_count(), 2);
 
         ui.set_page(0);
         render(&ui, &stats);
@@ -578,18 +643,19 @@ mod tests {
         assert_eq!(monitor.get_process_summaries().row_count(), 0);
         assert_eq!(stats.uploaded.load(Ordering::Relaxed), 42);
         assert_eq!(stats.connections.load(Ordering::Relaxed), 1);
-        assert!(stats.activity.start(game.info(), Status::Active).is_none());
-        game.finish(Status::Failed, "late error");
+        game.finish(Status::Closed, "while hidden");
+        let _current = start(&stats, "game.exe", 1003, Action::Direct, Status::Active);
 
         ui.set_page(3);
         render(&ui, &stats);
         assert!(stats.activity.tracking());
-        assert!(stats.activity.snapshots().is_empty());
+        let rows = stats.activity.snapshots();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, Status::Active);
+        assert_eq!(rows[0].info.source.port(), 1003);
         assert_eq!(monitor.get_connection_query(), "GAME");
         assert!(!monitor.get_connection_routes_all());
         assert!(!monitor.get_only_active());
-        let _new_game = start(&stats, "game.exe", 1002, Action::Direct, Status::Active);
-        render(&ui, &stats);
         assert_eq!(monitor.get_filtered_event_count(), 1);
         assert!(
             monitor
@@ -603,14 +669,15 @@ mod tests {
         render(&ui, &stats);
         assert!(!stats.activity.tracking());
         assert_eq!(monitor.get_process_summaries().row_count(), 0);
+        assert!(stats.activity.snapshots().is_empty());
         ui.show().unwrap();
         render(&ui, &stats);
         assert!(stats.activity.tracking());
-        assert!(stats.activity.snapshots().is_empty());
+        assert_eq!(monitor.get_filtered_event_count(), 1);
     }
 
     #[test]
-    fn monitor_keeps_many_route_filters_compact_at_minimum_size() {
+    fn monitor_keeps_route_filters_compact_even_with_many_configured_proxies() {
         let (ui, stats) = window(&[]);
         let monitor = ui.global::<ConnectionMonitor>();
         ui.set_proxies(model(
@@ -624,7 +691,7 @@ mod tests {
         ));
         ui.window().set_size(slint::LogicalSize::new(960., 640.));
         render(&ui, &stats);
-        assert_eq!(monitor.get_connection_route_filters().row_count(), 67);
+        assert_eq!(monitor.get_connection_route_filters().row_count(), 4);
         assert_eq!(monitor.get_connection_status_filters().row_count(), 8);
         let list = ElementHandle::find_by_element_id(&ui, "ConnectionsView::connection-list")
             .next()
@@ -642,30 +709,13 @@ mod tests {
             assert!(position.x >= 0. && position.x + size.width <= 960.);
             assert!(position.y >= 0. && position.y + size.height <= 640.);
         }
-        let routes = ElementHandle::find_by_accessible_label(&ui, "Filter routes")
-            .next()
-            .unwrap();
         assert_eq!(
             ElementHandle::find_by_accessible_label(&ui, "Route: All").count(),
             0
         );
         click(&ui, "Filter routes", 0);
-        click(&ui, "Route: All", 0);
+        click(&ui, "Route: Proxy", 0);
         assert!(!monitor.get_connection_routes_all());
-
-        // Wheel input uses window coordinates. The options scroll area starts
-        // just below the trigger and stays inside the window at minimum size.
-        let position = routes.absolute_position();
-        let size = routes.size();
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
-                position: slint::LogicalPosition::new(
-                    position.x + size.width / 2.,
-                    position.y + size.height + 48.,
-                ),
-                delta_x: 0.,
-                delta_y: -10000.,
-            });
         click(&ui, "Route: Blocked", 0);
         assert_eq!(
             routing::values(monitor.get_connection_route_selection()),
@@ -693,5 +743,47 @@ mod tests {
                 .accessible_checked(),
             Some(true)
         );
+    }
+
+    #[test]
+    fn filter_choices_survive_reopening_the_app_and_reset_restores_defaults() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory = std::env::temp_dir().join(format!(
+            "true-proxy-connection-filters-{}",
+            super::super::id()
+        ));
+        let path = directory.join("connections.json");
+        {
+            let (ui, _) = window_with_preferences(&[], Some(path.clone()));
+            click(&ui, "Filter routes", 0);
+            click(&ui, "Route: All", 0);
+            click(&ui, "Search process name", 0);
+            click(&ui, "Filter statuses", 0);
+            click(&ui, "Status: Closed", 0);
+            click(&ui, "Status: Active", 0);
+        }
+        {
+            let (ui, _) = window_with_preferences(&[], Some(path.clone()));
+            let monitor = ui.global::<ConnectionMonitor>();
+            assert!(monitor.get_connection_routes_all());
+            assert_eq!(
+                routing::values(monitor.get_connection_status_selection()),
+                ["0", "2", "3"]
+            );
+            query(&ui, "browser");
+            click(&ui, "Reset filters", 0);
+            assert_eq!(monitor.get_connection_query(), "");
+            assert!(monitor.get_connection_filters_default());
+        }
+        let (ui, _) = window_with_preferences(&[], Some(path.clone()));
+        let monitor = ui.global::<ConnectionMonitor>();
+        assert!(monitor.get_connection_filters_default());
+        assert_eq!(monitor.get_connection_route_summary(), "Proxy");
+        assert_eq!(
+            routing::values(monitor.get_connection_status_selection()),
+            filters::default_statuses()
+        );
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 }

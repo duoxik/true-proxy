@@ -274,9 +274,7 @@ impl<A: Copy> State<A> {
                 .as_ref()
                 .is_some_and(|record| record.status().finished())
         {
-            // Journal sessions may end while the socket and peer stay alive.
-            // Never release transport slots/counters or recreate an old peer
-            // merely because the view was closed or its record expired.
+            // An expired record does not release the peer's transport slot.
             peer.record = None;
             peer._session = None;
         }
@@ -290,36 +288,32 @@ impl<A: Copy> State<A> {
                 return false;
             };
             let ctx = &self.shared.context;
-            let record = if ctx.stats.activity.tracking() {
-                let names = ctx.domains.lock().unwrap().lookup(remote.ip());
-                let info = Info {
-                    pid: self.key.pid,
-                    process: self.name.clone(),
-                    source: self.key.local,
-                    destination: remote,
-                    protocol: Protocol::Udp,
-                    route: ctx
-                        .config
-                        .proxy(&self.key.proxy)
-                        .map(|p| p.name.clone())
-                        .unwrap_or_default(),
-                    detail: rules::explanation(
-                        &ctx.config,
-                        &Flow {
-                            process_name: &self.name,
-                            process_path: &self.path,
-                            destination: remote,
-                            protocol: Protocol::Udp,
-                            domains: &names,
-                        },
-                    ),
-                    action: Action::Proxy(self.key.proxy.clone()),
-                    stamp,
-                };
-                ctx.stats.activity.start(info, status)
-            } else {
-                None
+            let names = ctx.domains.lock().unwrap().lookup(remote.ip());
+            let info = Info {
+                pid: self.key.pid,
+                process: self.name.clone(),
+                source: self.key.local,
+                destination: remote,
+                protocol: Protocol::Udp,
+                route: ctx
+                    .config
+                    .proxy(&self.key.proxy)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default(),
+                detail: rules::explanation(
+                    &ctx.config,
+                    &Flow {
+                        process_name: &self.name,
+                        process_path: &self.path,
+                        destination: remote,
+                        protocol: Protocol::Udp,
+                        domains: &names,
+                    },
+                ),
+                action: Action::Proxy(self.key.proxy.clone()),
+                stamp,
             };
+            let record = ctx.stats.activity.start(info, status);
             let lifetime = record.as_ref().map(Connection::session);
             self.peers.insert(
                 remote,

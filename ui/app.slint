@@ -6,8 +6,8 @@ import { Theme, UiIcon, ActionButton, Field, ThemedCheckBox, ThemedComboBox, Pro
 export { ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption }
 import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
-import { LogsView, TechnicalLogs, TechnicalLogRow } from "logs.slint";
-export { TechnicalLogs, TechnicalLogRow }
+import { LogsView, TechnicalLogs } from "logs.slint";
+export { TechnicalLogs }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -320,24 +320,6 @@ component RulePriority inherits Rectangle {
     }
 }
 
-component RuleCondition inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    height: 27px;
-    preferred-width: chip-text.preferred-width + 16px;
-    horizontal-stretch: 0;
-    border-radius: 8px;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.field;
-    chip-text := Text {
-        x: 8px; width: parent.width - 16px;
-        text: root.label + "  " + root.value;
-        color: Theme.secondary; font-size: 11px; font-weight: 500;
-        vertical-alignment: center; overflow: elide;
-    }
-}
-
 component RuleCard inherits Rectangle {
     in property <bool> enabled: true;
     height: content.preferred-height;
@@ -354,9 +336,26 @@ component RuleCard inherits Rectangle {
     }
 }
 
+component CountryFlag inherits Rectangle {
+    in property <int> index;
+    width: 16px;
+    Image {
+        width: parent.width;
+        height: 10px;
+        y: (parent.height - self.height) / 2;
+        source: @image-url("../assets/country-flags.png");
+        source-clip-x: Math.mod(root.index - 1, 16) * 32;
+        source-clip-y: Math.floor((root.index - 1) / 16) * 20;
+        source-clip-width: 32;
+        source-clip-height: 20;
+    }
+}
+
 component ProxyPreview inherits Rectangle {
     in property <ProxyRow> proxy;
     private property <bool> measured: root.proxy.health == 2 && root.proxy.status != "";
+    private property <bool> failed: root.proxy.health == 3;
+    private property <color> latency-ink: root.failed ? Theme.danger : root.measured ? Theme.success : Theme.muted;
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
@@ -365,13 +364,13 @@ component ProxyPreview inherits Rectangle {
     border-width: 1px;
     border-color: root.measured ? Theme.selection : Theme.border;
     background: Theme.field;
-    if root.measured: Rectangle {
+    if root.measured || root.failed: Rectangle {
         x: 5px;
         y: 9px;
         width: 3px;
         height: parent.height - 18px;
         border-radius: 2px;
-        background: Theme.success;
+        background: root.latency-ink;
     }
     HorizontalLayout {
         padding: 9px;
@@ -409,20 +408,31 @@ component ProxyPreview inherits Rectangle {
                 spacing: 8px;
                 alignment: start;
                 Text {
-                    text: "Latency  " + (root.measured ? root.proxy.status : "—");
-                    color: root.measured ? Theme.success : Theme.muted;
+                    text: "Latency  " + (root.failed ? "-1 ms" : root.measured ? root.proxy.status : "—");
+                    color: root.latency-ink;
                     font-size: 11px;
                     horizontal-stretch: 0;
                     vertical-alignment: center;
                 }
-                Text {
-                    text: "Location  " + (root.proxy.location == "" ? "—" : root.proxy.location);
-                    color: Theme.secondary;
-                    font-size: 11px;
+                HorizontalLayout {
+                    spacing: 4px;
                     min-width: 0px;
                     horizontal-stretch: 0;
-                    overflow: elide;
-                    vertical-alignment: center;
+                    Text {
+                        text: "Location";
+                        color: Theme.secondary;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    if root.proxy.flag-index > 0: CountryFlag { index: root.proxy.flag-index; }
+                    Text {
+                        text: root.proxy.location == "" ? "—" : root.proxy.location;
+                        color: Theme.secondary;
+                        font-size: 11px;
+                        min-width: 0px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
@@ -468,15 +478,11 @@ component RulePreview inherits Rectangle {
         Rectangle { horizontal-stretch: 1; }
         Rectangle {
             width: 44px;
-            if root.fixed-route: Text {
-                text: "On"; color: Theme.success; font-size: 11px;
-                horizontal-alignment: center; vertical-alignment: center;
-            }
-            if !root.fixed-route: RuleSwitch {
+            RuleSwitch {
                 label: "Rule " + root.name;
                 checked: root.active;
-                checked-color: Theme.success;
-                enabled: !root.busy;
+                checked-color: root.fixed-route ? Theme.muted : Theme.success;
+                enabled: !root.fixed-route && !root.busy;
                 toggled => { root.toggled(); }
             }
         }
@@ -541,6 +547,9 @@ component ProxyTableColumns inherits HorizontalLayout {
     in property <bool> partially-selected;
     in property <bool> selection-enabled: true;
     in property <bool> test-enabled: true;
+    private property <bool> measured: root.proxy.health == 2 && root.proxy.status != "";
+    private property <bool> failed: root.proxy.health == 3;
+    private property <color> latency-ink: root.failed ? Theme.danger : root.measured ? Theme.success : Theme.muted;
     callback select(bool);
     callback test-proxy;
     callback edit-proxy;
@@ -574,7 +583,7 @@ component ProxyTableColumns inherits HorizontalLayout {
     Rectangle {
         width: 78px;
         if root.heading: Text { width: parent.width; text: "PROTOCOL"; color: Theme.secondary; font-size: 10px; font-weight: 600; vertical-alignment: center; }
-        if !root.heading: RouteBadge { value: "SOCKS5"; width: 58px; height: 22px; y: (parent.height - self.height) / 2; }
+        if !root.heading: RouteBadge { x: 0px; value: "SOCKS5"; width: 58px; height: 22px; y: (parent.height - self.height) / 2; }
     }
     Text {
         text: root.heading ? "ADDRESS" : root.proxy.address;
@@ -588,29 +597,34 @@ component ProxyTableColumns inherits HorizontalLayout {
         overflow: elide;
         vertical-alignment: center;
     }
-    Text {
-        text: root.heading ? "LOCATION" : root.proxy.location == "" ? "—" : root.proxy.location;
-        color: root.heading || root.proxy.location != "" ? Theme.secondary : Theme.muted;
-        font-size: root.heading ? 10px : 12px;
-        font-weight: root.heading ? 600 : 400;
+    HorizontalLayout {
+        spacing: 4px;
         min-width: 0px;
         preferred-width: 0px;
         horizontal-stretch: 1.2;
-        overflow: elide;
-        vertical-alignment: center;
+        if !root.heading && root.proxy.flag-index > 0: CountryFlag { index: root.proxy.flag-index; }
+        Text {
+            text: root.heading ? "LOCATION" : root.proxy.location == "" ? "—" : root.proxy.location;
+            color: root.heading || root.proxy.location != "" ? Theme.secondary : Theme.muted;
+            font-size: root.heading ? 10px : 12px;
+            font-weight: root.heading ? 600 : 400;
+            min-width: 0px;
+            overflow: elide;
+            vertical-alignment: center;
+        }
     }
     Rectangle {
         width: 76px;
         if root.heading: Text { width: parent.width; text: "LATENCY"; color: Theme.secondary; font-size: 10px; font-weight: 600; vertical-alignment: center; }
         if !root.heading: HorizontalLayout {
             spacing: 5px;
-            if root.proxy.health == 2 && root.proxy.status != "": Rectangle {
+            if root.measured || root.failed: Rectangle {
                 width: 6px;
-                Rectangle { y: (parent.height - 6px) / 2; width: 6px; height: 6px; border-radius: 3px; background: Theme.success; }
+                Rectangle { y: (parent.height - 6px) / 2; width: 6px; height: 6px; border-radius: 3px; background: root.latency-ink; }
             }
             Text {
-                text: root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "—";
-                color: root.proxy.health == 2 && root.proxy.status != "" ? Theme.success : Theme.muted;
+                text: root.failed ? "-1 ms" : root.measured ? root.proxy.status : "—";
+                color: root.latency-ink;
                 font-size: 12px;
                 overflow: elide;
                 min-width: 0px;
@@ -664,7 +678,6 @@ export component MainWindow inherits Window {
     in property <bool> active: false;
     in property <bool> busy: false;
     in property <bool> routing-pending: false;
-    in-out property <bool> restart-prompt: false;
     in-out property <string> import-json;
     in property <[JsonLine]> import-lines;
     in property <bool> import-valid: false;
@@ -941,15 +954,15 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if root.routing-pending && root.active && !root.busy: Rectangle {
+                if root.routing-pending: Rectangle {
                     height: pending-content.preferred-height;
                     background: Theme.warning-surface;
                     border-radius: Theme.radius-medium;
                     pending-content := HorizontalLayout {
                         padding: 12px;
                         spacing: 14px;
-                        Text { text: "Configuration changed. Restart routing to apply your changes."; color: Theme.warning; font-size: 12px; vertical-alignment: center; wrap: word-wrap; min-width: 0px; }
-                        ActionButton { label: "Restart…"; height: 34px; clicked => { root.restart-prompt = true; } }
+                        Text { text: "Restart to apply configuration changes. Routing will pause briefly and proxy connections will close."; color: Theme.warning; font-size: 12px; vertical-alignment: center; wrap: word-wrap; min-width: 0px; }
+                        ActionButton { label: "Restart"; height: 34px; enabled: root.active && !root.busy; clicked => { root.restart-routing(); } }
                     }
                 }
                 if root.page == 0: ScrollView {
@@ -994,8 +1007,7 @@ export component MainWindow inherits Window {
                                     Text { text: "Proxies"; color: Theme.text; font-size: 15px; font-weight: 600; width: 54px; vertical-alignment: center; }
                                     Rectangle { width: 42px; CountPill { value: root.proxies.length; y: (parent.height - self.height) / 2; } }
                                     Rectangle { horizontal-stretch: 1; }
-                                    if root.proxies.length > 2: ActionButton { label: "View all"; accessible-label: "View all proxies"; height: 32px; clicked => { root.page = 2; } }
-                                    ActionButton { label: "Add Proxy"; icon: "plus"; height: 32px; clicked => { root.add-proxy(); } }
+                                    ActionButton { label: "View Proxies"; icon: "arrow-right"; height: 32px; clicked => { root.page = 2; } }
                                 }
                                 if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; height: 40px; vertical-alignment: center; }
                                 if root.proxies.length > 0: HorizontalLayout {
@@ -1029,8 +1041,7 @@ export component MainWindow inherits Window {
                                         }
                                     }
                                     Rectangle { horizontal-stretch: 1; }
-                                    if root.rules.length > 2: ActionButton { label: "View all"; accessible-label: "View all rules"; height: 32px; clicked => { root.page = 1; } }
-                                    ActionButton { label: "Add Rule"; icon: "plus"; accessible-label: "Add Routing Rule"; height: 32px; clicked => { root.add-rule(); } }
+                                    ActionButton { label: "View Rules"; icon: "arrow-right"; height: 32px; clicked => { root.page = 1; } }
                                 }
                                 VerticalLayout {
                                     spacing: 6px;
@@ -1105,13 +1116,19 @@ export component MainWindow inherits Window {
                                         spacing: 8px;
                                         RulePriority { number: 1; }
                                         Text { text: "Local"; accessible-label: "1. Local"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
-                                        Rectangle { width: 80px; RouteBadge { value: "Direct"; icon: "direct"; width: 80px; y: (parent.height - self.height) / 2; } }
+                                        Rectangle { width: 132px; RouteBadge { value: "Direct"; icon: "direct"; y: (parent.height - self.height) / 2; } }
+                                        RuleSwitch { checked: true; checked-color: Theme.switch-off; label: "Rule Local"; height: 36px; enabled: false; }
                                         ActionButton {
                                             label: "Edit local network"; icon: "edit"; icon-only: true;
                                             height: 36px; enabled: !root.busy;
                                             clicked => { root.edit-local-network(); }
                                         }
-                                        Rectangle { width: 18px; UiIcon { name: "lock"; ink: Theme.muted; y: (parent.height - self.height) / 2; } }
+                                        ActionButton { label: "Delete local rule"; icon: "trash"; icon-only: true; height: 36px; enabled: false; }
+                                        VerticalLayout {
+                                            spacing: 2px;
+                                            ActionButton { label: "Move local rule up"; icon: "chevron-up"; icon-only: true; min-width: 24px; max-width: 24px; height: 17px; enabled: false; }
+                                            ActionButton { label: "Move local rule down"; icon: "chevron-down"; icon-only: true; min-width: 24px; max-width: 24px; height: 17px; enabled: false; }
+                                        }
                                     }
                                 }
                                 if root.rule-query != "" && root.visible-rules.length == 0: Text {
@@ -1162,15 +1179,6 @@ export component MainWindow inherits Window {
                                             }
                                         }
                                     }
-                                    Rectangle { height: 1px; background: Theme.border; }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        alignment: start;
-                                        RuleCondition { label: "Apps"; value: rule.apps == 0 ? "Any" : "" + rule.apps; }
-                                        RuleCondition { label: "Hosts"; value: rule.hosts == 0 ? "Any" : "" + rule.hosts; }
-                                        RuleCondition { label: "Ports"; value: rule.ports == 0 ? "Any" : "" + rule.ports; }
-                                        RuleCondition { label: "Protocol"; value: rule.protocol; }
-                                    }
                                 }
                                 fallback-card := RuleCard {
                                     HorizontalLayout {
@@ -1182,15 +1190,6 @@ export component MainWindow inherits Window {
                                             fallback-selector := FallbackSelector { label: root.fallback-label; proxies: root.proxies; enabled: !root.busy; selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); } }
                                         }
                                         Rectangle { width: 18px; UiIcon { name: "lock"; ink: Theme.muted; y: (parent.height - self.height) / 2; } }
-                                    }
-                                    Rectangle { height: 1px; background: Theme.border; }
-                                    HorizontalLayout {
-                                        spacing: 6px;
-                                        alignment: start;
-                                        RuleCondition { label: "Apps"; value: "Any"; }
-                                        RuleCondition { label: "Hosts"; value: "Any"; }
-                                        RuleCondition { label: "Ports"; value: "Any"; }
-                                        RuleCondition { label: "Protocol"; value: "TCP + UDP"; }
                                     }
                                 }
                             }
@@ -1497,7 +1496,13 @@ export component MainWindow inherits Window {
                             Field { label: "Username"; value <=> root.form-username; edited => { root.proxy-form-edited(); } }
                             Field { label: "Password"; secret: true; placeholder: root.form-id != "" ? "Leave blank to keep the password" : "SOCKS5 password"; value <=> root.form-password; edited => { root.proxy-form-edited(); } }
                         }
-                        if root.probe-busy: Text { text: root.form-probe-status; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                        if root.form-probe-status != "": Text {
+                            text: root.form-probe-status;
+                            color: root.form-probe-health == 3 ? Theme.danger : root.form-probe-health == 2 ? Theme.success : Theme.secondary;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            height: self.preferred-height;
+                        }
                     }
                 }
                 if root.dialog == 2: rule-scroll := ScrollView {
@@ -1575,22 +1580,6 @@ export component MainWindow inherits Window {
                 if root.notice != "": Text { text: root.notice; color: Theme.warning; font-size: 11px; wrap: word-wrap; }
                 Text { text: "Selected: " + root.process-selected-count; color: Theme.secondary; font-size: 11px; }
                 HorizontalLayout { spacing: 8px; alignment: end; ActionButton { label: "Back"; clicked => { root.process-picker = false; } } ActionButton { label: "Add Selected"; primary: true; enabled: root.process-selected-count > 0; clicked => { root.add-selected-processes(); } } }
-            }
-        }
-    }
-    if root.restart-prompt && root.active: Rectangle { background: Theme.overlay; TouchArea { }
-        Rectangle { width: min(parent.width - 24px, 480px); height: 300px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            border-radius: Theme.radius-large;
-            background: Theme.surface;
-            border-width: 1px;
-            border-color: Theme.border;
-            VerticalLayout { padding: 18px; spacing: 14px;
-                Text { text: "Configuration Saved"; color: Theme.text; font-size: 18px; font-weight: 600; vertical-stretch: 0; wrap: word-wrap; }
-                Text { text: "Restart the proxy to apply these changes. Routing will pause briefly and existing proxy connections will close."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
-                VerticalLayout { spacing: 8px;
-                    HorizontalLayout { alignment: end; ActionButton { label: "Apply Later"; clicked => { root.restart-prompt = false; } } }
-                    HorizontalLayout { alignment: end; ActionButton { label: "Restart Proxy"; primary: true; enabled: !root.busy; clicked => { root.restart-routing(); } } }
-                }
             }
         }
     }

@@ -1,13 +1,11 @@
-True Proxy 0.9.0
+True Proxy 0.10.0
 
-- Dashboard shows transfer totals, live upload and download rates, and compact routing rows with switches for user rules.
-- Proxies and Dashboard show latency and exit location after a manual check. Location comes from an HTTPS request to IPinfo through the selected SOCKS5 proxy.
-- Connections opens in the main window with traffic totals, process search, and multi-select route and status menus. Start times use the Windows local clock.
-- Network → Logs shows backend and connection events with level and source filters. Follow starts off.
-- Routing Rules has search and compact rule cards. Local remains the first Direct rule and its CIDRs can be edited. A running engine applies saved changes after an explicit restart.
-
-Existing profiles use the same default Local ranges. Custom Local CIDRs stay in the device profile when importing or exporting portable JSON. Restore the default ranges before opening a customized profile in v0.8.0.
+- Connections shows current traffic when routing is active and observes system TCP connections when routing is paused. Paused rows show the route that the saved rules would select. Passive observation samples once a second and may miss short-lived sockets. UDP session details are available while routing is active.
+- Connections remembers route and status selections. Reset restores Proxy, Connecting, Active and Closing and clears the process search. Each completed status starts recording from the moment it is selected. The ROUTE column shows proxied connections as `Proxy · name`.
+- Network → Logs supports text selection and copying, Clear and a Start / Pause control that remembers its state. The buffer holds the latest 256 lines. Follow starts off.
+- SOCKS checks run at startup and every 20 seconds. Dashboard and Proxies show latency or a red `-1 ms` when the check fails. Manual GeoIP results show the exit country flag next to the location. Check results appear inline.
+- Saved routing changes show a Restart banner while routing is active. Dashboard links open Proxies and Rules directly. Rule rows are more compact, and fixed rules show disabled controls.
 
 Windows x64. WinDivert is bundled in the executable. Windows resolves DNS. The interception backend is experimental.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.9.0/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.10.0/docs/branding/slint-badge.png)](https://slint.dev)

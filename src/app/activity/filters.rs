@@ -1,16 +1,22 @@
 use super::{model, routing};
 use crate::{ConnectionFilterOption, ConnectionMonitor, MainWindow};
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use std::collections::{BTreeMap, HashSet};
-use true_proxy::{
-    config::Action,
-    connections::{Snapshot, Status},
+use std::{
+    collections::HashSet,
+    fs::{self, File},
+    io::{ErrorKind, Read, Write},
+    path::Path,
 };
+use true_proxy::{config::Action, connections::Status, platform};
 
-pub const ALL: &str = "all";
-const MAX_SELECTED_ROUTES: usize =
-    64 + true_proxy::connections::MAX_ACTIVE + true_proxy::connections::MAX_COMPLETED + 2;
-pub const STATUSES: [Status; 7] = [
+const ALL: &str = "all";
+const PROXY: &str = "proxy";
+const DIRECT: &str = "direct";
+const BLOCK: &str = "block";
+const ROUTES: [(&str, &str); 3] = [(PROXY, "Proxy"), (DIRECT, "Direct"), (BLOCK, "Blocked")];
+const STATUSES: [Status; 7] = [
     Status::Connecting,
     Status::Active,
     Status::Closing,
@@ -20,20 +26,100 @@ pub const STATUSES: [Status; 7] = [
     Status::Stopped,
 ];
 
-pub fn route_key(action: &Action) -> String {
+#[derive(Deserialize, Serialize)]
+pub struct Preferences {
+    routes: Vec<String>,
+    statuses: Vec<String>,
+}
+
+impl Preferences {
+    pub fn load(path: &Path) -> Result<Option<Self>> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut contents = Vec::new();
+        file.take(4097).read_to_end(&mut contents)?;
+        ensure!(contents.len() <= 4096, "Connection filters exceed 4 KiB");
+        let preferences: Self =
+            serde_json::from_slice(&contents).context("Could not read connection filters")?;
+        ensure!(
+            preferences.routes == [ALL]
+                || ROUTES
+                    .iter()
+                    .filter(|(route, _)| preferences
+                        .routes
+                        .iter()
+                        .any(|key| key.as_str() == *route))
+                    .count()
+                    == preferences.routes.len(),
+            "Invalid route filters"
+        );
+        ensure!(
+            STATUSES
+                .iter()
+                .filter(|status| preferences.statuses.contains(&status_key(**status)))
+                .count()
+                == preferences.statuses.len(),
+            "Invalid status filters"
+        );
+        Ok(Some(preferences))
+    }
+
+    pub fn apply(self, ui: &MainWindow) {
+        let monitor = ui.global::<ConnectionMonitor>();
+        let all = self.routes == [ALL] || self.routes.len() == ROUTES.len();
+        monitor.set_connection_routes_all(all);
+        monitor.set_connection_route_selection(routing::strings(if all {
+            vec![]
+        } else {
+            self.routes
+        }));
+        monitor.set_connection_status_selection(routing::strings(self.statuses));
+    }
+
+    pub fn save(ui: &MainWindow, path: &Path) -> Result<()> {
+        let monitor = ui.global::<ConnectionMonitor>();
+        let preferences = Self {
+            routes: if monitor.get_connection_routes_all() {
+                vec![ALL.into()]
+            } else {
+                routing::values(monitor.get_connection_route_selection())
+            },
+            statuses: routing::values(monitor.get_connection_status_selection()),
+        };
+        fs::create_dir_all(
+            path.parent()
+                .context("Missing connection filters directory")?,
+        )?;
+        let temporary = path.with_extension("tmp");
+        let mut file = File::create(&temporary)?;
+        file.write_all(&serde_json::to_vec(&preferences)?)?;
+        file.sync_all()?;
+        drop(file);
+        platform::replace_file(&temporary, path).context("Could not save connection filters")
+    }
+}
+
+pub fn route_key(action: &Action) -> &'static str {
     match action {
-        Action::Direct => "direct".into(),
-        Action::Block => "block".into(),
-        Action::Proxy(id) => format!("proxy:{id}"),
+        Action::Direct => DIRECT,
+        Action::Block => BLOCK,
+        Action::Proxy(_) => PROXY,
     }
 }
 pub fn status_key(status: Status) -> String {
     (status as u8).to_string()
 }
+pub fn all_statuses() -> Vec<String> {
+    STATUSES.into_iter().map(status_key).collect()
+}
 pub fn default_statuses() -> Vec<String> {
-    STATUSES[..3]
-        .iter()
-        .map(|status| status_key(*status))
+    STATUSES
+        .into_iter()
+        .filter(|status| !status.finished())
+        .map(status_key)
         .collect()
 }
 pub fn selected_statuses(ui: &MainWindow) -> HashSet<String> {
@@ -45,97 +131,62 @@ pub fn selected_statuses(ui: &MainWindow) -> HashSet<String> {
     .filter(|key| STATUSES.iter().any(|status| status_key(*status) == *key))
     .collect()
 }
-pub fn history_enabled(ui: &MainWindow) -> bool {
+pub fn selected_finished_statuses(ui: &MainWindow) -> Vec<Status> {
     let selected = selected_statuses(ui);
     STATUSES
-        .iter()
-        .any(|status| status.finished() && selected.contains(&status_key(*status)))
+        .into_iter()
+        .filter(|status| status.finished() && selected.contains(&status_key(*status)))
+        .collect()
 }
-pub fn is_default(ui: &MainWindow) -> bool {
-    let monitor = ui.global::<ConnectionMonitor>();
-    monitor.get_connection_query().is_empty()
-        && monitor.get_connection_routes_all()
-        && selected_statuses(ui) == default_statuses().into_iter().collect()
-}
-fn option(key: String, label: String, checked: bool) -> ConnectionFilterOption {
+fn option(key: &str, label: &str, checked: bool) -> ConnectionFilterOption {
     ConnectionFilterOption {
         key: key.into(),
         label: label.into(),
         checked,
     }
 }
-pub fn refresh(ui: &MainWindow, snapshots: &[Snapshot]) {
+pub fn refresh(ui: &MainWindow) {
     let monitor = ui.global::<ConnectionMonitor>();
     let all = monitor.get_connection_routes_all();
-    let selected = routing::values(monitor.get_connection_route_selection())
-        .into_iter()
-        .collect::<HashSet<_>>();
-    let mut choices = vec![option(ALL.into(), "All".into(), all)];
-    let mut known = HashSet::new();
-    for proxy in ui.get_proxies().iter().take(64) {
-        if known.insert(proxy.id.to_string()) {
-            let key = route_key(&Action::Proxy(proxy.id.to_string()));
-            choices.push(option(
-                key.clone(),
-                proxy.name.to_string(),
-                all || selected.contains(&key),
-            ));
-        }
-    }
-    // Active backend snapshots can refer to an older saved configuration. Retain
-    // those IDs, without conflating same-named proxies or changing their route.
-    let mut observed = BTreeMap::new();
-    for snapshot in snapshots {
-        if let Action::Proxy(id) = &snapshot.info.action
-            && !known.contains(id)
-        {
-            observed
-                .entry(id.clone())
-                .or_insert_with(|| snapshot.info.route.clone());
-        }
-    }
-    for (id, label) in observed {
-        let key = route_key(&Action::Proxy(id));
-        choices.push(option(
-            key.clone(),
-            format!("{label} (from history)"),
-            all || selected.contains(&key),
-        ));
-    }
-    for (action, label) in [(Action::Direct, "Direct"), (Action::Block, "Blocked")] {
-        let key = route_key(&action);
-        choices.push(option(
-            key.clone(),
-            label.into(),
-            all || selected.contains(&key),
-        ));
-    }
-    monitor.set_selected_route_count(
-        choices
-            .iter()
-            .skip(1)
-            .filter(|choice| choice.checked)
-            .count() as i32,
+    let selected = routing::values(monitor.get_connection_route_selection());
+    let mut choices = vec![option(ALL, "All", all)];
+    choices.extend(
+        ROUTES.into_iter().map(|(key, label)| {
+            option(key, label, all || selected.iter().any(|value| value == key))
+        }),
     );
+    let summary = if all {
+        "All".into()
+    } else if let [key] = selected.as_slice()
+        && let Some((_, label)) = ROUTES.iter().find(|(route, _)| *route == key.as_str())
+    {
+        (*label).into()
+    } else {
+        selected.len().to_string().into()
+    };
+    monitor.set_connection_route_summary(summary);
     monitor
         .set_connection_route_filters(reconcile(monitor.get_connection_route_filters(), choices));
 
     let statuses = selected_statuses(ui);
-    let mut choices = vec![option(
-        ALL.into(),
-        "All".into(),
-        statuses.len() == STATUSES.len(),
-    )];
+    let all_statuses = statuses.len() == STATUSES.len();
+    let mut choices = vec![option(ALL, "All", all_statuses)];
     choices.extend(STATUSES.iter().map(|status| {
-        option(
-            status_key(*status),
-            status.label().into(),
-            statuses.contains(&status_key(*status)),
-        )
+        let key = status_key(*status);
+        option(&key, status.label(), statuses.contains(&key))
     }));
     monitor
         .set_connection_status_filters(reconcile(monitor.get_connection_status_filters(), choices));
-    monitor.set_connection_filters_default(is_default(ui));
+    let default_statuses = statuses.len() == STATUSES.iter().filter(|s| !s.finished()).count()
+        && STATUSES
+            .iter()
+            .all(|status| status.finished() || statuses.contains(&status_key(*status)));
+    monitor.set_connection_filters_default(
+        monitor.get_connection_query().is_empty()
+            && !all
+            && selected == [PROXY]
+            && default_statuses,
+    );
 }
 
 /// Update existing checkbox rows in place to preserve focus and scroll position.
@@ -161,44 +212,33 @@ fn reconcile(
 
 pub fn toggle_route(ui: &MainWindow, key: &str, checked: bool) {
     let monitor = ui.global::<ConnectionMonitor>();
-    let choices = monitor.get_connection_route_filters();
-    if !choices.iter().any(|choice| choice.key == key) {
-        return;
-    }
     if key == ALL {
         monitor.set_connection_routes_all(checked);
         monitor.set_connection_route_selection(routing::strings(vec![]));
         return;
     }
-    let available = choices
-        .iter()
-        .filter(|choice| choice.key != ALL)
-        .map(|choice| choice.key.to_string())
-        .collect::<HashSet<_>>();
-    let mut selected = if monitor.get_connection_routes_all() {
-        available.clone()
-    } else {
-        routing::values(monitor.get_connection_route_selection())
-            .into_iter()
-            .collect()
-    };
-    if checked {
-        selected.insert(key.to_string());
-    } else {
-        selected.remove(key);
+    if !ROUTES.iter().any(|(route, _)| *route == key) {
+        return;
     }
-    // Keep absent IDs for a later visible journal, but bound selection metadata.
-    if selected.len() > MAX_SELECTED_ROUTES {
-        selected.retain(|key| available.contains(key));
-    }
-    let all = available.iter().all(|key| selected.contains(key));
+    let was_all = monitor.get_connection_routes_all();
+    let previous = routing::values(monitor.get_connection_route_selection());
+    let mut selected = ROUTES
+        .into_iter()
+        .map(|(route, _)| route)
+        .filter(|route| {
+            if *route == key {
+                checked
+            } else {
+                was_all || previous.iter().any(|value| value == *route)
+            }
+        })
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let all = selected.len() == ROUTES.len();
     monitor.set_connection_routes_all(all);
-    let mut selected = if all {
-        vec![]
-    } else {
-        selected.into_iter().collect::<Vec<_>>()
-    };
-    selected.sort();
+    if all {
+        selected.clear();
+    }
     monitor.set_connection_route_selection(routing::strings(selected));
 }
 
@@ -206,7 +246,7 @@ pub fn toggle_status(ui: &MainWindow, key: &str, checked: bool) {
     let mut selected = selected_statuses(ui);
     if key == ALL {
         selected = if checked {
-            STATUSES.iter().map(|status| status_key(*status)).collect()
+            all_statuses().into_iter().collect()
         } else {
             HashSet::new()
         };
@@ -228,7 +268,7 @@ pub fn toggle_status(ui: &MainWindow, key: &str, checked: bool) {
 pub fn reset(ui: &MainWindow) {
     let monitor = ui.global::<ConnectionMonitor>();
     monitor.set_connection_query("".into());
-    monitor.set_connection_routes_all(true);
-    monitor.set_connection_route_selection(routing::strings(vec![]));
+    monitor.set_connection_routes_all(false);
+    monitor.set_connection_route_selection(routing::strings(vec![PROXY.into()]));
     monitor.set_connection_status_selection(routing::strings(default_statuses()));
 }

@@ -166,6 +166,11 @@ fn main() -> Result<()> {
             address: "192.0.2.10:1080".into(),
             status: "3 ms".into(),
             location: "Frankfurt am Main, DE".into(),
+            flag_index: include_str!("../assets/country-flags.txt")
+                .split_ascii_whitespace()
+                .position(|code| code == "DE")
+                .unwrap() as i32
+                + 1,
             health: 2,
             udp: true,
         },
@@ -176,6 +181,7 @@ fn main() -> Result<()> {
             address: "127.0.0.1:1080".into(),
             status: "".into(),
             location: "".into(),
+            flag_index: 0,
             health: 3,
             udp: false,
         },
@@ -187,10 +193,6 @@ fn main() -> Result<()> {
             route: "Proxy · VPN".into(),
             enabled: true,
             priority: 2,
-            apps: 4,
-            hosts: 0,
-            ports: 0,
-            protocol: "TCP + UDP".into(),
         },
         RuleRow {
             id: "game".into(),
@@ -198,10 +200,6 @@ fn main() -> Result<()> {
             route: "Proxy · VPN".into(),
             enabled: false,
             priority: 3,
-            apps: 3,
-            hosts: 2,
-            ports: 0,
-            protocol: "TCP".into(),
         },
     ]));
     ui.set_enabled_rule_count(1);
@@ -262,11 +260,10 @@ fn main() -> Result<()> {
     ui.set_page(3);
     let connections = ui.global::<ConnectionMonitor>();
     connections.set_connection_route_filters(model(vec![
-        filter("all", "All", true),
-        filter("proxy:p", "VPN", true),
-        filter("proxy:q", "Work", true),
-        filter("direct", "Direct", true),
-        filter("block", "Blocked", true),
+        filter("all", "All", false),
+        filter("proxy", "Proxy", true),
+        filter("direct", "Direct", false),
+        filter("block", "Blocked", false),
     ]));
     connections.set_connection_status_filters(model(vec![
         filter("all", "All", false),
@@ -290,7 +287,7 @@ fn main() -> Result<()> {
             process: "browser.exe".into(),
             pid: "PID 100".into(),
             destination: "TCP · 203.0.113.7:443".into(),
-            route: "VPN".into(),
+            route: "Proxy · VPN".into(),
             message: "TCP · Applications · example.com".into(),
             source: "192.0.2.30:51001".into(),
             started: "21:11:48".into(),
@@ -303,7 +300,7 @@ fn main() -> Result<()> {
             process: "browser.exe".into(),
             pid: "PID 100".into(),
             destination: "TCP · 198.51.100.9:443".into(),
-            route: "VPN".into(),
+            route: "Proxy · VPN".into(),
             message: "TCP · Applications · DNS name unknown".into(),
             source: "192.0.2.30:51002".into(),
             started: "21:11:49".into(),
@@ -336,26 +333,14 @@ fn main() -> Result<()> {
     ui.set_page(5);
     let logs = ui.global::<TechnicalLogs>();
     logs.set_total(3);
-    logs.set_rows(model(vec![
-        TechnicalLogRow {
-            time: "12:18:41".into(),
-            level: "INF".into(),
-            message: "UI preview started".into(),
-            error: false,
-        },
-        TechnicalLogRow {
-            time: "12:18:44".into(),
-            level: "INF".into(),
-            message: "browser.exe · 203.0.113.7:443 · VPN · TCP · Applications".into(),
-            error: false,
-        },
-        TechnicalLogRow {
-            time: "12:18:47".into(),
-            level: "ERR".into(),
-            message: "game.exe · 198.51.100.28:443 · VPN · Sample SOCKS5 timeout".into(),
-            error: true,
-        },
-    ]));
+    logs.set_visible_count(3);
+    logs.set_recording(true);
+    logs.set_text(
+        "12:18:41  INF  [Backend] UI preview started\n\
+         12:18:44  INF  [Connections] browser.exe · 203.0.113.7:443 · VPN · TCP · Applications\n\
+         12:18:47  ERR  [Connections] game.exe · 198.51.100.28:443 · VPN · Sample SOCKS5 timeout"
+            .into(),
+    );
     save(&main_adapter, &destination.join("logs.png"))?;
     ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());

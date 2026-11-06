@@ -36,7 +36,6 @@ pub fn persist(
     refresh(ui, &next, statuses);
     ui.set_notice("".into());
     ui.set_routing_pending(ui.get_active());
-    ui.set_restart_prompt(ui.get_active());
     Ok(())
 }
 
@@ -44,7 +43,6 @@ pub fn persist(
 pub fn on_status(ui: &MainWindow, busy: bool) {
     if !busy {
         ui.set_routing_pending(false);
-        ui.set_restart_prompt(false);
     }
 }
 
@@ -65,7 +63,6 @@ pub fn wire(ui: &MainWindow, state: State, sender: SyncSender<Command>) {
                 ui.set_busy(true);
                 Ok(())
             })();
-            ui.set_restart_prompt(false);
             report(&ui, result);
         }
     });
@@ -142,7 +139,7 @@ mod tests {
     }
 
     #[test]
-    fn save_later_keeps_running_routes_until_explicit_restart_with_latest_profile() {
+    fn restart_banner_keeps_running_routes_until_explicit_restart_with_latest_profile() {
         let ui = window();
         let profile = Profile::new();
         let running = profile.state.borrow().clone();
@@ -155,18 +152,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(Config::load(&profile.path).unwrap().rules.len(), 1);
-        assert!(ui.get_active() && ui.get_routing_pending() && ui.get_restart_prompt());
+        assert!(ui.get_active() && ui.get_routing_pending());
+        assert_eq!(ui.get_dialog(), 0);
         assert!(
             commands.try_recv().is_err(),
             "Saving must not stop or start the engine"
         );
-        click(&ui, "Apply Later");
-        assert!(!ui.get_restart_prompt() && ui.get_routing_pending() && ui.get_active());
-        assert!(commands.try_recv().is_err());
         profile.save(&ui, |_| Ok(())).unwrap();
         assert!(
-            !ui.get_restart_prompt(),
-            "Saving identical routes must not re-prompt"
+            ui.get_routing_pending(),
+            "Saving identical routes must preserve pending changes"
         );
         profile
             .save(&ui, |config| {
@@ -174,11 +169,10 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        click(&ui, "Apply Later");
-        click(&ui, "Restart…");
-        assert!(ui.get_restart_prompt());
-        click(&ui, "Restart Proxy");
-        assert!(ui.get_busy() && ui.get_routing_pending() && !ui.get_restart_prompt());
+        assert!(commands.try_recv().is_err());
+        click(&ui, "Restart");
+        assert!(ui.get_busy() && ui.get_routing_pending());
+        assert_eq!(ui.get_dialog(), 0);
         let Command::Start(latest) = commands.try_recv().unwrap() else {
             panic!("Expected one start command")
         };
@@ -209,17 +203,24 @@ mod tests {
                 Action::Direct
             );
         }
-        // The banner is hidden during a restart, so no second request can be sent.
         assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Restart…").count(),
-            0
+            ElementHandle::find_by_accessible_label(&ui, "Restart")
+                .next()
+                .unwrap()
+                .accessible_enabled(),
+            Some(false)
         );
+        click(&ui, "Restart");
         assert!(commands.try_recv().is_err());
         on_status(&ui, true);
         assert!(ui.get_routing_pending());
         ui.set_busy(false);
         on_status(&ui, false);
         assert!(!ui.get_routing_pending());
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Restart").count(),
+            0
+        );
     }
 
     #[test]
@@ -233,7 +234,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert!(!ui.get_routing_pending() && !ui.get_restart_prompt());
+        assert!(!ui.get_routing_pending());
         ui.set_active(true);
         ui.set_busy(true);
         assert!(
@@ -267,7 +268,7 @@ mod tests {
             Action::Block
         );
         assert_eq!(profile.state.borrow().default_action, Action::Block);
-        assert!(!ui.get_routing_pending() && !ui.get_restart_prompt());
+        assert!(!ui.get_routing_pending());
     }
 
     #[test]
@@ -283,9 +284,8 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        click(&ui, "Restart Proxy");
+        click(&ui, "Restart");
         assert!(ui.get_active() && !ui.get_busy() && ui.get_routing_pending());
-        assert!(!ui.get_restart_prompt());
         assert!(ui.get_notice().contains("Try again"));
         assert!(matches!(commands.try_recv(), Ok(Command::Stop)));
         assert!(commands.try_recv().is_err());

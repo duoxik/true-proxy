@@ -1,17 +1,18 @@
 import { ScrollView } from "std-widgets.slint";
 import { Theme } from "common.slint";
 
-export struct TechnicalLogRow { time: string, level: string, message: string, error: bool }
-
 export global TechnicalLogs {
-    in property <[TechnicalLogRow]> rows;
+    in property <string> text;
     in property <int> total;
-    in property <int> revision;
+    in property <int> visible-count;
+    in property <bool> recording;
     in-out property <int> verbosity: 0;
     in-out property <bool> errors-only: false;
     in-out property <int> source: 0;
     in-out property <bool> follow: false;
     callback filter;
+    callback set-recording(bool);
+    callback clear;
 }
 
 component LogFilterButton inherits Rectangle {
@@ -70,8 +71,10 @@ component LogFilterGroup inherits Rectangle {
 }
 
 export component LogsView inherits Rectangle {
-    private property <int> revision: TechnicalLogs.revision;
     private property <bool> follow: TechnicalLogs.follow;
+    private property <string> latest-text: TechnicalLogs.text;
+    private property <string> displayed-text;
+    private property <bool> selecting: log-text.has-focus && log-text.cursor-position-byte-offset != log-text.anchor-position-byte-offset;
     vertical-stretch: 1;
     min-width: 0px;
     min-height: 0px;
@@ -82,12 +85,20 @@ export component LogsView inherits Rectangle {
     clip: true;
 
     function follow-latest() {
-        if root.follow {
+        if root.follow && !root.selecting {
             log-scroll.content-y = min(0px, log-scroll.visible-height - log-scroll.content-height);
         }
     }
-    init => { root.follow-latest(); }
-    changed revision => { root.follow-latest(); }
+    function refresh-text() {
+        // Keep selected offsets meaningful even when the ring evicts old lines.
+        if !root.selecting {
+            root.displayed-text = root.latest-text;
+        }
+    }
+    init => { root.refresh-text(); root.follow-latest(); }
+    changed latest-text => { root.refresh-text(); }
+    changed selecting => { root.refresh-text(); }
+    changed displayed-text => { root.follow-latest(); }
     changed follow => { root.follow-latest(); }
     changed height => { root.follow-latest(); }
 
@@ -105,14 +116,28 @@ export component LogsView inherits Rectangle {
                 vertical-alignment: center;
             }
             Text {
-                text: TechnicalLogs.rows.length == TechnicalLogs.total
+                text: TechnicalLogs.visible-count == TechnicalLogs.total
                     ? "latest " + TechnicalLogs.total + " lines"
-                    : TechnicalLogs.rows.length + " of " + TechnicalLogs.total + " lines";
+                    : TechnicalLogs.visible-count + " of " + TechnicalLogs.total + " lines";
                 color: Theme.muted;
                 font-family: "Consolas";
                 font-size: 11px;
                 horizontal-alignment: right;
                 vertical-alignment: center;
+            }
+            LogFilterButton {
+                y: (parent.height - self.height) / 2;
+                label: "Clear";
+                resting-color: Theme.field;
+                clicked => { log-text.clear-selection(); TechnicalLogs.clear(); }
+            }
+            LogFilterButton {
+                y: (parent.height - self.height) / 2;
+                label: TechnicalLogs.recording ? "Pause" : "Start";
+                selected: TechnicalLogs.recording;
+                selected-color: Theme.success;
+                resting-color: Theme.field;
+                clicked => { TechnicalLogs.set-recording(!TechnicalLogs.recording); }
             }
         }
         Rectangle { height: 1px; background: Theme.border; }
@@ -180,55 +205,42 @@ export component LogsView inherits Rectangle {
             min-height: 0px;
             horizontal-scrollbar-policy: always-off;
             content-width: self.visible-width;
-            content-height: max(self.visible-height, lines.preferred-height);
+            content-height: max(self.visible-height, log-text.preferred-height + 16px);
 
-            lines := VerticalLayout {
-                alignment: start;
-                padding-left: 14px;
-                padding-right: 14px + Theme.scroll-gutter;
-                padding-bottom: 8px;
-                if TechnicalLogs.rows.length == 0: Text {
-                    text: TechnicalLogs.total == 0 ? "No log entries yet" : "No matching log entries";
-                    height: 40px;
-                    color: Theme.muted;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                }
-                for line in TechnicalLogs.rows: HorizontalLayout {
-                    height: max(24px, message.preferred-height + 4px);
-                    spacing: 8px;
-                    Text {
-                        text: line.time;
-                        width: 65px;
-                        color: Theme.muted;
-                        font-family: "Consolas";
-                        font-size: 12px;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        width: 34px;
-                        height: 17px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 3px;
-                        background: line.error ? Theme.danger-soft : Theme.field;
-                        Text {
-                            text: line.level;
-                            color: line.error ? Theme.danger : Theme.secondary;
-                            font-family: "Consolas";
-                            font-size: 11px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+            if root.displayed-text == "": Text {
+                x: 14px;
+                y: 8px;
+                height: 24px;
+                text: TechnicalLogs.total == 0 ? "No log entries yet" : "No matching log entries";
+                color: Theme.muted;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            log-text := TextInput {
+                x: 14px;
+                y: 8px;
+                width: max(0px, log-scroll.visible-width - 28px - Theme.scroll-gutter);
+                height: max(self.preferred-height, log-scroll.visible-height - 16px);
+                visible: root.displayed-text != "";
+                text: root.displayed-text;
+                read-only: true;
+                single-line: false;
+                wrap: word-wrap;
+                font-family: "Consolas";
+                font-size: 12px;
+                line-height-factor: 1.35;
+                color: Theme.text;
+                selection-background-color: Theme.selection;
+                selection-foreground-color: Theme.text;
+                page-height: log-scroll.visible-height;
+                accessible-label: "Log text";
+                cursor-position-changed(cpos) => {
+                    if self.has-focus {
+                        if cpos.y + self.y + log-scroll.content-y < 8px {
+                            log-scroll.content-y = min(0px, -cpos.y);
+                        } else if cpos.y + self.y + log-scroll.content-y > log-scroll.visible-height - 24px {
+                            log-scroll.content-y = min(0px, log-scroll.visible-height - 24px - cpos.y - self.y);
                         }
-                    }
-                    message := Text {
-                        text: line.message;
-                        color: line.error ? Theme.danger : Theme.text;
-                        font-family: "Consolas";
-                        font-size: 12px;
-                        wrap: word-wrap;
-                        min-width: 0px;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
                     }
                 }
             }
