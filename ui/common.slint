@@ -1,3 +1,5 @@
+import { ComboBox } from "std-widgets.slint";
+
 // Shared theme, models and controls for the tray panel and Connections window.
 export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, health: int, udp: bool }
 export struct RuleRow { id: string, name: string, route: string, enabled: bool }
@@ -8,24 +10,36 @@ export struct ConnectionFilterOption { key: string, label: string, checked: bool
 export struct ConnectionFilterRow { options: [ConnectionFilterOption] }
 
 export global Theme {
-    out property <color> background: #101218;
-    out property <color> sidebar: #14161e;
-    out property <color> surface: #1a1d27;
-    out property <color> surface-hover: #242938;
-    out property <color> field: #131620;
-    out property <color> border: #2b3040;
-    out property <color> text: #edf0f8;
-    out property <color> secondary: #a5afc5;
-    out property <color> muted: #818da5;
-    out property <color> accent: #9aaaff;
-    out property <color> accent-hover: #b0bdff;
-    out property <color> accent-soft: #252e49;
-    out property <color> primary-text: #141a30;
-    out property <color> disabled: #202431;
-    out property <color> success: #79dcb4;
-    out property <color> warning: #f2c57c;
-    out property <color> warning-surface: #32291f;
-    out property <color> switch-off: #3b4357;
+    out property <color> background: #201b2d;
+    out property <color> background-refresh: #201b2e;
+    out property <color> sidebar: #29213b;
+    out property <color> surface: #2b243a;
+    out property <color> surface-hover: #372e49;
+    out property <color> pressed: #403552;
+    out property <color> field: #1d1829;
+    out property <color> border: #463a55;
+    out property <color> text: #f2eef8;
+    out property <color> secondary: #c3b9d2;
+    out property <color> muted: #a99db9;
+    out property <color> accent: #7aa7ff;
+    out property <color> accent-hover: #a8c5ff;
+    out property <color> accent-soft: #363051;
+    out property <color> primary: #3969d5;
+    out property <color> primary-hover: #426ed9;
+    out property <color> primary-pressed: #3058b7;
+    out property <color> primary-text: #ffffff;
+    out property <color> disabled: #292338;
+    out property <color> disabled-text: #8f839f;
+    out property <color> success: #85dfb5;
+    out property <color> warning: #f3c583;
+    out property <color> warning-surface: #413031;
+    out property <color> danger: #ff9eaf;
+    out property <color> switch-off: #534761;
+    out property <color> selection: #435684;
+    out property <color> overlay: #100a19bd;
+    out property <length> radius-small: 10px;
+    out property <length> radius-medium: 14px;
+    out property <length> radius-large: 18px;
     // Fluent scrollbars overlay the viewport; reserve the same space in toolbars.
     out property <length> scroll-gutter: 15px;
 }
@@ -37,14 +51,16 @@ export component ActionButton inherits Rectangle {
     callback clicked;
     min-width: max(38px, label-text.preferred-width + 30px); max-width: self.min-width;
     height: 38px; horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 8px; border-width: 1px;
-    border-color: focus.has-focus ? Theme.accent : root.primary ? transparent : touch.has-hover ? #485570 : Theme.border;
-    background: !root.enabled ? Theme.disabled : root.primary ? (touch.pressed ? #7e90eb : touch.has-hover ? Theme.accent-hover : Theme.accent) : touch.pressed ? #30394d : touch.has-hover ? Theme.surface-hover : Theme.surface;
+    border-radius: Theme.radius-small; border-width: 1px;
+    border-color: focus.has-focus ? Theme.accent : root.primary ? transparent : Theme.border;
+    background: !root.enabled ? Theme.disabled : root.primary
+        ? (touch.pressed ? Theme.primary-pressed : touch.has-hover ? Theme.primary-hover : Theme.primary)
+        : (touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : Theme.surface);
     animate background, border-color { duration: 100ms; }
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
-    label-text := Text { text: root.label; color: !root.enabled ? #626d85 : root.primary ? Theme.primary-text : Theme.text; font-size: 12px; font-weight: 500; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
+    label-text := Text { text: root.label; color: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
     // Like Slint's standard Button: keyboard focus must not cover the pointer target.
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
@@ -62,9 +78,93 @@ export component Field inherits VerticalLayout {
     callback edited;
     callback accepted;
     if root.label != "": Text { text: root.label; font-size: 11px; font-weight: 600; color: Theme.secondary; }
-    Rectangle { height: 40px; border-radius: 7px; border-width: 1px; border-color: input.has-focus ? Theme.accent : Theme.border; background: Theme.field;
+    Rectangle { height: 40px; border-radius: Theme.radius-small; border-width: 1px; border-color: input.has-focus ? Theme.accent : Theme.border; background: Theme.field;
         if root.value == "": Text { x: 11px; width: parent.width - 22px; text: root.placeholder; font-size: 12px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
-        input := TextInput { x: 11px; width: parent.width - 22px; height: parent.height; text <=> root.value; font-size: 12px; color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
+        input := TextInput { x: 11px; width: parent.width - 22px; height: parent.height; text <=> root.value; font-size: 12px; color: Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
+    }
+}
+
+export component ThemedComboBox inherits Rectangle {
+    in property <[string]> model;
+    in property <bool> enabled: true;
+    in-out property <int> current-index: 0;
+    border-radius: Theme.radius-small;
+    background: root.enabled ? Theme.field : Theme.disabled;
+    clip: true;
+    min-height: 34px;
+    min-width: 0px;
+    horizontal-stretch: 1;
+    forward-focus: control;
+
+    // Keep Slint's keyboard navigation and accessibility for the selector.
+    control := ComboBox {
+        width: parent.width;
+        height: parent.height;
+        model: root.model;
+        enabled: root.enabled;
+        current-index <=> root.current-index;
+    }
+}
+
+component CheckMark inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> focused;
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    border-width: 1px;
+    border-color: root.focused ? Theme.accent-hover : root.checked ? Theme.primary : Theme.muted;
+    background: root.checked ? Theme.primary : Theme.field;
+    if root.checked: Path {
+        x: 3px; y: 3px; width: 10px; height: 10px;
+        viewbox-width: 10; viewbox-height: 10;
+        stroke: Theme.primary-text; stroke-width: 1.6px;
+        commands: "M1 5 L4 8 L9 2";
+    }
+}
+
+export component ThemedCheckBox inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in-out property <bool> checked;
+    callback toggled;
+    min-width: 0px;
+    height: 28px;
+    border-radius: Theme.radius-small;
+    background: root.enabled && touch.has-hover ? Theme.surface-hover : transparent;
+    opacity: root.enabled ? 1 : 0.65;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggle(); }
+    forward-focus: focus;
+
+    function toggle() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 8px;
+        Rectangle {
+            width: 16px;
+            CheckMark { y: (parent.height - self.height) / 2; checked: root.checked; focused: focus.has-focus; }
+        }
+        Text { text: root.text; color: Theme.text; font-size: 12px; min-width: 0px; overflow: elide; vertical-alignment: center; accessible-role: none; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggle(); } }
+    focus := FocusScope {
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return { root.toggle(); return accept; }
+            return reject;
+        }
     }
 }
 
@@ -73,16 +173,14 @@ export component ConnectionFilterCheck inherits Rectangle {
     in property <string> scope;
     callback toggled(bool);
     height: 28px; min-width: 0px; horizontal-stretch: 0;
-    border-radius: 5px;
+    border-radius: Theme.radius-small;
     background: touch.has-hover ? Theme.surface-hover : transparent;
     accessible-role: checkbox; accessible-label: root.scope + ": " + root.option.label; accessible-checked: root.option.checked;
     accessible-action-default => { root.toggled(!root.option.checked); }
     forward-focus: focus;
     HorizontalLayout { padding-left: 5px; padding-right: 5px; spacing: 7px;
-        Rectangle { width: 15px;
-            Rectangle { y: (parent.height - 15px) / 2; width: 15px; height: 15px; border-radius: 3px; border-width: 1px; border-color: focus.has-focus ? Theme.text : root.option.checked ? Theme.accent : Theme.muted; background: root.option.checked ? Theme.accent : transparent;
-                if root.option.checked: Path { x: 3px; y: 3px; width: 9px; height: 9px; viewbox-width: 10; viewbox-height: 10; stroke: Theme.primary-text; stroke-width: 1.6px; commands: "M1 5 L4 8 L9 2"; }
-            }
+        Rectangle { width: 16px;
+            CheckMark { y: (parent.height - self.height) / 2; checked: root.option.checked; focused: focus.has-focus; }
         }
         Text { text: root.option.label; color: Theme.secondary; font-size: 11px; min-width: 0px; overflow: elide; vertical-alignment: center; accessible-role: none; }
     }

@@ -1,26 +1,41 @@
-import { CheckBox, ComboBox, ScrollView, Palette } from "std-widgets.slint";
+import { ScrollView, Palette } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
-import { Theme, ActionButton, Field, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption, ConnectionFilterRow } from "common.slint";
+import { Theme, ActionButton, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption, ConnectionFilterRow } from "common.slint";
 export { ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption, ConnectionFilterRow }
 import { ConnectionsWindow } from "connections.slint";
 export { ConnectionsWindow }
 
 component NavItem inherits Rectangle {
     in property <string> label;
-    in property <string> symbol;
     in property <bool> selected;
     callback clicked;
-    min-width: 0px; horizontal-stretch: 1; height: 52px; border-radius: 9px;
-    background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.surface-hover : transparent;
-    VerticalLayout { padding: 5px; spacing: 2px; alignment: center;
-        Text { text: root.symbol; font-size: 18px; color: root.selected ? Theme.accent : Theme.muted; horizontal-alignment: center; accessible-role: none; }
-        Text { text: root.label; font-size: 10px; font-weight: root.selected ? 600 : 400; color: root.selected ? Theme.accent : Theme.secondary; horizontal-alignment: center; accessible-role: none; }
+    min-width: 0px;
+    horizontal-stretch: 1;
+    height: 40px;
+    border-radius: Theme.radius-small;
+    background: touch.has-hover ? Theme.surface-hover : transparent;
+    Text {
+        text: root.label;
+        font-size: 12px;
+        font-weight: root.selected ? 600 : 400;
+        color: root.selected ? Theme.text : Theme.secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+    if root.selected: Rectangle {
+        x: 9px;
+        y: parent.height - 3px;
+        width: parent.width - 18px;
+        height: 2px;
+        border-radius: 1px;
+        background: Theme.accent;
     }
     touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
     focus := FocusScope { width: 0px; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
     forward-focus: focus;
-    border-width: 1px; border-color: focus.has-focus ? Theme.border : transparent;
+    border-width: 1px; border-color: focus.has-focus ? Theme.accent : transparent;
     accessible-role: button; accessible-label: root.label; accessible-action-default => { root.clicked(); }
 }
 
@@ -31,9 +46,9 @@ component RuleSwitch inherits Rectangle {
     callback toggled;
     width: 44px; height: 38px;
     opacity: root.enabled ? 1 : 0.45;
-    Rectangle { y: 7px; width: 42px; height: 24px; border-radius: 12px; background: root.checked ? Theme.accent : Theme.switch-off;
+    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked ? Theme.primary : Theme.switch-off;
         border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
-        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.checked ? Theme.primary-text : #d9dfed; animate x { duration: 100ms; } }
+        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.checked ? Theme.primary-text : Theme.secondary; animate x { duration: 100ms; } }
     }
     TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }
@@ -47,8 +62,10 @@ component Disclosure inherits Rectangle {
     in property <string> label;
     in property <int> count;
     callback clicked;
-    height: 40px; border-radius: 6px;
-    background: touch.has-hover ? Theme.surface-hover : transparent;
+    height: 40px; border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: focus.has-focus ? Theme.accent : transparent;
+    background: touch.has-hover ? Theme.surface-hover : Theme.field;
     HorizontalLayout { padding-left: 7px; padding-right: 10px; spacing: 10px;
         Rectangle { width: 14px; Path { y: (parent.height - 12px) / 2; width: 12px; height: 12px; viewbox-width: 12; viewbox-height: 12; stroke: Theme.secondary; stroke-width: 1.5px; commands: root.expanded ? "M2 4 L6 8 L10 4" : "M4 2 L8 6 L4 10"; } }
         Text { text: root.label; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; }
@@ -67,7 +84,7 @@ component RouteChoice inherits Rectangle {
     in property <bool> submenu: false;
     callback clicked;
     callback hovered;
-    height: 38px; border-radius: 5px;
+    height: 38px; border-radius: Theme.radius-small;
     background: root.enabled && touch.has-hover ? Theme.surface-hover : transparent;
     border-width: focus.has-focus ? 1px : 0px; border-color: Theme.accent;
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
@@ -92,7 +109,7 @@ component FallbackSelector inherits Rectangle {
     in property <bool> enabled: true;
     property <bool> proxy-open: false;
     callback selected(int, string);
-    height: 38px; border-radius: 7px; border-width: 1px;
+    height: 38px; border-radius: Theme.radius-small; border-width: 1px;
     border-color: focus.has-focus || menu.is-open ? Theme.accent : Theme.border;
     background: !root.enabled ? Theme.disabled : touch.has-hover ? Theme.surface-hover : Theme.field;
     accessible-role: button; accessible-label: "Маршрут по умолчанию: " + root.label; accessible-enabled: root.enabled; accessible-expanded: menu.is-open;
@@ -112,14 +129,14 @@ component FallbackSelector inherits Rectangle {
         menu-focus := FocusScope {
             key-pressed(event) => { if event.text == Key.Escape { menu.close(); return accept; } if event.text == Key.LeftArrow { root.proxy-open = false; return accept; } return reject; }
             TouchArea { clicked => { menu.close(); } }
-            Rectangle { x: 0px; y: menu.height - self.height; width: (menu.width - 6px) / 2; height: 126px; border-radius: 8px; border-width: 1px; border-color: Theme.border; background: Theme.surface;
+            Rectangle { x: 0px; y: menu.height - self.height; width: (menu.width - 6px) / 2; height: 126px; border-radius: Theme.radius-medium; border-width: 1px; border-color: Theme.border; background: Theme.sidebar;
                 VerticalLayout { padding: 6px; spacing: 0px; alignment: start;
                     RouteChoice { label: "Напрямую"; accessible-label: "Маршрут: Напрямую"; enabled: root.enabled; hovered => { root.proxy-open = false; } clicked => { root.choose-route(0, ""); } }
                     RouteChoice { label: "Блокировать"; accessible-label: "Маршрут: Блокировать"; enabled: root.enabled; hovered => { root.proxy-open = false; } clicked => { root.choose-route(1, ""); } }
                     RouteChoice { label: "Прокси"; accessible-label: "Маршрут: Прокси"; submenu: true; enabled: root.enabled && root.proxies.length > 0; hovered => { root.proxy-open = true; } clicked => { root.proxy-open = true; } }
                 }
             }
-            if root.proxy-open && root.proxies.length > 0: Rectangle { x: (menu.width + 6px) / 2; y: menu.height - self.height; width: (menu.width - 6px) / 2; height: min(root.proxies.length, 7) * 38px + 12px; border-radius: 8px; border-width: 1px; border-color: Theme.border; background: Theme.surface;
+            if root.proxy-open && root.proxies.length > 0: Rectangle { x: (menu.width + 6px) / 2; y: menu.height - self.height; width: (menu.width - 6px) / 2; height: min(root.proxies.length, 7) * 38px + 12px; border-radius: Theme.radius-medium; border-width: 1px; border-color: Theme.border; background: Theme.sidebar;
                 ScrollView { horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: proxy-menu-content.preferred-height;
                     proxy-menu-content := VerticalLayout { padding: 6px; spacing: 0px; alignment: start;
                         for proxy in root.proxies: RouteChoice { label: proxy.name; accessible-label: "SOCKS-прокси: " + proxy.name; enabled: root.enabled; clicked => { root.choose-route(2, proxy.id); } }
@@ -146,18 +163,21 @@ component ListEditor inherits VerticalLayout {
         Text { text: root.title + (root.values.length > 0 ? " · " + root.values.length : ""); color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; min-width: 0px; overflow: elide; }
         Rectangle { width: add-button.min-width; height: 32px;
             add-button := ActionButton { label: "Добавить"; accessible-label: root.applications ? "Добавить приложение" : "Добавить " + root.title; height: 32px; clicked => { if root.applications { add-menu.show(); } else { root.add-empty(); } } }
-            add-menu := PopupWindow { x: parent.width - self.width; y: parent.height + 5px; width: 250px; height: 136px;
+            add-menu := PopupWindow { x: parent.width - self.width; y: parent.height + 5px; width: 250px; height: 126px;
                 close-policy: close-on-click-outside;
-                Rectangle { background: Theme.surface; border-radius: 8px; border-width: 1px; border-color: Theme.border;
-                    VerticalLayout { padding: 6px; spacing: 3px;
-                        for label[index] in ["Вручную", "Из запущенных процессов", "Путь до EXE"]: ActionButton { label: label; min-width: parent.width; max-width: parent.width; height: 38px; clicked => { root.choose(index); add-menu.close(); } }
+                Rectangle { background: Theme.sidebar; border-radius: Theme.radius-medium; border-width: 1px; border-color: Theme.border;
+                    VerticalLayout { padding: 6px; spacing: 0px;
+                        for label[index] in ["Вручную", "Из запущенных процессов", "Путь до EXE"]: RouteChoice {
+                            label: label;
+                            clicked => { root.choose(index); add-menu.close(); }
+                        }
                     }
                 }
             }
         }
     }
     for value[index] in root.values: HorizontalLayout { height: 34px; spacing: 8px;
-        value-field := Rectangle { horizontal-stretch: 1; border-radius: 6px; background: Theme.field; border-width: 1px; border-color: value-input.has-focus ? Theme.accent : Theme.border;
+        value-field := Rectangle { horizontal-stretch: 1; border-radius: Theme.radius-small; background: Theme.field; border-width: 1px; border-color: value-input.has-focus ? Theme.accent : Theme.border;
             if value == "": Text { x: 12px; width: parent.width - 24px; text: root.placeholder; color: Theme.muted; font-size: 12px; overflow: elide; vertical-alignment: center; accessible-role: none; }
             value-input := TextInput { x: 12px; width: parent.width - 24px; height: parent.height; text: value; color: Theme.text; font-size: 12px; single-line: true; vertical-alignment: center;
                 accessible-label: root.title + " · строка " + (index + 1);
@@ -172,10 +192,10 @@ component StatCard inherits Rectangle {
     in property <string> label;
     in property <string> value;
     min-width: 0px; horizontal-stretch: 1;
-    background: Theme.surface; border-radius: 9px; border-width: 1px; border-color: Theme.border;
+    background: Theme.surface; border-radius: Theme.radius-medium;
     VerticalLayout { padding: 11px; spacing: 6px;
-        Text { text: root.label; font-size: 8px; color: Theme.secondary; wrap: word-wrap; min-width: 0px; max-height: 24px; }
-        Text { text: root.value; font-size: 19px; font-weight: 600; color: Theme.text; overflow: elide; min-width: 0px; }
+        Text { text: root.label; font-size: 9px; color: Theme.secondary; wrap: word-wrap; min-width: 0px; max-height: 24px; }
+        Text { text: root.value; font-size: 18px; font-weight: 600; color: Theme.text; overflow: elide; min-width: 0px; }
     }
 }
 
@@ -303,14 +323,16 @@ export component MainWindow inherits Window {
 
     // Explicit opaque full-window surface: invalidating it also repaints static
     // content after Windows discards the software presentation buffer.
-    surface := Rectangle { width: parent.width; height: parent.height; background: root.surface-fresh ? #101219 : Theme.background;
+    surface := Rectangle { width: parent.width; height: parent.height; background: root.surface-fresh ? Theme.background-refresh : Theme.background;
     VerticalLayout { spacing: 0px;
-        Rectangle { height: 58px; background: Theme.sidebar;
-            HorizontalLayout { padding-left: 15px; padding-right: 12px; spacing: 10px;
-                Rectangle { width: 26px;
-                    Image { y: (parent.height - self.height) / 2; width: 26px; height: 26px; source: @image-url("../assets/icon.svg"); }
+        Rectangle {
+            height: 62px;
+            background: @linear-gradient(120deg, Theme.surface-hover 0%, Theme.sidebar 80%);
+            HorizontalLayout { padding-left: 16px; padding-right: 12px; spacing: 9px;
+                Rectangle { width: 32px;
+                    Image { y: (parent.height - self.height) / 2; width: 32px; height: 32px; source: @image-url("../assets/icon.svg"); }
                 }
-                Text { text: "true proxy"; color: Theme.text; font-size: 16px; font-weight: 700; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                Text { text: "True Proxy"; color: Theme.text; font-size: 18px; font-weight: 700; min-width: 0px; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
                 Rectangle { width: 96px;
                     ActionButton { label: "Соединения"; y: (parent.height - self.height) / 2; min-width: 96px; max-width: 96px; height: 32px; clicked => { root.open-connections(); } }
                 }
@@ -319,16 +341,37 @@ export component MainWindow inherits Window {
                 }
             }
         }
-        Rectangle { height: 1px; background: Theme.border; }
-        VerticalLayout { padding: 16px; spacing: 12px;
-            Text { text: ["Обзор", "Правила", "Прокси", "Обзор", "Настройки"][root.page]; color: Theme.text; font-size: 20px; font-weight: 600; height: 28px; }
-            if root.notice != "": Rectangle { height: max(44px, notice-content.preferred-height); border-radius: 8px; background: Theme.warning-surface;
+        Rectangle { height: 48px; background: Theme.sidebar;
+            Rectangle { x: 10px; width: parent.width - 20px; height: 40px; border-radius: Theme.radius-small; background: Theme.field;
+                HorizontalLayout { padding-left: 4px; padding-right: 4px; spacing: 2px;
+                    NavItem { label: "Обзор"; selected: root.page == 0; clicked => { root.page = 0; } }
+                    NavItem { label: "Правила"; selected: root.page == 1; clicked => { root.page = 1; } }
+                    NavItem { label: "Прокси"; selected: root.page == 2; clicked => { root.page = 2; } }
+                    NavItem { label: "Настройки"; selected: root.page == 4; clicked => { root.page = 4; } }
+                }
+            }
+        }
+        VerticalLayout { padding: 12px; spacing: 10px;
+            HorizontalLayout { height: 34px; spacing: 8px; padding-right: 4px;
+                Text {
+                    text: ["Обзор", "Правила", "Прокси", "Обзор", "Настройки"][root.page];
+                    color: Theme.text;
+                    font-size: 20px;
+                    font-weight: 600;
+                    min-width: 0px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if root.page == 1: ActionButton { label: "+ Создать правило"; height: 34px; primary: true; clicked => { root.add-rule(); } }
+                if root.page == 2: ActionButton { label: "+ Добавить прокси"; height: 34px; primary: true; clicked => { root.add-proxy(); } }
+            }
+            if root.notice != "": Rectangle { height: max(44px, notice-content.preferred-height); border-radius: Theme.radius-medium; background: Theme.warning-surface;
                 notice-content := HorizontalLayout { padding: 10px; spacing: 8px;
                     Text { text: root.notice; wrap: word-wrap; min-width: 0px; max-height: 90px; overflow: elide; color: Theme.warning; font-size: 11px; }
                     ActionButton { label: "×"; min-width: 30px; max-width: 30px; height: 30px; clicked => { root.notice = ""; } }
                 }
             }
-            if root.update-available: Rectangle { height: update-content.preferred-height; border-radius: 9px; background: Theme.accent-soft; border-width: 1px; border-color: Theme.accent;
+            if root.update-available: Rectangle { height: update-content.preferred-height; border-radius: Theme.radius-medium; background: Theme.accent-soft;
                 update-content := VerticalLayout { padding: 12px; spacing: 9px;
                     Text { text: "Доступна True Proxy " + root.update-version; color: Theme.text; font-size: 12px; font-weight: 600; wrap: word-wrap; }
                     Text { text: root.update-text; color: Theme.secondary; font-size: 11px; wrap: word-wrap; max-height: 55px; overflow: elide; }
@@ -339,7 +382,7 @@ export component MainWindow inherits Window {
                     }
                 }
             }
-            if root.routing-pending && root.active && !root.busy: Rectangle { height: pending-content.preferred-height; background: Theme.warning-surface; border-radius: 8px;
+            if root.routing-pending && root.active && !root.busy: Rectangle { height: pending-content.preferred-height; background: Theme.warning-surface; border-radius: Theme.radius-medium;
                 pending-content := VerticalLayout { padding: 11px; spacing: 8px;
                     Text { text: "Конфигурация изменена. Перезапустите прокси, чтобы применить изменения."; color: Theme.warning; font-size: 11px; wrap: word-wrap; }
                     HorizontalLayout { alignment: end; ActionButton { label: "Перезапустить…"; height: 32px; clicked => { root.restart-prompt = true; } } }
@@ -348,21 +391,31 @@ export component MainWindow inherits Window {
             if root.page == 0: ScrollView {
                 horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                 content-height: max(self.visible-height, overview-content.preferred-height);
-                overview-content := VerticalLayout { spacing: 14px; padding-right: 4px; padding-bottom: 12px;
-                    VerticalLayout { height: 310px; alignment: center; spacing: 17px;
-                        HorizontalLayout { alignment: center;
-                            power := Rectangle { width: 142px; height: 142px; border-radius: 71px; border-width: 1px;
-                                background: root.active ? Theme.accent-soft : power-touch.has-hover ? Theme.accent-hover : Theme.accent;
-                                border-color: root.active ? Theme.accent : Theme.accent-hover; opacity: root.busy ? 0.5 : 1;
-                                Path { x: 46px; y: 34px; width: 50px; height: 50px; viewbox-width: 48; viewbox-height: 48; stroke: root.active ? Theme.accent : Theme.primary-text; stroke-width: 3px; commands: "M24 4 L24 23 M13 11 C-3 22 5 43 24 43 C43 43 51 22 35 11"; }
-                                Text { y: 102px; height: 20px; width: parent.width; text: root.busy ? "Подождите…" : root.active ? "Остановить" : "Запустить"; color: root.active ? Theme.accent : Theme.primary-text; font-size: 13px; font-weight: 600; horizontal-alignment: center; }
-                                focus := FocusScope { width: 0px; enabled: !root.busy; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggle(); return accept; } return reject; } }
-                                power-touch := TouchArea { enabled: !root.busy; mouse-cursor: pointer; clicked => { focus.focus(); root.toggle(); } }
-                                accessible-role: button; accessible-label: "Маршрутизация"; accessible-enabled: !root.busy; accessible-action-default => { if !root.busy { root.toggle(); } }
+                overview-content := VerticalLayout { spacing: 10px; padding-right: 4px; padding-bottom: 12px;
+                    Rectangle {
+                        height: 276px;
+                        border-radius: Theme.radius-large;
+                        background: Theme.surface;
+                        VerticalLayout { padding: 18px; alignment: center; spacing: 12px;
+                            HorizontalLayout { height: 124px; alignment: center;
+                                power := Rectangle { width: 124px; height: 124px; border-radius: 62px; border-width: 1px;
+                                    background: root.active ? (power-touch.has-hover ? Theme.accent-soft : Theme.field) : (power-touch.has-hover ? Theme.primary-hover : Theme.primary);
+                                    border-color: focus.has-focus ? Theme.primary-text : root.active ? Theme.accent : Theme.primary;
+                                    opacity: root.busy ? 0.5 : 1;
+                                    Path { x: 40px; y: 25px; width: 44px; height: 44px; viewbox-width: 48; viewbox-height: 48; stroke: root.active ? Theme.accent : Theme.primary-text; stroke-width: 3px; commands: "M24 4 L24 23 M13 11 C-3 22 5 43 24 43 C43 43 51 22 35 11"; }
+                                    Text { y: 86px; height: 20px; width: parent.width; text: root.busy ? "Подождите…" : root.active ? "Остановить" : "Запустить"; color: root.active ? Theme.accent : Theme.primary-text; font-size: 13px; font-weight: 600; horizontal-alignment: center; }
+                                    focus := FocusScope { width: 0px; enabled: !root.busy; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggle(); return accept; } return reject; } }
+                                    power-touch := TouchArea { enabled: !root.busy; mouse-cursor: pointer; clicked => { focus.focus(); root.toggle(); } }
+                                    accessible-role: button; accessible-label: "Маршрутизация"; accessible-enabled: !root.busy; accessible-action-default => { if !root.busy { root.toggle(); } }
+                                }
+                            }
+                            Text { text: root.uptime; color: root.active ? Theme.text : Theme.secondary; font-size: 30px; font-weight: 600; height: 40px; horizontal-alignment: center; }
+                            HorizontalLayout { height: 26px; alignment: center;
+                                Rectangle { width: 202px; border-radius: 13px; background: root.active ? Theme.accent-soft : Theme.field;
+                                    Text { text: root.busy ? "Подождите…" : root.active ? "Маршрутизация работает" : "Маршрутизация выключена"; color: root.active ? Theme.success : Theme.secondary; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                }
                             }
                         }
-                        Text { text: root.uptime; color: root.active ? Theme.text : Theme.secondary; font-size: 30px; font-weight: 600; horizontal-alignment: center; }
-                        Text { text: root.busy ? "Подождите…" : root.active ? "Маршрутизация работает" : "Маршрутизация выключена"; color: root.active ? Theme.success : Theme.muted; font-size: 11px; horizontal-alignment: center; }
                     }
                     HorizontalLayout { height: 84px; spacing: 8px;
                         StatCard { label: "СОЕДИНЕНИЯ"; value: root.connection-count; }
@@ -373,19 +426,20 @@ export component MainWindow inherits Window {
                 }
             }
             if root.page == 1: VerticalLayout { spacing: 10px;
-                HorizontalLayout { height: 34px; alignment: end; padding-right: 4px; ActionButton { label: "+ Создать правило"; height: 34px; primary: true; clicked => { root.add-rule(); } } }
                 rule-list := ScrollView { horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: max(self.visible-height, rules-content.preferred-height);
                     rules-content := VerticalLayout { spacing: 9px; padding-right: 4px; padding-bottom: 18px;
-                        local-network-card := Rectangle { height: local-network-content.preferred-height; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.accent-soft;
+                        local-network-card := Rectangle { height: local-network-content.preferred-height; border-radius: Theme.radius-medium; background: Theme.surface;
                             local-network-content := VerticalLayout { padding: 13px; spacing: 10px;
                                 HorizontalLayout { height: 23px; spacing: 10px;
                                     Text { text: "1. Локальная сеть"; color: Theme.text; font-size: 13px; font-weight: 600; vertical-alignment: center; }
-                                    Text { text: "Напрямую"; color: Theme.accent; font-size: 11px; horizontal-alignment: right; vertical-alignment: center; }
+                                    Rectangle { width: 86px; border-radius: 11px; background: Theme.accent-soft;
+                                        Text { text: "Напрямую"; color: Theme.accent; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
                                 }
-                                Text { text: root.local-networks; color: Theme.secondary; font-size: 10px; wrap: word-wrap; }
+                                Text { text: root.local-networks; color: Theme.secondary; font-family: "Consolas"; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
                             }
                         }
-                        for rule[index] in root.rules: Rectangle { height: 98px; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+                        for rule[index] in root.rules: Rectangle { height: 98px; border-radius: Theme.radius-medium; background: Theme.surface;
                             VerticalLayout { padding: 12px; spacing: 8px;
                                 HorizontalLayout { height: 32px; spacing: 8px;
                                     Text { text: (index + 2) + ". " + rule.name; color: rule.enabled ? Theme.text : Theme.muted; font-weight: 600; font-size: 13px; vertical-alignment: center; overflow: elide; min-width: 0px; }
@@ -400,7 +454,7 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
-                        fallback-card := Rectangle { height: 100px; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.accent-soft;
+                        fallback-card := Rectangle { height: 100px; border-radius: Theme.radius-medium; background: Theme.surface;
                             VerticalLayout { padding: 13px; spacing: 10px;
                                 Text { text: "Маршрут по умолчанию"; color: Theme.text; font-size: 12px; font-weight: 600; }
                                 fallback-selector := FallbackSelector { label: root.fallback-label; proxies: root.proxies; enabled: !root.busy; selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); } }
@@ -411,15 +465,22 @@ export component MainWindow inherits Window {
                 }
             }
             if root.page == 2: VerticalLayout { spacing: 10px;
-                HorizontalLayout { height: 34px; alignment: end; padding-right: 4px; ActionButton { label: "+ Добавить прокси"; height: 34px; primary: true; clicked => { root.add-proxy(); } } }
-                if root.proxies.length == 0: Text { text: "Добавьте SOCKS5-подключение"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
+                if root.proxies.length == 0: Rectangle { height: 100px; border-radius: Theme.radius-medium; background: Theme.surface;
+                    Text { x: 14px; width: parent.width - 28px; text: "Добавьте SOCKS5-подключение"; color: Theme.secondary; font-size: 13px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                if root.proxies.length == 0: Rectangle { vertical-stretch: 1; }
                 if root.proxies.length > 0: proxy-list := ScrollView { horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: max(self.visible-height, proxy-content.preferred-height);
                     proxy-content := VerticalLayout { spacing: 9px; padding-right: 4px; padding-bottom: 16px;
-                        for proxy in root.proxies: Rectangle { height: 112px; border-radius: 10px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+                        for proxy in root.proxies: Rectangle { height: 106px; border-radius: Theme.radius-medium; background: Theme.surface;
                             VerticalLayout { padding: 12px; spacing: 10px;
-                                VerticalLayout { spacing: 5px;
-                                    Text { text: proxy.name; color: Theme.text; font-weight: 600; font-size: 14px; overflow: elide; min-width: 0px; }
-                                    Text { text: "SOCKS5 · " + proxy.address; color: Theme.secondary; font-size: 11px; overflow: elide; min-width: 0px; }
+                                HorizontalLayout { height: 42px; spacing: 10px;
+                                    Rectangle { width: 42px; border-radius: Theme.radius-small; background: Theme.accent-soft;
+                                        Path { x: 11px; y: 11px; width: 20px; height: 20px; viewbox-width: 20; viewbox-height: 20; stroke: Theme.accent; stroke-width: 1.5px; commands: "M2 6 H17 M13 2 L17 6 L13 10 M18 14 H3 M7 10 L3 14 L7 18"; }
+                                    }
+                                    VerticalLayout { alignment: center; spacing: 2px; min-width: 0px;
+                                        Text { text: proxy.name; color: Theme.text; font-weight: 600; font-size: 14px; overflow: elide; min-width: 0px; }
+                                        Text { text: "SOCKS5 · " + proxy.address; color: Theme.secondary; font-size: 11px; overflow: elide; min-width: 0px; }
+                                    }
                                 }
                                 HorizontalLayout { spacing: 7px; alignment: end;
                                     ActionButton { label: "Проверить"; height: 30px; enabled: !root.probe-busy; clicked => { root.probe-proxy(proxy.id); } }
@@ -434,67 +495,64 @@ export component MainWindow inherits Window {
             }
             if root.page == 4: settings-scroll := ScrollView { horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: max(self.visible-height, settings-content.preferred-height);
                 settings-content := VerticalLayout { spacing: 11px; padding-right: 4px; padding-bottom: 20px;
-                    Rectangle { height: config-settings.preferred-height; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+                    Rectangle { height: config-settings.preferred-height; border-radius: Theme.radius-medium; background: Theme.surface;
                         config-settings := VerticalLayout { padding: 14px; spacing: 11px; alignment: start;
                             Text { text: "Конфигурация"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                            Text { text: "Импорт и экспорт правил и прокси в JSON. Экспорт включает пароли прокси."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                            Text { text: "Импорт и экспорт правил и прокси в JSON. Экспорт включает пароли прокси."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
                             HorizontalLayout { spacing: 8px;
                                 ActionButton { label: "Импортировать"; height: 34px; min-width: 0px; preferred-width: 0px; max-width: 10000px; horizontal-stretch: 1; enabled: !root.busy; clicked => { root.open-import(); } }
                                 ActionButton { label: "Экспортировать"; height: 34px; min-width: 0px; preferred-width: 0px; max-width: 10000px; horizontal-stretch: 1; clicked => { root.export-config(); } }
                             }
                         }
                     }
-                    Rectangle { height: update-settings.preferred-height; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+                    Rectangle { height: update-settings.preferred-height; border-radius: Theme.radius-medium; background: Theme.surface;
                         update-settings := VerticalLayout { padding: 14px; spacing: 11px;
                             Text { text: "Обновления"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                            CheckBox { text: "Автоматически проверять обновления"; min-width: 0px; checked <=> root.updates-automatic; toggled => { root.set-updates-automatic(self.checked); } }
-                            Text { text: root.update-status; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                            ThemedCheckBox { text: "Автоматически проверять обновления"; min-width: 0px; checked <=> root.updates-automatic; toggled => { root.set-updates-automatic(self.checked); } }
+                            if root.update-status != "": Text { text: root.update-status; color: Theme.secondary; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
                             HorizontalLayout { ActionButton { label: root.update-busy ? "Проверяем…" : "Проверить обновления"; height: 34px; enabled: !root.update-busy; clicked => { root.check-updates(); } } }
-                            Text { text: "Проверка при запуске и каждые 6 часов. Установка — по вашему нажатию."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                            Text { text: "Проверка при запуске и каждые 6 часов. Установка — по вашему нажатию."; color: Theme.muted; font-size: 10px; wrap: word-wrap; height: self.preferred-height; }
                         }
                     }
-                    Rectangle { height: startup-settings.preferred-height; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+                    Rectangle { height: startup-settings.preferred-height; border-radius: Theme.radius-medium; background: Theme.surface;
                         startup-settings := VerticalLayout { padding: 14px; spacing: 11px;
                             Text { text: "При запуске"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                            CheckBox { text: "Запускать при входе в Windows"; min-width: 0px; checked <=> root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.set-autostart(self.checked); } }
-                            Text { text: root.autostart-busy ? "Настраиваем автозапуск…" : "При входе программа откроется в трее и восстановит последнее состояние прокси."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
+                            ThemedCheckBox { text: "Запускать при входе в Windows"; min-width: 0px; checked <=> root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.set-autostart(self.checked); } }
+                            Text { text: root.autostart-busy ? "Настраиваем автозапуск…" : "При входе программа откроется в трее и восстановит последнее состояние прокси."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
                         }
                     }
-                    Rectangle { height: dns-settings.preferred-height; border-radius: 9px; background: Theme.surface; border-width: 1px; border-color: Theme.border;
+                    Rectangle { height: dns-settings.preferred-height; border-radius: Theme.radius-medium; background: Theme.surface;
                         dns-settings := VerticalLayout { padding: 14px; spacing: 10px;
                             Text { text: "Системный DNS"; font-size: 14px; font-weight: 600; color: Theme.text; }
-                            Text { text: "Имена разрешает Windows. DNS по TCP/UDP на порту 53 идёт напрямую; настройки адаптеров сохраняются."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; }
-                            Text { text: "DoH/DoT следует правилам приложений."; color: Theme.muted; font-size: 10px; wrap: word-wrap; }
+                            Text { text: "Имена разрешает Windows. DNS по TCP/UDP на порту 53 идёт напрямую; настройки адаптеров сохраняются."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
+                            Text { text: "DoH/DoT следует правилам приложений."; color: Theme.muted; font-size: 10px; wrap: word-wrap; height: self.preferred-height; }
                         }
                     }
                 }
             }
         }
-        Rectangle { height: 1px; background: Theme.border; }
-        Rectangle { height: 64px; background: Theme.sidebar;
-            HorizontalLayout { padding: 6px; spacing: 4px;
-                NavItem { label: "Обзор"; symbol: "◉"; selected: root.page == 0; clicked => { root.page = 0; } }
-                NavItem { label: "Правила"; symbol: "⇄"; selected: root.page == 1; clicked => { root.page = 1; } }
-                NavItem { label: "Прокси"; symbol: "◇"; selected: root.page == 2; clicked => { root.page = 2; } }
-                NavItem { label: "Настройки"; symbol: "⚙"; selected: root.page == 4; clicked => { root.page = 4; } }
+        Rectangle { height: 28px; background: Theme.sidebar;
+            HorizontalLayout { padding-left: 14px; padding-right: 14px;
+                Text { text: root.active ? "● Маршрутизация включена" : "● Маршрутизация выключена"; color: root.active ? Theme.success : Theme.secondary; font-size: 10px; vertical-alignment: center; }
+                Text { text: "Version · v" + root.app-version; color: Theme.muted; font-size: 10px; horizontal-alignment: right; vertical-alignment: center; }
             }
-        }
-        HorizontalLayout { height: 22px; padding-left: 14px; padding-right: 14px;
-            Text { text: root.active ? "● Маршрутизация включена" : "● Маршрутизация выключена"; color: root.active ? Theme.success : Theme.muted; font-size: 9px; vertical-alignment: center; }
-            Text { text: "Version · v" + root.app-version; color: Theme.muted; font-size: 9px; horizontal-alignment: right; vertical-alignment: center; }
         }
     }
     }
 
-    if root.dialog == 1 || root.dialog == 2: Rectangle { background: #05060cb8; TouchArea { }
-        Rectangle { x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; width: min(parent.width - 20px, 440px); height: root.dialog == 1 ? min(parent.height - 20px, 520px) : min(parent.height - 20px, 720px); border-radius: 12px; background: Theme.surface;
+    if root.dialog == 1 || root.dialog == 2: Rectangle { background: Theme.overlay; TouchArea { }
+        Rectangle { x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; width: min(parent.width - 20px, 440px); height: root.dialog == 1 ? min(parent.height - 20px, 520px) : min(parent.height - 20px, 720px);
+            border-radius: Theme.radius-large;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
             VerticalLayout { padding: 16px; spacing: 12px;
                 HorizontalLayout { height: 32px; spacing: 8px; Text { text: root.dialog == 1 ? (root.form-id == "" ? "Новое подключение" : "Изменить подключение") : (root.form-id == "" ? "Новое правило" : "Изменить правило"); color: Theme.text; font-size: 18px; font-weight: 600; vertical-alignment: center; min-width: 0px; overflow: elide; } ActionButton { label: "×"; min-width: 32px; max-width: 32px; height: 32px; clicked => { root.close-dialog(); } } }
                 if root.dialog == 1: ScrollView { horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: max(self.visible-height, proxy-form-content.preferred-height);
                 proxy-form-content := VerticalLayout { spacing: 12px; alignment: start; padding-right: 4px; padding-bottom: 8px;
                     Field { label: "Название"; placeholder: "Мой VPN"; value <=> root.form-name; edited => { root.proxy-form-edited(); } }
                     HorizontalLayout { spacing: 10px; Field { label: "Адрес SOCKS5"; placeholder: "127.0.0.1"; value <=> root.form-host; edited => { root.proxy-form-edited(); } } Field { label: "Порт"; placeholder: "1080"; value <=> root.form-port; width: 84px; edited => { root.proxy-form-edited(); } } }
-                    CheckBox { text: "Требуется аутентификация"; checked <=> root.form-auth; toggled => { root.proxy-form-edited(); } }
+                    ThemedCheckBox { text: "Требуется аутентификация"; checked <=> root.form-auth; toggled => { root.proxy-form-edited(); } }
                     HorizontalLayout { spacing: 10px; Field { label: "Логин"; value <=> root.form-username; edited => { root.proxy-form-edited(); } } Field { label: "Пароль"; secret: true; placeholder: root.form-id != "" ? "Пусто — сохранить" : "Пароль SOCKS5"; value <=> root.form-password; edited => { root.proxy-form-edited(); } } }
                     HorizontalLayout { height: 38px; spacing: 12px;
                         ActionButton { label: root.probe-busy ? "Проверяем…" : "Проверить соединение"; enabled: !root.probe-busy; clicked => { root.probe-proxy-form(); } }
@@ -508,9 +566,9 @@ export component MainWindow inherits Window {
                     rule-content := VerticalLayout { alignment: start; spacing: 12px; padding-right: 4px; padding-bottom: 24px;
                     Field { label: "Название правила"; placeholder: "Игра через VPN"; value <=> root.form-name; }
                     VerticalLayout { spacing: 8px;
-                        HorizontalLayout { height: 36px; spacing: 8px; Text { text: "Протокол"; width: 112px; font-size: 11px; color: Theme.secondary; vertical-alignment: center; } ComboBox { min-width: 0px; horizontal-stretch: 1; model: ["TCP + UDP", "TCP", "UDP"]; current-index <=> root.form-protocol; } }
-                        HorizontalLayout { height: 36px; spacing: 8px; Text { text: "Маршрут"; width: 112px; font-size: 11px; color: Theme.secondary; vertical-alignment: center; } ComboBox { min-width: 0px; horizontal-stretch: 1; model: ["Через прокси", "Напрямую", "Блокировать"]; current-index <=> root.form-action; } }
-                        HorizontalLayout { height: 36px; spacing: 8px; Text { text: "SOCKS-подключение"; width: 112px; font-size: 11px; color: Theme.secondary; vertical-alignment: center; } ComboBox { min-width: 0px; horizontal-stretch: 1; model: root.proxy-names; current-index <=> root.form-proxy; enabled: root.form-action == 0; } }
+                        HorizontalLayout { height: 36px; spacing: 8px; Text { text: "Протокол"; width: 112px; font-size: 11px; color: Theme.secondary; vertical-alignment: center; } ThemedComboBox { min-width: 0px; horizontal-stretch: 1; model: ["TCP + UDP", "TCP", "UDP"]; current-index <=> root.form-protocol; } }
+                        HorizontalLayout { height: 36px; spacing: 8px; Text { text: "Маршрут"; width: 112px; font-size: 11px; color: Theme.secondary; vertical-alignment: center; } ThemedComboBox { min-width: 0px; horizontal-stretch: 1; model: ["Через прокси", "Напрямую", "Блокировать"]; current-index <=> root.form-action; } }
+                        HorizontalLayout { height: 36px; spacing: 8px; Text { text: "SOCKS-подключение"; width: 112px; font-size: 11px; color: Theme.secondary; vertical-alignment: center; } ThemedComboBox { min-width: 0px; horizontal-stretch: 1; model: root.proxy-names; current-index <=> root.form-proxy; enabled: root.form-action == 0; } }
                     }
                     ListEditor { title: "Приложения по имени EXE"; placeholder: "destiny2.exe"; applications: true; values: root.form-processes; add-empty => { root.new-condition(0); } edit(index, value) => { root.edit-condition(0, index, value); } remove(index) => { root.remove-condition(0, index); } choose(kind) => { root.add-application(kind); } }
                     if root.form-processes.length == 0 && root.form-paths.length == 0: Text { text: "Приложения не указаны — правило применяется ко всем процессам."; wrap: word-wrap; color: Theme.muted; font-size: 10px; }
@@ -528,23 +586,28 @@ export component MainWindow inherits Window {
                     }
                 } }
                 if root.notice != "": Text { text: root.notice; wrap: word-wrap; max-height: 80px; overflow: elide; color: Theme.warning; font-size: 11px; }
+                Rectangle { height: 1px; background: Theme.border; }
                 HorizontalLayout { alignment: end; spacing: 10px; ActionButton { label: "Отмена"; clicked => { root.close-dialog(); } } ActionButton { label: "Сохранить"; primary: true; enabled: !root.busy; clicked => { if root.dialog == 1 { root.save-proxy(); } else { root.save-rule(); } } } }
             }
         }
     }
-    if root.process-picker: Rectangle { background: #05060cd0; TouchArea { }
-        Rectangle { width: min(parent.width - 20px, 440px); height: min(parent.height - 20px, 680px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.surface;
+    if root.process-picker: Rectangle { background: Theme.overlay; TouchArea { }
+        Rectangle { width: min(parent.width - 20px, 440px); height: min(parent.height - 20px, 680px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-large;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
             VerticalLayout { padding: 16px; spacing: 11px;
                 HorizontalLayout { height: 32px; spacing: 8px; Text { text: "Запущенные приложения"; font-size: 17px; font-weight: 600; color: Theme.text; vertical-alignment: center; min-width: 0px; overflow: elide; } ActionButton { label: "×"; min-width: 32px; max-width: 32px; height: 32px; clicked => { root.process-picker = false; } } }
                 HorizontalLayout { spacing: 8px; Field { placeholder: "Найти процесс"; value <=> root.process-query; edited => { root.filter-processes(); } } ActionButton { label: root.processes-busy ? "Загрузка…" : "Обновить"; enabled: !root.processes-busy; clicked => { root.refresh-processes(); } } }
-                CheckBox { text: "Добавлять по полному пути вместо имени EXE"; min-width: 0px; checked <=> root.process-by-path; }
+                ThemedCheckBox { text: "Добавлять по полному пути вместо имени EXE"; min-width: 0px; checked <=> root.process-by-path; }
                 process-list := ScrollView {
                     horizontal-scrollbar-policy: always-off; content-width: self.visible-width;
                     content-height: max(self.visible-height, process-content.preferred-height);
                     process-content := VerticalLayout { spacing: 6px; padding-right: 4px; padding-bottom: 8px;
-                    for process in root.process-choices: Rectangle { height: 67px; border-radius: 7px; background: process.selected ? Theme.accent-soft : Theme.field;
+                    for process in root.process-choices: Rectangle { height: 67px; border-radius: Theme.radius-small; background: process.selected ? Theme.accent-soft : Theme.field;
                         VerticalLayout { padding: 11px; spacing: 4px;
-                            CheckBox { text: process.name + " · " + process.instances + " экз."; min-width: 0px; checked: process.selected; enabled: !root.process-by-path || process.path != ""; toggled => { root.toggle-process(process.key); } }
+                            ThemedCheckBox { text: process.name + " · " + process.instances + " экз."; min-width: 0px; checked: process.selected; enabled: !root.process-by-path || process.path != ""; toggled => { root.toggle-process(process.key); } }
                             Text { text: process.path == "" ? "Путь недоступен · PID " + process.pids : process.path + " · PID " + process.pids; font-size: 10px; color: Theme.muted; overflow: elide; min-width: 0px; }
                         }
                     }
@@ -557,8 +620,12 @@ export component MainWindow inherits Window {
             }
         }
     }
-    if root.restart-prompt && root.active: Rectangle { background: #05060cb8; TouchArea { }
-        Rectangle { width: min(parent.width - 24px, 420px); height: 300px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.surface;
+    if root.restart-prompt && root.active: Rectangle { background: Theme.overlay; TouchArea { }
+        Rectangle { width: min(parent.width - 24px, 420px); height: 300px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-large;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
             VerticalLayout { padding: 18px; spacing: 14px;
                 Text { text: "Конфигурация сохранена"; color: Theme.text; font-size: 18px; font-weight: 600; vertical-stretch: 0; wrap: word-wrap; }
                 Text { text: "Изменения начнут действовать после перезапуска прокси. Он временно остановит маршрутизацию и закроет текущие прокси-соединения."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; }
@@ -569,12 +636,16 @@ export component MainWindow inherits Window {
             }
         }
     }
-    if root.dialog == 3: Rectangle { background: #05060cb8; TouchArea { }
-        Rectangle { width: min(parent.width - 20px, 440px); height: min(parent.height - 20px, 740px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.surface;
+    if root.dialog == 3: Rectangle { background: Theme.overlay; TouchArea { }
+        Rectangle { width: min(parent.width - 20px, 440px); height: min(parent.height - 20px, 740px); x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-large;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.border;
             VerticalLayout { padding: 16px; spacing: 8px;
                 HorizontalLayout { height: 36px;
                     Text { text: "Импорт конфигурации"; font-size: 18px; font-weight: 600; color: Theme.text; vertical-alignment: center; min-width: 0px; overflow: elide; }
-                    ActionButton { label: "×"; clicked => { root.cancel-import(); } }
+                    ActionButton { label: "×"; min-width: 32px; max-width: 32px; height: 32px; clicked => { root.cancel-import(); } }
                 }
                 Text { text: "Заменит списки правил и прокси. Состояние включённости и настройки приложения сохранятся."; color: Theme.secondary; font-size: 11px; wrap: word-wrap; vertical-stretch: 0; }
                 HorizontalLayout { height: 38px; spacing: 10px; alignment: start;
@@ -586,7 +657,7 @@ export component MainWindow inherits Window {
                     viewport(first, count) => { root.import-first-line = first; root.import-visible-lines = count; root.import-viewport(); }
                 }
                 Text { text: root.import-error != "" ? root.import-error : root.import-summary;
-                    color: root.import-error != "" ? #f08080 : root.import-valid ? Theme.success : Theme.muted;
+                    color: root.import-error != "" ? Theme.danger : root.import-valid ? Theme.success : Theme.muted;
                     wrap: word-wrap; font-size: 11px; vertical-stretch: 0; max-height: 55px; overflow: elide; }
                 HorizontalLayout { height: 38px; spacing: 10px; alignment: end;
                     ActionButton { label: "Отмена"; clicked => { root.cancel-import(); } }
@@ -596,8 +667,8 @@ export component MainWindow inherits Window {
         }
     }
     if root.toast != "": Rectangle { width: min(400px, parent.width - 24px); height: 76px; x: (parent.width - self.width) / 2; y: parent.height - self.height - 16px;
-        background: root.toast-error ? Theme.warning-surface : Theme.accent-soft; border-color: Theme.border; border-width: 1px; border-radius: 8px;
-        Text { x: 12px; width: parent.width - 24px; text: root.toast; color: root.toast-error ? #f08080 : Theme.success; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
+        background: root.toast-error ? Theme.warning-surface : Theme.accent-soft; border-color: Theme.border; border-width: 1px; border-radius: Theme.radius-medium;
+        Text { x: 12px; width: parent.width - 24px; text: root.toast; color: root.toast-error ? Theme.danger : Theme.success; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
     }
 }
 

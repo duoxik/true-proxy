@@ -410,6 +410,19 @@ mod ui_tests {
         ui.set_busy(false);
         ui.set_active(false);
         ui.set_dialog(2);
+        let protocol = ElementHandle::find_by_element_id(&ui, "ThemedComboBox::control")
+            .find(|control| control.accessible_value().as_deref() == Some("TCP + UDP"))
+            .expect("Protocol selector");
+        protocol.mock_single_click(PointerEventButton::Left);
+        assert_eq!(protocol.accessible_expanded(), Some(true));
+        for key in [
+            slint::platform::Key::DownArrow,
+            slint::platform::Key::Return,
+        ] {
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: key.into() });
+        }
+        assert_eq!(ui.get_form_protocol(), 1);
         click(&ui, "Дополнительные условия");
         assert!(ui.get_form_advanced());
         click(&ui, "Дополнительные условия");

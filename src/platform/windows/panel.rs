@@ -20,50 +20,24 @@ pub struct PopupGeometry {
     pub height: u32,
 }
 
-/// All arguments and results are physical screen pixels, including negative
-/// monitor coordinates. Oversized requests shrink to the monitor's work area.
-pub fn placement(width: u32, height: u32, anchor: RECT, work: RECT) -> Option<PopupGeometry> {
+/// Place the panel at the lower right of the monitor's work area. All sizes
+/// and coordinates are physical pixels. Oversized requests shrink to fit.
+fn placement(width: u32, height: u32, work: RECT) -> Option<PopupGeometry> {
     let (left, top, right, bottom) = (
         i64::from(work.left),
         i64::from(work.top),
         i64::from(work.right),
         i64::from(work.bottom),
     );
-    if width == 0
-        || height == 0
-        || right <= left
-        || bottom <= top
-        || anchor.right < anchor.left
-        || anchor.bottom < anchor.top
-    {
+    if width == 0 || height == 0 || right <= left || bottom <= top {
         return None;
     }
     let width = i64::from(width).min(right - left);
     let height = i64::from(height).min(bottom - top);
     let gap = 8;
-    let mut x = i64::from(anchor.right) - width;
-    let mut y = i64::from(anchor.top) - height - gap;
-    if i64::from(anchor.bottom) <= top {
-        // Taskbar at the top.
-        y = top + gap;
-    } else if i64::from(anchor.top) >= bottom {
-        // Taskbar at the bottom.
-        y = bottom - height - gap;
-    } else if i64::from(anchor.right) <= left {
-        // Taskbar at the left.
-        x = left + gap;
-        y = i64::from(anchor.bottom) - height;
-    } else if i64::from(anchor.left) >= right {
-        // Taskbar at the right.
-        x = right - width - gap;
-        y = i64::from(anchor.bottom) - height;
-    } else if y < top && i64::from(anchor.bottom) + gap + height <= bottom {
-        // Overflow popup or cursor fallback inside the work area.
-        y = i64::from(anchor.bottom) + gap;
-    }
     Some(PopupGeometry {
-        x: x.clamp(left, right - width) as i32,
-        y: y.clamp(top, bottom - height) as i32,
+        x: (right - width - gap).max(left) as i32,
+        y: (bottom - height - gap).max(top) as i32,
         width: width as u32,
         height: height as u32,
     })
@@ -129,7 +103,7 @@ pub(crate) fn from_tray(
         dpi_y = dpi_x;
     }
     let (width, height) = physical_size(logical_width, logical_height, dpi_x, dpi_y);
-    placement(width, height, anchor, info.rcWork)
+    placement(width, height, info.rcWork)
 }
 
 /// Owned modal dialogs and the native tray menu must not count as outside clicks.
@@ -249,56 +223,56 @@ mod tests {
     }
 
     #[test]
-    fn tray_popup_uses_each_taskbar_edge_without_leaving_the_work_area() {
-        for (work, anchor, expected) in [
-            (
-                rect(0, 0, 1920, 1040),
-                rect(1824, 1048, 1856, 1080),
-                (1436, 312),
-            ),
-            (rect(0, 40, 1920, 1080), rect(1824, 4, 1856, 36), (1436, 48)),
-            (rect(48, 0, 1920, 1080), rect(8, 1000, 40, 1032), (56, 312)),
-            (
-                rect(0, 0, 1872, 1080),
-                rect(1880, 1000, 1912, 1032),
-                (1444, 312),
-            ),
+    fn tray_popup_stays_at_the_lower_right_for_each_taskbar_edge() {
+        for (work, expected) in [
+            (rect(0, 0, 1920, 1040), (1492, 312)),
+            (rect(0, 40, 1920, 1080), (1492, 352)),
+            (rect(48, 0, 1920, 1080), (1492, 352)),
+            (rect(0, 0, 1872, 1080), (1444, 352)),
         ] {
-            let popup = placement(420, 720, anchor, work).unwrap();
+            let popup = placement(420, 720, work).unwrap();
             assert_eq!((popup.x, popup.y), expected);
             inside(popup, work);
         }
     }
 
     #[test]
-    fn negative_monitor_coordinates_cursor_fallback_and_overflow_anchor_are_clamped() {
-        for (work, anchor) in [
-            (rect(-1920, 0, 0, 1040), rect(-48, 1048, -16, 1080)),
-            (rect(1920, -1080, 3840, -40), rect(3780, -32, 3812, 0)),
-            (rect(0, 0, 1280, 680), rect(1, 1, 2, 2)),
-            (rect(0, 0, 1920, 1040), rect(1700, 900, 1732, 932)),
+    fn lower_right_placement_supports_negative_monitor_coordinates() {
+        for (work, expected) in [
+            (rect(-1920, 0, 0, 1040), (-428, 312)),
+            (rect(1920, -1080, 3840, -40), (3412, -768)),
         ] {
-            inside(placement(420, 720, anchor, work).unwrap(), work);
+            let popup = placement(420, 720, work).unwrap();
+            assert_eq!((popup.x, popup.y), expected);
+            inside(popup, work);
         }
     }
 
     #[test]
     fn monitor_dpi_is_applied_before_clamping_an_oversized_popup() {
         let work = rect(-1920, 0, 0, 1040);
-        let anchor = rect(-48, 1048, -16, 1080);
-        for (dpi, expected_width, expected_height) in
-            [(96, 420, 720), (144, 630, 1040), (192, 840, 1040)]
-        {
+        for (dpi, expected) in [
+            (96, (-428, 312, 420, 720)),
+            (144, (-638, 0, 630, 1040)),
+            (192, (-848, 0, 840, 1040)),
+        ] {
             let (width, height) = physical_size(420, 720, dpi, dpi);
-            let popup = placement(width, height, anchor, work).unwrap();
-            assert_eq!(
-                (popup.width, popup.height),
-                (expected_width, expected_height)
-            );
+            let popup = placement(width, height, work).unwrap();
+            assert_eq!((popup.x, popup.y, popup.width, popup.height), expected);
             inside(popup, work);
         }
+    }
+
+    #[test]
+    fn compact_work_areas_reduce_padding_and_limit_the_panel_size() {
+        let tight = rect(-424, 0, 0, 724);
+        let popup = placement(420, 720, tight).unwrap();
+        assert_eq!(
+            (popup.x, popup.y, popup.width, popup.height),
+            (-424, 0, 420, 720)
+        );
         let small = rect(-800, -600, -400, -100);
-        let popup = placement(u32::MAX, u32::MAX, anchor, small).unwrap();
+        let popup = placement(u32::MAX, u32::MAX, small).unwrap();
         assert_eq!(
             popup,
             PopupGeometry {
@@ -308,7 +282,7 @@ mod tests {
                 height: 500
             }
         );
-        assert!(placement(0, 720, anchor, work).is_none());
-        assert!(placement(420, 720, anchor, rect(0, 0, 0, 0)).is_none());
+        assert!(placement(0, 720, small).is_none());
+        assert!(placement(420, 720, rect(0, 0, 0, 0)).is_none());
     }
 }

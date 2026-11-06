@@ -125,16 +125,18 @@ pub(super) fn native_handle(
 /// Smoke-only: exercise the actual presented client surface, not take_snapshot,
 /// which renders a fresh image and cannot detect a lost native backing buffer.
 #[cfg(windows)]
-pub fn mark_surface(ui: &MainWindow) -> anyhow::Result<()> {
+pub fn mark_surface(
+    ui: &MainWindow,
+) -> anyhow::Result<true_proxy::platform::windows::presentation::SurfaceProbe> {
     true_proxy::platform::windows::presentation::mark_owned_surface(
         native_handle(ui)?,
         ui.window().scale_factor(),
     )
 }
 #[cfg(windows)]
-pub fn verify_surface(ui: &MainWindow) -> anyhow::Result<()> {
-    true_proxy::platform::windows::presentation::verify_owned_surface(
-        native_handle(ui)?,
-        ui.window().scale_factor(),
-    )
+pub fn verify_surface(
+    ui: &MainWindow,
+    probe: &true_proxy::platform::windows::presentation::SurfaceProbe,
+) -> anyhow::Result<()> {
+    true_proxy::platform::windows::presentation::verify_owned_surface(native_handle(ui)?, probe)
 }

@@ -190,7 +190,8 @@ fn show_panel(ui: &MainWindow, tray: &Tray) -> Result<()> {
     ui.show()?;
     #[cfg(windows)]
     ui.window().with_winit_window(|window| {
-        use slint::winit_030::winit::platform::windows::WindowExtWindows;
+        use slint::winit_030::winit::platform::windows::{CornerPreference, WindowExtWindows};
+        window.set_corner_preference(CornerPreference::Round);
         window.set_skip_taskbar(true);
     });
     focus_window(ui);
@@ -285,6 +286,9 @@ fn wire_connection_window(
             if let Some(view) = weak.upgrade() {
                 view.window().set_minimized(false);
                 if view.show().is_ok() {
+                    view.window().with_winit_window(|window| {
+                        window.set_theme(Some(slint::winit_030::winit::window::Theme::Dark));
+                    });
                     focus_window(&view);
                     view.invoke_resume_observation();
                     if let Some(main) = main_weak.upgrade() {
@@ -1146,6 +1150,8 @@ fn smoke_ui(
     let mut fixture_records = Vec::new();
     let mut startup_waits = 0;
     let mut tray_waits = 0;
+    #[cfg(windows)]
+    let mut surface_probe = None;
     timer.start(slint::TimerMode::Repeated, Duration::from_millis(400), move || {
         let Some(ui) = weak.upgrade() else { return; };
         #[cfg(windows)]
@@ -1266,12 +1272,12 @@ fn smoke_ui(
                 8 => { weak_tray.upgrade().context("Значок трея исчез")?.invoke_open(); ui.set_notice("".into()); ui.set_page(0); }
                 9 => {
                     snapshot(&ui, &dir.join("09-restored-from-tray.png"))?;
-                    #[cfg(windows)] appearance::mark_surface(&ui)?;
+                    #[cfg(windows)] { surface_probe = Some(appearance::mark_surface(&ui)?); }
                     ui.window().set_minimized(true);
                 }
                 10 => {ui.window().set_minimized(false);}
                 11 => {
-                    #[cfg(windows)] appearance::verify_surface(&ui)?;
+                    #[cfg(windows)] appearance::verify_surface(&ui, surface_probe.as_ref().context("Нет меток перерисовки")?)?;
                     ui.set_notice("Проверка UI: пример уведомления об обновлении; запросы к GitHub и установка отключены.".into());
                     ui.set_update_available(true); ui.set_update_version(true_proxy::updates::VERSION.into()); ui.set_update_text("Новая версия готова к загрузке.".into());
                     snapshot(&ui, &dir.join("10-update-available.png"))?;

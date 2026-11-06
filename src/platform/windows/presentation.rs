@@ -11,6 +11,12 @@ struct Dc {
     hwnd: HWND,
     dc: windows_sys::Win32::Graphics::Gdi::HDC,
 }
+
+const MARKER: u32 = 0x00ff00ff;
+
+pub struct SurfaceProbe {
+    samples: [(i32, i32, u32); 2],
+}
 impl Drop for Dc {
     fn drop(&mut self) {
         unsafe {
@@ -36,48 +42,59 @@ fn client(hwnd: HWND) -> Result<(Dc, RECT)> {
     ensure!(!dc.is_null(), "Недоступна поверхность окна");
     Ok((Dc { hwnd, dc }, rect))
 }
-pub fn mark_owned_surface(hwnd: HWND, scale: f32) -> Result<()> {
+pub fn mark_owned_surface(hwnd: HWND, scale: f32) -> Result<SurfaceProbe> {
     let (dc, rect) = client(hwnd)?;
-    // Two distant static areas expose a stale partial-render buffer without
-    // capturing any other app or changing the user's Explorer/display setup.
-    let first = RECT {
-        left: 1,
-        top: 1,
-        right: 9,
-        bottom: 9,
-    };
-    let x = (220. * scale) as i32;
-    let y = (120. * scale) as i32;
-    ensure!(
-        x + 4 < rect.right && y + 4 < rect.bottom,
-        "Недостаточная область окна"
-    );
-    let last = RECT {
-        left: x - 4,
-        top: y - 4,
-        right: x + 4,
-        bottom: y + 4,
-    };
-    let brush = unsafe { CreateSolidBrush(0x00ff00ff) };
+    // Sample the static margins away from rounded corners and interactive controls.
+    let inset = (10. * scale).round() as i32;
+    let points = [
+        (inset, (36. * scale).round() as i32),
+        (
+            rect.right - inset,
+            rect.bottom - (80. * scale).round() as i32,
+        ),
+    ];
+    let mut samples = [(0, 0, 0); 2];
+    for (sample, (x, y)) in samples.iter_mut().zip(points) {
+        ensure!(
+            x >= 4 && y >= 4 && x + 4 < rect.right && y + 4 < rect.bottom,
+            "Недостаточная область окна"
+        );
+        let color = unsafe { GetPixel(dc.dc, x, y) };
+        ensure!(
+            color != u32::MAX && color != MARKER,
+            "Недоступен исходный пиксель"
+        );
+        *sample = (x, y, color);
+    }
+    let brush = unsafe { CreateSolidBrush(MARKER) };
     ensure!(!brush.is_null(), "Не создана кисть проверки");
-    let ok = unsafe { FillRect(dc.dc, &first, brush) != 0 && FillRect(dc.dc, &last, brush) != 0 };
+    let ok = samples.iter().all(|&(x, y, _)| {
+        let marker = RECT {
+            left: x - 4,
+            top: y - 4,
+            right: x + 4,
+            bottom: y + 4,
+        };
+        unsafe { FillRect(dc.dc, &marker, brush) != 0 && GetPixel(dc.dc, x, y) == MARKER }
+    });
     unsafe {
         DeleteObject(brush);
     }
     ensure!(ok, "Не удалось поставить метки перерисовки");
-    Ok(())
+    Ok(SurfaceProbe { samples })
 }
-pub fn verify_owned_surface(hwnd: HWND, scale: f32) -> Result<()> {
+pub fn verify_owned_surface(hwnd: HWND, probe: &SurfaceProbe) -> Result<()> {
     let (dc, _rect) = client(hwnd)?;
-    let sidebar = unsafe { GetPixel(dc.dc, 4, 4) };
-    let background = unsafe { GetPixel(dc.dc, (220. * scale) as i32, (120. * scale) as i32) };
-    ensure!(
-        sidebar == 0x001e1614,
-        "Статичная панель не перерисована: {sidebar:x}"
-    );
-    ensure!(
-        matches!(background, 0x00181210 | 0x00191210),
-        "Фон окна не восстановлен: {background:x}"
-    );
+    for &(x, y, expected) in &probe.samples {
+        let color = unsafe { GetPixel(dc.dc, x, y) };
+        // The full repaint toggles the background by one color step.
+        let restored = [0, 8, 16]
+            .into_iter()
+            .all(|shift| ((color >> shift) & 0xff).abs_diff((expected >> shift) & 0xff) <= 1);
+        ensure!(
+            color != u32::MAX && color != MARKER && restored,
+            "Пиксель ({x}, {y}) не восстановлен: {color:x}, ожидался {expected:x}"
+        );
+    }
     Ok(())
 }

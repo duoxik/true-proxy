@@ -315,8 +315,8 @@ impl Tray {
     pub fn registered(&self) -> bool {
         self.state.registered.get()
     }
-    /// Position and size a logical popup next to this icon using its monitor's
-    /// physical work area and DPI, including the initial hidden-window launch.
+    /// Position and size a logical popup at the lower right of the tray
+    /// monitor's physical work area, using that monitor's DPI.
     pub fn popup_geometry(
         &self,
         logical_width: u32,

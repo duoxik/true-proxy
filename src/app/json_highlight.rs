@@ -34,9 +34,9 @@ pub fn line(text: &str) -> StyledText {
                     }
                 }
                 if bytes[at..].iter().find(|b| !b.is_ascii_whitespace()) == Some(&b':') {
-                    "#9aaaff"
+                    "#7aa7ff"
                 } else {
-                    "#79dcb4"
+                    "#85dfb5"
                 }
             }
             b'-' | b'0'..=b'9' => {
@@ -46,7 +46,7 @@ pub fn line(text: &str) -> StyledText {
                 {
                     at += 1;
                 }
-                "#f2c57c"
+                "#f3c583"
             }
             b't' | b'f' | b'n' => {
                 at += 1;
@@ -62,7 +62,7 @@ pub fn line(text: &str) -> StyledText {
                 {
                     at += text[at..].chars().next().unwrap().len_utf8();
                 }
-                "#a5afc5"
+                "#c3b9d2"
             }
         };
         // Escaped invalid strings can end at a UTF-8 continuation byte. Keep the

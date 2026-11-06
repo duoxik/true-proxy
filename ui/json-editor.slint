@@ -1,4 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
+import { Theme } from "common.slint";
 
 export struct JsonLine { number: int, text: styled-text }
 
@@ -19,7 +20,7 @@ export component JsonEditor inherits Rectangle {
     property <int> visible-lines: ceil(scroll.visible-height / root.line-height) + 4;
     changed first-line => { root.viewport(root.first-line, root.visible-lines); }
     changed visible-lines => { root.viewport(root.first-line, root.visible-lines); }
-    background: #131620; border-color: input.has-focus ? #9aaaff : #2b3040; border-width: 1px; border-radius: 7px;
+    background: Theme.field; border-color: input.has-focus ? Theme.accent : Theme.border; border-width: 1px; border-radius: Theme.radius-medium;
     clip: true;
     vertical-stretch: 1;
     min-height: 180px;
@@ -48,13 +49,13 @@ export component JsonEditor inherits Rectangle {
             x: 12px; y: 12px + line.number * root.line-height;
             width: input.width; height: root.line-height;
             text: line.text; default-font-family: "Consolas"; default-font-size: 13px;
-            default-color: #edf0f8; accessible-role: none;
+            default-color: Theme.text; accessible-role: none;
         }
         input := TextInput {
             x: 12px; y: 12px; width: scroll.content-width - 28px;
             height: max(self.preferred-height, scroll.visible-height - 28px);
             text <=> root.text; font-family: "Consolas"; font-size: 13px;
-            color: root.colored ? transparent : #edf0f8; selection-background-color: #3d4d80; selection-foreground-color: #edf0f8;
+            color: root.colored ? transparent : Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text;
             wrap: no-wrap; single-line: false; page-height: scroll.visible-height;
             accessible-label: "JSON конфигурации";
             edited => { root.edited(); }
@@ -74,7 +75,7 @@ export component JsonEditor inherits Rectangle {
         }
         if root.colored && input.has-focus: Rectangle {
             x: input.x + root.caret-x; y: input.y + root.caret-y; width: 1px;
-            height: input.font-metrics.ascent - input.font-metrics.descent; background: #9aaaff;
+            height: input.font-metrics.ascent - input.font-metrics.descent; background: Theme.accent;
         }
     }
 }
