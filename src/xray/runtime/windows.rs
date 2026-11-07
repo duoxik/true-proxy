@@ -44,8 +44,8 @@ use windows_sys::Win32::{
         },
         Pipes::CreatePipe,
         Threading::{
-            CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
-            CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+            CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, CreateProcessW,
+            DETACHED_PROCESS, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
             GetCurrentProcess, GetExitCodeProcess, InitializeProcThreadAttributeList,
             LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
@@ -137,8 +137,10 @@ impl Child {
         startup.StartupInfo.hStdOutput = inherited[1];
         startup.StartupInfo.hStdError = inherited[1];
         startup.lpAttributeList = attributes.raw();
+        // The GUI parent has no console. Keep Xray detached so Windows does
+        // not have to initialize a hidden console under the restricted token.
         let flags = CREATE_SUSPENDED
-            | CREATE_NO_WINDOW
+            | DETACHED_PROCESS
             | CREATE_UNICODE_ENVIRONMENT
             | EXTENDED_STARTUPINFO_PRESENT;
         let application = wide(binary.as_os_str());

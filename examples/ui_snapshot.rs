@@ -408,8 +408,13 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
             address: "203.0.113.6".into(),
         },
     ]));
-    xray.set_geo_ip_tags("ru".into());
-    xray.set_geo_site_tags("category-ru".into());
+    xray.set_geo_ip_selected(model(vec!["ru".into(), "private".into()]));
+    xray.set_geo_site_selected(model(vec!["category-ru".into()]));
+    xray.set_geo_site_query("cate".into());
+    xray.set_geo_site_suggestions(model(vec![
+        "category-ads-all".into(),
+        "category-gov-ru".into(),
+    ]));
     let defaults = true_proxy::xray::profile::Settings::default();
     xray.set_geo_ip_url(defaults.geoip_url.into());
     xray.set_geo_site_url(defaults.geosite_url.into());

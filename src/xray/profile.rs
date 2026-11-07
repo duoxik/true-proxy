@@ -414,18 +414,42 @@ pub fn parse_dns(text: &str) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let servers = split_list(text);
+    validate_dns_servers(&servers)?;
+    Ok(servers)
+}
+
+pub(super) fn validate_dns_servers(servers: &[String]) -> Result<()> {
     ensure!(servers.len() <= 8, "Enter at most eight DNS servers");
-    for server in &servers {
-        if server.parse::<IpAddr>().is_err() {
-            let url =
-                https_url(server).context("DNS servers must be IP addresses or HTTPS DoH URLs")?;
+    for server in servers {
+        if server.parse::<IpAddr>().is_ok() {
+            continue;
+        }
+        ensure!(
+            server.len() <= 1024 && !server.chars().any(char::is_whitespace),
+            "Enter a DNS server address up to 1024 characters without whitespace"
+        );
+        if server.starts_with("tcp://") {
+            let url = Url::parse(server).context("Enter a TCP DNS URL such as tcp://1.1.1.1:53")?;
             ensure!(
-                server.len() <= 1024 && url.path() != "/",
+                url.host_str()
+                    .is_some_and(|host| url::Host::parse(host).is_ok())
+                    && !server.contains(['@', '%', '\\'])
+                    && url.port() != Some(0)
+                    && url.path().is_empty()
+                    && url.query().is_none()
+                    && url.fragment().is_none(),
+                "Enter a TCP DNS URL with a host and optional port, such as tcp://1.1.1.1:53"
+            );
+        } else {
+            let url = https_url(server)
+                .context("DNS servers must be IP addresses, TCP DNS URLs or HTTPS DoH URLs")?;
+            ensure!(
+                url.path() != "/" && url.port() != Some(0),
                 "Enter a complete HTTPS DoH URL"
             );
         }
     }
-    Ok(servers)
+    Ok(())
 }
 
 pub fn parse_tags(text: &str, kind: &str) -> Result<Vec<String>> {
@@ -437,17 +461,21 @@ pub fn parse_tags(text: &str, kind: &str) -> Result<Vec<String>> {
                 .strip_prefix(kind)
                 .and_then(|value| value.strip_prefix(':'))
                 .unwrap_or(&tag);
-            ensure!(
-                !value.is_empty()
-                    && value.len() <= 80
-                    && value
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
-                "Invalid {kind} tag"
-            );
+            ensure!(valid_geo_code(value, kind), "Invalid {kind} tag");
             Ok(format!("{kind}:{}", value.to_ascii_lowercase()))
         })
         .collect()
+}
+
+pub(super) fn valid_geo_code(code: &str, kind: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 80
+        && !code.starts_with(['!', '@'])
+        && code.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'_')
+                || matches!((kind, byte), ("geoip", b'@') | ("geosite", b'!'))
+        })
 }
 
 fn split_list(text: &str) -> Vec<String> {
@@ -691,5 +719,30 @@ mod tests {
 
         assert_eq!(settings.resolve_hosts(BTreeSet::from([host.clone()])), 1);
         assert_eq!(settings.hosts.get(&host), Some(&address));
+    }
+
+    #[test]
+    fn tunnel_dns_accepts_tcp_resolvers_with_optional_ports() {
+        let resolvers = [
+            "tcp://192.0.2.53:8853",
+            "tcp://[2001:db8::53]:5353",
+            "tcp://resolver.example",
+            "https://resolver.example/dns-query",
+            "192.0.2.54",
+        ];
+        assert_eq!(parse_dns(&resolvers.join(", ")).unwrap(), resolvers);
+        for invalid in [
+            "tcp://",
+            "tcp://resolver.example:0",
+            "tcp://resolver.example:65536",
+            "tcp://resolver.example:8853/path",
+            "tcp://resolver.example?key=value",
+            "tcp://resolver.example#fragment",
+            "tcp://user@resolver.example",
+            "tcp://%65xample.test",
+            "tcp+local://resolver.example",
+        ] {
+            assert!(parse_dns(invalid).is_err(), "{invalid}");
+        }
     }
 }

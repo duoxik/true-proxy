@@ -372,6 +372,69 @@ mod ui_tests {
     }
 
     #[test]
+    fn xray_geo_picker_selects_and_removes_a_tag_on_first_click() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        let ru = slint::ModelRc::new(slint::VecModel::from(vec![slint::SharedString::from("ru")]));
+        xray.set_geo_ip_suggestions(ru.clone());
+        let filtered = Rc::new(Cell::new(None));
+        xray.on_filter_geo_tags({
+            let filtered = filtered.clone();
+            move |geosite, query| filtered.set(Some((geosite, query)))
+        });
+        let selected = Rc::new(Cell::new(None));
+        xray.on_select_geo_tag({
+            let selected = selected.clone();
+            let weak = ui.as_weak();
+            move |geosite, tag| {
+                selected.set(Some((geosite, tag)));
+                let ui = weak.unwrap();
+                let xray = ui.global::<XrayModule>();
+                xray.set_geo_ip_selected(ru.clone());
+                xray.set_geo_ip_query("".into());
+            }
+        });
+        let removed = Rc::new(Cell::new(None));
+        xray.on_remove_geo_tag({
+            let removed = removed.clone();
+            let weak = ui.as_weak();
+            move |geosite, tag| {
+                removed.set(Some((geosite, tag)));
+                weak.unwrap()
+                    .global::<XrayModule>()
+                    .set_geo_ip_selected(slint::ModelRc::default());
+            }
+        });
+
+        ui.show().unwrap();
+        click(&ui, "Xray Fallbacks");
+        let suggestion = || ElementHandle::find_by_accessible_label(&ui, "Add GeoIP ru").next();
+        assert!(suggestion().is_none());
+        click(&ui, "GeoIP");
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "r".into() });
+        assert_eq!(filtered.take(), Some((false, "r".into())));
+        let field = ElementHandle::find_by_accessible_label(&ui, "GeoIP")
+            .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+            .unwrap();
+        let option = suggestion().unwrap();
+        assert!(option.absolute_position().y >= field.absolute_position().y + field.size().height);
+        option.mock_single_click(PointerEventButton::Left);
+        assert_eq!(selected.take(), Some((false, "ru".into())));
+        assert!(suggestion().is_none());
+        click(&ui, "Remove GeoIP ru");
+        assert_eq!(removed.take(), Some((false, "ru".into())));
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Remove GeoIP ru")
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn first_click_activates_buttons_navigation_and_dialog_without_focus_interception() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();

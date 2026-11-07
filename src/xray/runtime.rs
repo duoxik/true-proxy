@@ -341,30 +341,16 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
         tls_settings["alpn"] = json!(alpn);
     }
     let custom_dns = !settings.dns_servers.is_empty();
-    ensure!(
-        settings.dns_servers.len() <= 8,
-        "Choose at most eight DNS resolvers"
-    );
-    for server in settings.dns_servers {
-        ensure!(
-            server.parse::<IpAddr>().is_ok()
-                || (server.starts_with("https://")
-                    && server.len() <= 1024
-                    && server[8..].contains('/')
-                    && !server.contains(['@', '#'])
-                    && !server.chars().any(char::is_whitespace)),
-            "Enter an IP address or HTTPS DNS resolver URL"
-        );
-    }
+    super::profile::validate_dns_servers(settings.dns_servers)?;
     ensure!(
         settings
             .direct_domains
             .iter()
-            .all(|tag| geo_tag(tag, "geosite:")),
+            .all(|tag| geo_tag(tag, "geosite")),
         "Domain fallback must use geosite tags"
     );
     ensure!(
-        settings.direct_ips.iter().all(|tag| geo_tag(tag, "geoip:")),
+        settings.direct_ips.iter().all(|tag| geo_tag(tag, "geoip")),
         "IP fallback must use geoip tags"
     );
     let has_direct = !settings.direct_domains.is_empty() || !settings.direct_ips.is_empty();
@@ -435,14 +421,9 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
     Ok((config, id.to_owned()))
 }
 
-fn geo_tag(tag: &str, prefix: &str) -> bool {
-    tag.strip_prefix(prefix).is_some_and(|code| {
-        !code.is_empty()
-            && code.len() <= 100
-            && code
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
-    })
+fn geo_tag(tag: &str, kind: &str) -> bool {
+    tag.split_once(':')
+        .is_some_and(|(prefix, code)| prefix == kind && super::profile::valid_geo_code(code, kind))
 }
 
 #[cfg(windows)]
@@ -646,7 +627,10 @@ mod tests {
             upstream_port: 443,
             upstream_ip: Some("192.0.2.1".parse().unwrap()),
             outbound: &profile,
-            dns_servers: &["https://dns.example/dns-query".into()],
+            dns_servers: &[
+                "https://dns.example/dns-query".into(),
+                "tcp://192.0.2.53:8853".into(),
+            ],
             direct_domains: &["geosite:category-ru".into()],
             direct_ips: &["geoip:ru".into()],
             geo_directory: Path::new("."),
@@ -659,10 +643,12 @@ mod tests {
         assert_eq!(tls["serverName"], "node.example");
         assert!(tls.get("allowInsecure").is_none());
         assert_eq!(value["outbounds"][1]["targetStrategy"], "AsIs");
+        assert_eq!(value["dns"]["servers"][1], "tcp://192.0.2.53:8853");
         assert_eq!(
             value["routing"]["rules"][0]["inboundTag"],
             json!([DNS_INBOUND])
         );
+        assert_eq!(value["routing"]["rules"][0]["outboundTag"], DNS_TUNNEL);
         assert_eq!(value["routing"]["rules"][1]["outboundTag"], DIRECT);
 
         settings.upstream_ip = None;
@@ -756,7 +742,7 @@ mod tests {
             upstream_port: 9,
             upstream_ip: Some(Ipv4Addr::LOCALHOST.into()),
             outbound: &profile,
-            dns_servers: &[],
+            dns_servers: &["tcp://192.0.2.53:8853".into()],
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: installed.executable.parent().unwrap(),

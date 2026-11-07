@@ -3,12 +3,12 @@ use crate::{
     MainWindow, XrayConnectionRow, XrayHostRow, XrayModule, XrayProfileRow, XraySubscriptionGroup,
 };
 use anyhow::{Context, Result, ensure};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, Model, ModelRc, SharedString};
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::{Cell, OnceCell, RefCell},
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::{Arc, Mutex, mpsc},
     thread,
     time::Duration,
 };
@@ -31,13 +31,14 @@ enum Command {
     Dns(String),
     RefreshHosts,
     Geo {
-        ips: String,
-        domains: String,
+        ips: Vec<String>,
+        domains: Vec<String>,
         geoip: String,
         geosite: String,
         hours: String,
     },
     RefreshGeo,
+    LoadGeoTags,
     Record(bool),
 }
 
@@ -49,6 +50,9 @@ impl Command {
         )
     }
 }
+
+type GeoCatalog = (Vec<String>, Vec<String>);
+type SharedGeoCatalog = Arc<Mutex<Option<GeoCatalog>>>;
 
 struct Controller {
     directory: PathBuf,
@@ -63,11 +67,17 @@ struct Controller {
     pending: bool,
     status: String,
     geo_status: String,
+    geo_catalog: SharedGeoCatalog,
     last_geo_attempt: u64,
 }
 
 impl Controller {
-    fn load(directory: PathBuf, bypass: Arc<Bypass>, activity: Arc<Activity>) -> Result<Self> {
+    fn load(
+        directory: PathBuf,
+        bypass: Arc<Bypass>,
+        activity: Arc<Activity>,
+        geo_catalog: SharedGeoCatalog,
+    ) -> Result<Self> {
         let settings_path = directory.join("settings.json");
         let settings = Settings::load(&settings_path)?;
         activity.set_recording(settings.log_recording);
@@ -91,6 +101,7 @@ impl Controller {
             pending: false,
             status,
             geo_status: String::new(),
+            geo_catalog,
             last_geo_attempt: 0,
         })
     }
@@ -149,6 +160,7 @@ impl Controller {
                     None => assets::latest()?,
                 };
                 self.installed = Some(assets::install(&self.directory, &release)?);
+                self.reload_geo_tags(true);
                 self.status = "Installed · Stopped".into();
                 self.last_geo_attempt = profile::now();
                 if self.settings.geoip_url == assets::DEFAULT_GEOIP_URL
@@ -253,8 +265,8 @@ impl Controller {
                 let sources_changed =
                     self.settings.geoip_url != geoip || self.settings.geosite_url != geosite;
                 self.change(true, |settings| {
-                    settings.direct_ips = profile::parse_tags(&ips, "geoip")?;
-                    settings.direct_domains = profile::parse_tags(&domains, "geosite")?;
+                    settings.direct_ips = ips;
+                    settings.direct_domains = domains;
                     settings.geoip_url = geoip;
                     settings.geosite_url = geosite;
                     settings.geo_refresh_hours = hours
@@ -272,6 +284,7 @@ impl Controller {
                 }
             }
             Command::RefreshGeo => self.refresh_geo()?,
+            Command::LoadGeoTags => self.reload_geo_tags(false),
             Command::Record(record) => {
                 self.change(false, |settings| {
                     settings.log_recording = record;
@@ -325,12 +338,21 @@ impl Controller {
             &self.settings.geosite_url,
         )?;
         let _ = assets::prune_geo(&self.directory, self.runtime_geo.as_deref());
+        self.reload_geo_tags(true);
         self.change(true, |settings| {
             settings.geo_refreshed_at = profile::now();
             Ok(())
         })?;
         self.geo_status = "Databases downloaded successfully".into();
         Ok(())
+    }
+
+    fn reload_geo_tags(&self, only_if_loaded: bool) {
+        if only_if_loaded && self.geo_catalog.lock().unwrap().is_none() {
+            return;
+        }
+        let tags = assets::geo_tags(&self.directory).unwrap_or_default();
+        *self.geo_catalog.lock().unwrap() = Some(tags);
     }
 
     fn poll(&mut self) -> Option<String> {
@@ -420,8 +442,6 @@ impl View {
         } else {
             self.settings.dns.join(", ").into()
         });
-        xray.set_geo_ip_tags(self.settings.direct_ips.join(", ").into());
-        xray.set_geo_site_tags(self.settings.direct_domains.join(", ").into());
         xray.set_geo_ip_url(self.settings.geoip_url.as_str().into());
         xray.set_geo_site_url(self.settings.geosite_url.as_str().into());
         xray.set_geo_refresh_hours(self.settings.geo_refresh_hours.to_string().into());
@@ -484,6 +504,11 @@ fn set_error(xray: &XrayModule<'_>, manages_core: bool, error: String) {
     }
 }
 
+fn refresh_geo_suggestions(xray: &XrayModule<'_>) {
+    xray.invoke_filter_geo_tags(false, xray.get_geo_ip_query());
+    xray.invoke_filter_geo_tags(true, xray.get_geo_site_query());
+}
+
 fn spawn_worker(
     mut controller: Controller,
     weak: slint::Weak<MainWindow>,
@@ -516,11 +541,21 @@ fn spawn_worker(
                 };
                 let (result, command_done, manages_core) = match receiver.recv_timeout(interval) {
                     Ok(command) => {
+                        let catalog_only = matches!(command, Command::LoadGeoTags);
                         let manages_core = command.manages_core();
                         let error = controller
                             .perform(command)
                             .err()
                             .map_or_else(String::new, |error| error.to_string());
+                        if catalog_only {
+                            let weak = weak.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = weak.upgrade() {
+                                    refresh_geo_suggestions(&ui.global::<XrayModule>());
+                                }
+                            });
+                            continue;
+                        }
                         (Some(error), true, manages_core)
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => (controller.poll(), false, false),
@@ -535,6 +570,7 @@ fn spawn_worker(
                             view.apply(&ui, command_done);
                             let xray = ui.global::<XrayModule>();
                             set_error(&xray, manages_core, error);
+                            refresh_geo_suggestions(&xray);
                             xray.invoke_refresh_activity();
                         }
                     });
@@ -546,10 +582,14 @@ fn spawn_worker(
 
 pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> Result<()> {
     let activity = Arc::new(Activity::default());
-    let controller = Controller::load(directory, bypass, activity.clone())?;
+    let geo_catalog = SharedGeoCatalog::default();
+    let controller = Controller::load(directory, bypass, activity.clone(), geo_catalog.clone())?;
     let installed = controller.installed.is_some();
     let started = Arc::new(std::sync::Mutex::new(None));
     View::new(&controller).apply(ui, true);
+    let xray = ui.global::<XrayModule>();
+    xray.set_geo_ip_selected(geo_draft(&controller.settings.direct_ips, "geoip:"));
+    xray.set_geo_site_selected(geo_draft(&controller.settings.direct_domains, "geosite:"));
     let initial = RefCell::new(Some(controller));
     let sender = OnceCell::new();
     let weak = ui.as_weak();
@@ -562,7 +602,14 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
     if installed {
         let _ = sender.set(start_worker());
     }
-    let xray = ui.global::<XrayModule>();
+    let queue = std::rc::Rc::new(move |command: Command| {
+        sender
+            .get_or_init(&start_worker)
+            .as_ref()
+            .is_some_and(|sender| sender.try_send(command).is_ok())
+    });
+    let geo_queue = queue.clone();
+    wire_geo_editor(ui, geo_catalog, move |command| geo_queue(command));
     let weak = ui.as_weak();
     let send = std::rc::Rc::new(move |command: Command| {
         if let Some(ui) = weak.upgrade() {
@@ -571,11 +618,7 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
                 return;
             }
             let manages_core = command.manages_core();
-            if sender
-                .get_or_init(&start_worker)
-                .as_ref()
-                .is_some_and(|sender| sender.try_send(command).is_ok())
-            {
+            if queue(command) {
                 xray.set_busy(true);
                 set_error(&xray, manages_core, String::new());
             } else {
@@ -615,14 +658,26 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
     bind!(on_save_dns, Command::Dns, string);
     {
         let send = send.clone();
-        xray.on_save_geo(move |ips, domains, geoip, geosite, hours| {
-            send(Command::Geo {
-                ips: ips.to_string(),
-                domains: domains.to_string(),
-                geoip: geoip.to_string(),
-                geosite: geosite.to_string(),
-                hours: hours.to_string(),
-            })
+        let weak = ui.as_weak();
+        xray.on_save_geo(move |geoip, geosite, hours| {
+            if let Some(ui) = weak.upgrade() {
+                let xray = ui.global::<XrayModule>();
+                send(Command::Geo {
+                    ips: xray
+                        .get_geo_ip_selected()
+                        .iter()
+                        .map(|tag| format!("geoip:{tag}"))
+                        .collect(),
+                    domains: xray
+                        .get_geo_site_selected()
+                        .iter()
+                        .map(|tag| format!("geosite:{tag}"))
+                        .collect(),
+                    geoip: geoip.to_string(),
+                    geosite: geosite.to_string(),
+                    hours: hours.to_string(),
+                });
+            }
         });
     }
     xray.on_set_log_recording(move |record| send(Command::Record(record)));
@@ -665,6 +720,119 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
         }
     });
     Ok(())
+}
+
+fn geo_draft(tags: &[String], prefix: &str) -> ModelRc<SharedString> {
+    model(
+        tags.iter()
+            .map(|tag| tag.strip_prefix(prefix).unwrap_or(tag).into())
+            .collect(),
+    )
+}
+
+fn geo_selection(xray: &XrayModule<'_>, geosite: bool) -> ModelRc<SharedString> {
+    if geosite {
+        xray.get_geo_site_selected()
+    } else {
+        xray.get_geo_ip_selected()
+    }
+}
+
+fn set_geo_selection(xray: &XrayModule<'_>, geosite: bool, tags: Vec<SharedString>) {
+    if geosite {
+        xray.set_geo_site_selected(model(tags));
+    } else {
+        xray.set_geo_ip_selected(model(tags));
+    }
+}
+
+fn wire_geo_editor(
+    ui: &MainWindow,
+    catalog: SharedGeoCatalog,
+    queue: impl Fn(Command) -> bool + 'static,
+) {
+    let xray = ui.global::<XrayModule>();
+    let weak = ui.as_weak();
+    let requested = Cell::new(false);
+    xray.on_filter_geo_tags(move |geosite, query| {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        let query = query.trim().to_ascii_lowercase();
+        let prefix = if geosite { "geosite:" } else { "geoip:" };
+        let needle = query.strip_prefix(prefix).unwrap_or(&query);
+        let selected = geo_selection(&xray, geosite);
+        let suggestions = if needle.is_empty() {
+            Vec::new()
+        } else {
+            let catalog = catalog.lock().unwrap();
+            if let Some((ips, sites)) = catalog.as_ref() {
+                let tags = if geosite { sites } else { ips };
+                tags.iter()
+                    .filter(|tag| tag.starts_with(needle))
+                    .chain(
+                        tags.iter()
+                            .filter(|tag| !tag.starts_with(needle) && tag.contains(needle)),
+                    )
+                    .filter(|tag| !selected.iter().any(|saved| saved.as_str() == tag.as_str()))
+                    .take(6)
+                    .map(|tag| tag.as_str().into())
+                    .collect()
+            } else {
+                drop(catalog);
+                if !requested.get() && queue(Command::LoadGeoTags) {
+                    requested.set(true);
+                }
+                Vec::new()
+            }
+        };
+        if geosite {
+            xray.set_geo_site_suggestions(model(suggestions));
+        } else {
+            xray.set_geo_ip_suggestions(model(suggestions));
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_select_geo_tag(move |geosite, tag| {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        let kind = if geosite { "geosite" } else { "geoip" };
+        let normalized = tag.trim().to_ascii_lowercase();
+        let Ok(parsed) = profile::parse_tags(&normalized, kind) else {
+            xray.set_error("Enter a valid geo tag".into());
+            return;
+        };
+        let [tag] = parsed.as_slice() else {
+            xray.set_error("Enter one geo tag at a time".into());
+            return;
+        };
+        let bare = &tag[kind.len() + 1..];
+        let mut tags: Vec<_> = geo_selection(&xray, geosite).iter().collect();
+        if !tags.iter().any(|tag| tag.as_str() == bare) {
+            if tags.len() >= 32 {
+                xray.set_error("Enter at most 32 geo tags per field".into());
+                return;
+            }
+            tags.push(bare.into());
+            set_geo_selection(&xray, geosite, tags);
+        }
+        if geosite {
+            xray.set_geo_site_query("".into());
+        } else {
+            xray.set_geo_ip_query("".into());
+        }
+        xray.invoke_filter_geo_tags(geosite, "".into());
+    });
+    let weak = ui.as_weak();
+    xray.on_remove_geo_tag(move |geosite, tag| {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        let tags = geo_selection(&xray, geosite)
+            .iter()
+            .filter(|saved| saved != &tag)
+            .collect();
+        set_geo_selection(&xray, geosite, tags);
+        refresh_geo_suggestions(&xray);
+    });
 }
 
 fn render_activity(ui: &MainWindow, activity: &Activity, started: Option<std::time::Instant>) {

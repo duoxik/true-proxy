@@ -185,6 +185,16 @@ pub fn geo_directory(root: &Path) -> Result<Option<PathBuf>> {
     Ok(installed(root)?.and_then(|core| core.executable.parent().map(Path::to_path_buf)))
 }
 
+/// Return the GeoIP and Geosite categories in the selected database pair.
+pub fn geo_tags(root: &Path) -> Result<(Vec<String>, Vec<String>)> {
+    let directory = geo_directory(root)?.context("No Xray geodata is installed")?;
+    let ip = geodata::tags(&directory.join("geoip.dat"), geodata::Kind::Ip)
+        .context("Could not read GeoIP tags")?;
+    let site = geodata::tags(&directory.join("geosite.dat"), geodata::Kind::Site)
+        .context("Could not read Geosite tags")?;
+    Ok((ip, site))
+}
+
 /// Download and validate both files before switching the selected pair.
 pub fn refresh_geo(root: &Path, geoip_url: &str, geosite_url: &str) -> Result<()> {
     let defaults = geoip_url == DEFAULT_GEOIP_URL || geosite_url == DEFAULT_GEOSITE_URL;

@@ -26,8 +26,12 @@ export global XrayModule {
     in property <string> port: "2081";
     in property <string> dns: "System";
     in property <[XrayHostRow]> hosts;
-    in property <string> geo-ip-tags;
-    in property <string> geo-site-tags;
+    in property <[string]> geo-ip-selected;
+    in property <[string]> geo-site-selected;
+    in property <[string]> geo-ip-suggestions;
+    in property <[string]> geo-site-suggestions;
+    in-out property <string> geo-ip-query;
+    in-out property <string> geo-site-query;
     in property <string> geo-ip-url;
     in property <string> geo-site-url;
     in property <string> geo-refresh-hours;
@@ -56,7 +60,10 @@ export global XrayModule {
     callback save-port(string);
     callback save-dns(string);
     callback refresh-hosts;
-    callback save-geo(string, string, string, string, string);
+    callback filter-geo-tags(bool, string);
+    callback select-geo-tag(bool, string);
+    callback remove-geo-tag(bool, string);
+    callback save-geo(string, string, string);
     callback refresh-geo;
     callback refresh-activity;
     callback filter-connections;
@@ -331,10 +338,10 @@ component XrayDns inherits VerticalLayout {
     spacing: 12px;
     XrayCard {
         title: "Tunnel DNS";
-        caption: "Use Default for the VPN server’s usual resolution, or enter IP addresses and DNS-over-HTTPS URLs separated by commas.";
+        caption: "Use Default for the VPN server’s usual resolution, or enter IP addresses, TCP DNS URLs, or DNS-over-HTTPS URLs separated by commas.";
         HorizontalLayout {
             spacing: 8px;
-            dns-field := Field { value: XrayModule.dns; placeholder: "Default or https://resolver.example/dns-query"; field-height: 38px; }
+            dns-field := Field { value: XrayModule.dns; placeholder: "Default, tcp://1.1.1.1:53, or https://resolver.example/dns-query"; field-height: 38px; }
             ActionButton { label: "Save DNS"; primary: true; enabled: !XrayModule.busy; clicked => { XrayModule.save-dns(dns-field.value); } }
         }
     }
@@ -366,13 +373,145 @@ component XrayDns inherits VerticalLayout {
     }
 }
 
+component XrayGeoChip inherits Rectangle {
+    in property <string> tag;
+    in property <string> kind;
+    callback remove;
+    width: min(220px, caption.preferred-width + 34px);
+    height: 26px;
+    background: Theme.accent-soft;
+    border-radius: Theme.radius-small;
+    caption := Text {
+        x: 8px;
+        width: parent.width - 34px;
+        text: root.tag;
+        font-size: 12px;
+        color: Theme.accent;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    ActionButton {
+        x: parent.width - self.width - 2px;
+        y: 2px;
+        width: 22px;
+        height: 22px;
+        label: "Remove " + root.kind + " " + root.tag;
+        icon: "close";
+        icon-only: true;
+        enabled: !XrayModule.busy;
+        clicked => { root.remove(); }
+    }
+}
+
+component XrayGeoSuggestion inherits Rectangle {
+    in property <string> tag;
+    in property <string> kind;
+    callback select;
+    height: 30px;
+    border-radius: Theme.radius-small;
+    background: touch.pressed ? Theme.pressed : touch.has-hover || focus.has-focus ? Theme.surface-hover : Theme.surface;
+    accessible-role: button;
+    accessible-label: "Add " + root.kind + " " + root.tag;
+    accessible-enabled: !XrayModule.busy;
+    accessible-action-default => { if !XrayModule.busy { root.select(); } }
+    forward-focus: focus;
+    Text {
+        x: 8px;
+        width: parent.width - 16px;
+        text: root.tag;
+        color: Theme.text;
+        font-size: 12px;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    touch := TouchArea {
+        enabled: !XrayModule.busy;
+        mouse-cursor: pointer;
+        clicked => { root.select(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        enabled: !XrayModule.busy;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return { root.select(); return accept; }
+            return reject;
+        }
+    }
+}
+
+component XrayGeoPicker inherits VerticalLayout {
+    in property <bool> geosite;
+    in property <[string]> selected;
+    in property <[string]> suggestions;
+    in-out property <string> query;
+    private property <string> kind: root.geosite ? "Geosite" : "GeoIP";
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    alignment: start;
+    spacing: 6px;
+    Field {
+        label: root.kind;
+        placeholder: "Search or enter a tag";
+        icon: "search";
+        value <=> root.query;
+        edited => { XrayModule.filter-geo-tags(root.geosite, root.query); }
+        accepted => {
+            if !XrayModule.busy && root.query != "" { XrayModule.select-geo-tag(root.geosite, root.query); }
+        }
+    }
+    if root.query != "" && root.suggestions.length > 0: Rectangle {
+        height: options.preferred-height;
+        border-radius: Theme.radius-small;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.surface;
+        options := VerticalLayout {
+            padding: 4px;
+            for value in root.suggestions: XrayGeoSuggestion {
+                tag: value;
+                kind: root.kind;
+                select => { XrayModule.select-geo-tag(root.geosite, value); }
+            }
+        }
+    }
+    if root.selected.length > 0: ScrollView {
+        height: chips.preferred-width > self.visible-width ? 40px : 26px;
+        min-width: 0px;
+        vertical-scrollbar-policy: always-off;
+        horizontal-scrollbar-policy: as-needed;
+        content-width: max(self.visible-width, chips.preferred-width);
+        content-height: self.visible-height;
+        chips := HorizontalLayout {
+            width: max(root.width, self.preferred-width);
+            height: 26px;
+            alignment: start;
+            spacing: 5px;
+            for value in root.selected: XrayGeoChip {
+                tag: value;
+                kind: root.kind;
+                remove => { XrayModule.remove-geo-tag(root.geosite, value); }
+            }
+        }
+    }
+}
+
 component XrayFallbacks inherits XrayCard {
     title: "Direct routes";
-    caption: "Xray sends matches to Direct. Enter GeoIP and Geosite tags as comma-separated lists. The database source URLs control where Xray downloads each list.";
+    caption: "Xray sends matching traffic directly. Select an entry or press Enter to add a custom tag.";
     HorizontalLayout {
         spacing: 10px;
-        ip-tags := Field { label: "GeoIP tags"; placeholder: "ru"; value: XrayModule.geo-ip-tags; }
-        site-tags := Field { label: "Geosite tags"; placeholder: "category-ru"; value: XrayModule.geo-site-tags; }
+        XrayGeoPicker {
+            selected: XrayModule.geo-ip-selected;
+            suggestions: XrayModule.geo-ip-suggestions;
+            query <=> XrayModule.geo-ip-query;
+        }
+        XrayGeoPicker {
+            geosite: true;
+            selected: XrayModule.geo-site-selected;
+            suggestions: XrayModule.geo-site-suggestions;
+            query <=> XrayModule.geo-site-query;
+        }
     }
     ip-url := Field { label: "GeoIP database source"; placeholder: "HTTPS download URL"; value: XrayModule.geo-ip-url; }
     site-url := Field { label: "Geosite database source"; placeholder: "HTTPS download URL"; value: XrayModule.geo-site-url; }
@@ -385,7 +524,7 @@ component XrayFallbacks inherits XrayCard {
             label: "Save Fallbacks";
             primary: true;
             enabled: !XrayModule.busy;
-            clicked => { XrayModule.save-geo(ip-tags.value, site-tags.value, ip-url.value, site-url.value, hours.value); }
+            clicked => { XrayModule.save-geo(ip-url.value, site-url.value, hours.value); }
         }
         ActionButton {
             label: "Update Databases";
