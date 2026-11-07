@@ -344,7 +344,99 @@ fn main() -> Result<()> {
             .into(),
     );
     save(&main_adapter, &destination.join("logs.png"))?;
+    #[cfg(windows)]
+    xray_previews(&ui, &main_adapter, &destination)?;
     ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());
+    Ok(())
+}
+
+#[cfg(windows)]
+fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) -> Result<()> {
+    ui.set_page(4);
+    ui.set_settings_section(2);
+    save(adapter, &destination.join("xray-modules.png"))?;
+
+    let xray = ui.global::<XrayModule>();
+    xray.set_installed(true);
+    xray.set_version("v26.10.21".into());
+    xray.set_status("Preview · sample data".into());
+    xray.set_running(true);
+    xray.set_uptime("00:21:16".into());
+    xray.set_connection_count(38);
+    xray.set_upload("29".into());
+    xray.set_download("9".into());
+    xray.set_profiles(model(vec![
+        XrayProfileRow {
+            id: "primary".into(),
+            name: "Primary".into(),
+            summary: "vpn.example.test:443 · VLESS / TLS / Vision".into(),
+            active: true,
+            subscription: true,
+        },
+        XrayProfileRow {
+            id: "backup".into(),
+            name: "Backup".into(),
+            summary: "backup.example.test:443 · VLESS / TLS".into(),
+            active: false,
+            subscription: false,
+        },
+    ]));
+    xray.set_dns("https://resolver.example.test/dns-query".into());
+    xray.set_hosts(model(vec![XrayHostRow {
+        host: "vpn.example.test".into(),
+        address: "203.0.113.6".into(),
+    }]));
+    xray.set_geo_ip_tags("ru".into());
+    xray.set_geo_site_tags("category-ru".into());
+    let defaults = true_proxy::xray::profile::Settings::default();
+    xray.set_geo_ip_url(defaults.geoip_url.into());
+    xray.set_geo_site_url(defaults.geosite_url.into());
+    xray.set_geo_refresh_hours(defaults.geo_refresh_hours.to_string().into());
+    xray.set_geo_status("Both databases are ready".into());
+    xray.set_connections(model(vec![
+        XrayConnectionRow {
+            time: "14:32:04".into(),
+            protocol: "TCP".into(),
+            destination: "example.org:443".into(),
+            source: "127.0.0.1:52071".into(),
+            route: "VLESS".into(),
+            detail: "Accepted".into(),
+        },
+        XrayConnectionRow {
+            time: "14:32:01".into(),
+            protocol: "UDP".into(),
+            destination: "198.51.100.17:3478".into(),
+            source: "127.0.0.1:52069".into(),
+            route: "Direct".into(),
+            detail: "Accepted".into(),
+        },
+    ]));
+    xray.set_connection_total(2);
+    xray.set_log_total(3);
+    xray.set_log_visible_count(3);
+    xray.set_log_recording(true);
+    xray.set_log_text(
+        "14:10:48  INF  [Core] Xray started\n\
+         14:32:01  INF  [Access] UDP 198.51.100.17:3478 · Direct\n\
+         14:32:04  INF  [Access] TCP example.org:443 · VLESS"
+            .into(),
+    );
+    ui.set_page(6);
+    for (section, name) in [
+        "dashboard",
+        "profiles",
+        "general",
+        "dns",
+        "fallbacks",
+        "connections",
+        "logs",
+    ]
+    .iter()
+    .enumerate()
+    {
+        xray.set_section(section as i32);
+        save(adapter, &destination.join(format!("xray-{name}.png")))?;
+    }
     Ok(())
 }

@@ -1,5 +1,5 @@
-//! Blocking WinHTTP lives on the update thread. TLS certificate checks stay enabled;
-//! redirects are followed explicitly, only to the GitHub HTTPS allowlist.
+//! Blocking WinHTTP for background transfers. TLS certificate checks stay enabled.
+//! Update requests use the GitHub allowlist; user-supplied sources use HTTPS only.
 use anyhow::{Context, Result, ensure};
 use std::{
     ffi::c_void,
@@ -40,6 +40,36 @@ pub fn get(
     url: &str,
     binary: bool,
     limit: u64,
+    receive: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<u32> {
+    request(url, Some(binary), limit, receive)
+}
+
+pub fn get_https(url: &str, limit: u64, receive: impl FnMut(&[u8]) -> Result<()>) -> Result<u32> {
+    request(url, None, limit, receive)
+}
+
+fn checked_url(text: &str) -> Result<url::Url> {
+    ensure!(
+        text.len() <= 4096 && !text.chars().any(|c| c.is_control() || c == '\\'),
+        "Invalid HTTPS source"
+    );
+    let url = url::Url::parse(text).map_err(|_| anyhow::anyhow!("Invalid HTTPS source"))?;
+    ensure!(
+        url.scheme() == "https"
+            && url.host().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none(),
+        "The source must be an HTTPS URL without credentials or a fragment"
+    );
+    Ok(url)
+}
+
+fn request(
+    url: &str,
+    github: Option<bool>,
+    limit: u64,
     mut receive: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<u32> {
     let started = Instant::now();
@@ -66,8 +96,22 @@ pub fn get(
     })?;
     let mut next = url.to_string();
     for _ in 0..5 {
-        let (host, path) = crate::updates::split_https(&next)?;
-        let connection = owned(unsafe { WinHttpConnect(session.0, wide(host).as_ptr(), 443, 0) })?;
+        let source = if github.is_none() {
+            Some(checked_url(&next)?)
+        } else {
+            None
+        };
+        let (host, path, port) = if let Some(source) = &source {
+            (
+                source.host_str().context("Missing HTTPS host")?,
+                &source[url::Position::BeforePath..],
+                source.port().unwrap_or(443),
+            )
+        } else {
+            let (host, path) = crate::updates::split_https(&next)?;
+            (host, path, 443)
+        };
+        let connection = owned(unsafe { WinHttpConnect(session.0, wide(host).as_ptr(), port, 0) })?;
         let request = owned(unsafe {
             WinHttpOpenRequest(
                 connection.0,
@@ -79,7 +123,10 @@ pub fn get(
                 WINHTTP_FLAG_SECURE,
             )
         })?;
-        let disabled = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS;
+        let mut disabled = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS;
+        if github.is_none() {
+            disabled |= WINHTTP_DISABLE_AUTHENTICATION;
+        }
         success(unsafe {
             WinHttpSetOption(
                 request.0,
@@ -88,10 +135,14 @@ pub fn get(
                 4,
             )
         })?;
-        let headers = wide(if binary {
-            "Accept: application/octet-stream\r\nX-GitHub-Api-Version: 2026-03-10\r\n"
-        } else {
-            "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2026-03-10\r\n"
+        let headers = wide(match github {
+            Some(true) => {
+                "Accept: application/octet-stream\r\nX-GitHub-Api-Version: 2026-03-10\r\n"
+            }
+            Some(false) => {
+                "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2026-03-10\r\n"
+            }
+            None => "Accept: */*\r\n",
         });
         success(unsafe {
             WinHttpSendRequest(
@@ -129,7 +180,7 @@ pub fn get(
                     ptr::null_mut(),
                 );
             }
-            ensure!((2..=32768).contains(&length), "Invalid GitHub redirect");
+            ensure!((2..=32768).contains(&length), "Invalid HTTPS redirect");
             let mut location = vec![0u16; (length as usize).div_ceil(2)];
             success(unsafe {
                 WinHttpQueryHeaders(
@@ -145,11 +196,20 @@ pub fn get(
                 .iter()
                 .position(|c| *c == 0)
                 .unwrap_or(location.len());
-            next = String::from_utf16(&location[..end]).context("Invalid GitHub redirect")?;
-            crate::updates::split_https(&next)?;
+            let location =
+                String::from_utf16(&location[..end]).context("Invalid HTTPS redirect")?;
+            next = if let Some(source) = source {
+                source
+                    .join(&location)
+                    .map_err(|_| anyhow::anyhow!("Invalid HTTPS redirect"))?
+                    .to_string()
+            } else {
+                crate::updates::split_https(&location)?;
+                location
+            };
             ensure!(
                 started.elapsed() < Duration::from_secs(120),
-                "The update download timed out"
+                "The download timed out"
             );
             continue;
         }
@@ -161,7 +221,7 @@ pub fn get(
         loop {
             ensure!(
                 started.elapsed() < Duration::from_secs(120),
-                "The update download timed out"
+                "The download timed out"
             );
             let mut read = 0;
             success(unsafe {
@@ -178,10 +238,10 @@ pub fn get(
             received += read as u64;
             ensure!(
                 received <= limit,
-                "The GitHub response exceeded the size limit"
+                "The HTTPS response exceeded the size limit"
             );
             receive(&buffer[..read as usize])?;
         }
     }
-    anyhow::bail!("Too many GitHub redirects")
+    anyhow::bail!("Too many HTTPS redirects")
 }

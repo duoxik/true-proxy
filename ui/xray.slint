@@ -1,0 +1,549 @@
+import { ScrollView } from "std-widgets.slint";
+import { ActionButton, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { LogStreamView } from "logs.slint";
+
+export struct XrayProfileRow { id: string, name: string, summary: string, active: bool, subscription: bool }
+export struct XrayHostRow { host: string, address: string }
+export struct XrayConnectionRow { time: string, protocol: string, destination: string, source: string, route: string, detail: string }
+
+export global XrayModule {
+    in property <bool> installed;
+    in property <bool> busy;
+    in property <bool> running;
+    in property <string> version;
+    in property <string> latest-version;
+    in property <string> status;
+    in property <string> error;
+    in property <string> uptime: "00:00:00";
+    in property <int> connection-count;
+    in property <string> upload: "0";
+    in property <string> download: "0";
+    in property <[XrayProfileRow]> profiles;
+    in-out property <string> profile-input;
+    in property <string> port: "2081";
+    in property <string> dns: "System";
+    in property <[XrayHostRow]> hosts;
+    in property <string> geo-ip-tags;
+    in property <string> geo-site-tags;
+    in property <string> geo-ip-url;
+    in property <string> geo-site-url;
+    in property <string> geo-refresh-hours;
+    in property <string> geo-status;
+    in property <[XrayConnectionRow]> connections;
+    in property <int> connection-total;
+    in-out property <string> connection-query;
+    in property <string> log-text;
+    in property <int> log-total;
+    in property <int> log-visible-count;
+    in property <bool> log-recording;
+    in-out property <int> log-verbosity;
+    in-out property <int> log-source;
+    in-out property <bool> log-errors-only;
+    in-out property <bool> log-follow;
+    in-out property <int> section;
+
+    callback install;
+    callback check-updates;
+    callback install-update;
+    callback toggle;
+    callback import-profile(string);
+    callback refresh-subscription(string);
+    callback activate-profile(string);
+    callback remove-profile(string);
+    callback save-port(string);
+    callback save-dns(string);
+    callback pin-host;
+    callback remove-host(string);
+    callback save-geo(string, string, string, string, string);
+    callback refresh-geo;
+    callback refresh-activity;
+    callback filter-connections;
+    callback clear-connections;
+    callback filter-logs;
+    callback set-log-recording(bool);
+    callback clear-logs;
+}
+
+component XrayNote inherits Text {
+    color: Theme.secondary;
+    font-size: 12px;
+    min-width: 0px;
+    wrap: word-wrap;
+    height: self.preferred-height;
+}
+
+component XrayCard inherits Rectangle {
+    in property <string> title;
+    in property <string> caption;
+    min-width: 0px;
+    height: content.preferred-height;
+    vertical-stretch: 0;
+    border-radius: Theme.radius-medium;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface;
+    content := VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        alignment: start;
+        Text { text: root.title; font-size: 16px; font-weight: 600; color: Theme.text; }
+        if root.caption != "": XrayNote { text: root.caption; }
+        @children
+    }
+}
+
+component XrayNotice inherits Rectangle {
+    in property <string> message;
+    in property <bool> error;
+    min-width: 0px;
+    height: notice.preferred-height;
+    vertical-stretch: 0;
+    border-radius: Theme.radius-small;
+    background: root.error ? Theme.danger-soft : Theme.accent-soft;
+    notice := VerticalLayout {
+        padding: 10px;
+        XrayNote { text: root.message; color: root.error ? Theme.danger : Theme.text; }
+    }
+}
+
+export component XrayModuleCard inherits XrayCard {
+    callback open;
+    title: "Xray-core";
+    caption: "Adds a managed local SOCKS5 listener and VLESS profiles. The Xray-core executable is downloaded separately.";
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        if !XrayModule.installed: ActionButton {
+            label: XrayModule.busy ? "Installing…" : "Install Xray-core";
+            icon: "download";
+            primary: true;
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.install(); }
+        }
+        if XrayModule.installed: ActionButton {
+            label: "Open X-RAY";
+            icon: "arrow-right";
+            primary: true;
+            clicked => { root.open(); }
+        }
+        if XrayModule.installed: Text {
+            text: "Installed · " + XrayModule.version;
+            color: Theme.success;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+    }
+    if XrayModule.error != "": XrayNotice { message: XrayModule.error; error: true; }
+    if XrayModule.error == "" && XrayModule.status != "": XrayNote { text: XrayModule.status; }
+}
+
+component XrayMetric inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <color> ink: Theme.accent;
+    min-width: 0px;
+    height: 76px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-medium;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface;
+    Rectangle { x: 1px; y: 16px; width: 3px; height: parent.height - 32px; background: root.ink; border-radius: 2px; }
+    VerticalLayout {
+        padding: 12px;
+        padding-left: 15px;
+        alignment: center;
+        spacing: 4px;
+        Text { text: root.label; font-size: 10px; font-weight: 600; color: Theme.muted; overflow: elide; }
+        Text { text: root.value; font-size: 22px; font-weight: 600; color: Theme.text; overflow: elide; }
+    }
+}
+
+component XrayDashboard inherits VerticalLayout {
+    alignment: start;
+    spacing: 12px;
+    HorizontalLayout {
+        height: 76px;
+        spacing: 10px;
+        XrayMetric { label: "ACCEPTED"; value: "" + XrayModule.connection-count; }
+        XrayMetric { label: "VLESS"; value: XrayModule.upload; ink: Theme.primary; }
+        XrayMetric { label: "DIRECT"; value: XrayModule.download; ink: Theme.success; }
+        XrayMetric { label: "UPTIME"; value: XrayModule.uptime; ink: Theme.blue; }
+    }
+    XrayCard {
+        title: "Local SOCKS5";
+        caption: "Xray exposes a local SOCKS5 listener for the active profile.";
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            Text {
+                text: "127.0.0.1:" + XrayModule.port;
+                font-family: "Consolas";
+                font-size: 14px;
+                color: Theme.text;
+                vertical-alignment: center;
+            }
+            Text {
+                text: XrayModule.running ? "Running" : "Stopped";
+                font-size: 12px;
+                color: XrayModule.running ? Theme.success : Theme.muted;
+                vertical-alignment: center;
+            }
+        }
+    }
+    XrayCard {
+        title: "Core updates";
+        caption: "Installed version · " + XrayModule.version;
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            ActionButton {
+                label: "Check for Updates";
+                icon: "refresh";
+                enabled: !XrayModule.busy;
+                clicked => { XrayModule.check-updates(); }
+            }
+            if XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: ActionButton {
+                label: "Install " + XrayModule.latest-version;
+                icon: "download";
+                primary: true;
+                enabled: !XrayModule.running && !XrayModule.busy;
+                clicked => { XrayModule.install-update(); }
+            }
+        }
+        if XrayModule.running && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: XrayNote {
+            text: "Stop Xray to install the update.";
+        }
+    }
+}
+
+component XrayProfiles inherits VerticalLayout {
+    alignment: start;
+    spacing: 12px;
+    XrayCard {
+        title: "Import profile";
+        caption: "Paste a VLESS link or an HTTPS subscription, then select the profile to run.";
+        HorizontalLayout {
+            spacing: 8px;
+            Field { value <=> XrayModule.profile-input; placeholder: "VLESS link or subscription URL"; secret: true; field-height: 38px; }
+            ActionButton {
+                label: "Import";
+                icon: "plus";
+                primary: true;
+                enabled: !XrayModule.busy && XrayModule.profile-input != "";
+                clicked => { XrayModule.import-profile(XrayModule.profile-input); }
+            }
+        }
+    }
+    XrayCard {
+        title: "Profiles";
+        if XrayModule.profiles.length == 0: XrayNote { text: "Import a profile to get started."; }
+        for profile in XrayModule.profiles: Rectangle {
+            height: 54px;
+            border-radius: Theme.radius-small;
+            border-width: 1px;
+            border-color: Theme.border;
+            background: profile.active ? Theme.accent-soft : Theme.field;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 8px;
+                VerticalLayout {
+                    alignment: center;
+                    min-width: 0px;
+                    spacing: 3px;
+                    Text { text: profile.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+                    Text { text: profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
+                }
+                if profile.subscription: Rectangle {
+                    width: refresh.min-width;
+                    refresh := ActionButton {
+                        label: "Refresh subscription for " + profile.name;
+                        icon: "refresh";
+                        icon-only: true;
+                        y: (parent.height - self.height) / 2;
+                        enabled: !XrayModule.busy;
+                        clicked => { XrayModule.refresh-subscription(profile.id); }
+                    }
+                }
+                Rectangle {
+                    width: 44px;
+                    RuleSwitch {
+                        label: "Activate " + profile.name;
+                        checked: profile.active;
+                        enabled: !XrayModule.busy;
+                        y: (parent.height - self.height) / 2;
+                        toggled => { XrayModule.activate-profile(profile.id); }
+                    }
+                }
+                Rectangle {
+                    width: delete.min-width;
+                    delete := ActionButton {
+                        label: "Remove " + profile.name;
+                        icon: "trash";
+                        icon-only: true;
+                        y: (parent.height - self.height) / 2;
+                        enabled: !XrayModule.busy;
+                        clicked => { XrayModule.remove-profile(profile.id); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component XrayGeneral inherits XrayCard {
+    title: "SOCKS5 listener";
+    caption: "The listener binds to 127.0.0.1. The default port is 2081.";
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        port-field := Field { width: 144px; placeholder: "2081"; value: XrayModule.port; field-height: 38px; }
+        ActionButton {
+            label: "Save Port";
+            primary: true;
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.save-port(port-field.value); }
+        }
+    }
+}
+
+component XrayDns inherits VerticalLayout {
+    alignment: start;
+    spacing: 12px;
+    XrayCard {
+        title: "Tunnel DNS";
+        caption: "Use Default for the VPN server’s usual resolution, or enter IP addresses and DNS-over-HTTPS URLs separated by commas.";
+        HorizontalLayout {
+            spacing: 8px;
+            dns-field := Field { value: XrayModule.dns; placeholder: "Default or https://resolver.example/dns-query"; field-height: 38px; }
+            ActionButton { label: "Save DNS"; primary: true; enabled: !XrayModule.busy; clicked => { XrayModule.save-dns(dns-field.value); } }
+        }
+    }
+    XrayCard {
+        title: "VPN server hosts";
+        caption: "Unpinned VPN server names use Windows DNS. A pin applies to Xray only and keeps the original TLS server name.";
+        HorizontalLayout {
+            alignment: start;
+            ActionButton {
+                label: "Add to hosts";
+                icon: "plus";
+                enabled: !XrayModule.busy && XrayModule.profiles.length > 0;
+                clicked => { XrayModule.pin-host(); }
+            }
+        }
+        if XrayModule.hosts.length == 0: XrayNote { text: "No pinned server addresses."; }
+        for entry in XrayModule.hosts: HorizontalLayout {
+            spacing: 8px;
+            height: 38px;
+            Text { text: entry.host; color: Theme.text; vertical-alignment: center; overflow: elide; min-width: 0px; }
+            Text { text: entry.address; color: Theme.secondary; font-family: "Consolas"; vertical-alignment: center; overflow: elide; min-width: 0px; }
+            ActionButton { label: "Remove " + entry.host; icon: "trash"; icon-only: true; enabled: !XrayModule.busy; clicked => { XrayModule.remove-host(entry.host); } }
+        }
+    }
+}
+
+component XrayFallbacks inherits XrayCard {
+    title: "Direct routes";
+    caption: "Xray sends matches to Direct. Enter GeoIP and Geosite tags as comma-separated lists. The database source URLs control where Xray downloads each list.";
+    HorizontalLayout {
+        spacing: 10px;
+        ip-tags := Field { label: "GeoIP tags"; placeholder: "ru"; value: XrayModule.geo-ip-tags; }
+        site-tags := Field { label: "Geosite tags"; placeholder: "category-ru"; value: XrayModule.geo-site-tags; }
+    }
+    ip-url := Field { label: "GeoIP database source"; placeholder: "HTTPS download URL"; value: XrayModule.geo-ip-url; }
+    site-url := Field { label: "Geosite database source"; placeholder: "HTTPS download URL"; value: XrayModule.geo-site-url; }
+    hours := Field { label: "Refresh interval in hours"; placeholder: "0 for manual updates"; value: XrayModule.geo-refresh-hours; }
+    if XrayModule.geo-status != "": XrayNote { text: XrayModule.geo-status; }
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        ActionButton {
+            label: "Save Fallbacks";
+            primary: true;
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.save-geo(ip-tags.value, site-tags.value, ip-url.value, site-url.value, hours.value); }
+        }
+        ActionButton {
+            label: "Update Databases";
+            icon: "refresh";
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.refresh-geo(); }
+        }
+    }
+}
+
+component XrayEventCell inherits Text {
+    in property <bool> heading;
+    min-width: 0px;
+    overflow: elide;
+    vertical-alignment: center;
+    color: root.heading ? Theme.muted : Theme.text;
+    font-size: root.heading ? 10px : 12px;
+    font-weight: root.heading ? 600 : 400;
+}
+
+component XrayEventLine inherits Rectangle {
+    in property <bool> heading;
+    in property <bool> stripe;
+    in property <XrayConnectionRow> entry;
+    height: root.heading ? 32px : 36px;
+    background: root.heading || root.stripe ? Theme.field : Theme.surface;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 8px;
+        XrayEventCell { heading: root.heading; width: 73px; text: root.heading ? "TIME" : root.entry.time; }
+        XrayEventCell { heading: root.heading; width: 58px; text: root.heading ? "PROTOCOL" : root.entry.protocol; }
+        XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 3; text: root.heading ? "TARGET" : root.entry.destination; }
+        XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; text: root.heading ? "SOURCE" : root.entry.source; }
+        XrayEventCell { heading: root.heading; width: 76px; text: root.heading ? "ROUTE" : root.entry.route; }
+        XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; text: root.heading ? "RESULT" : root.entry.detail; }
+    }
+}
+
+component XrayConnections inherits Rectangle {
+    min-width: 0px;
+    min-height: 0px;
+    vertical-stretch: 1;
+    border-radius: Theme.radius-medium;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.surface;
+    clip: true;
+    VerticalLayout {
+        padding: 1px;
+        HorizontalLayout {
+            height: 54px;
+            spacing: 8px;
+            padding-left: 14px;
+            padding-right: 14px;
+            Text { text: "Connections"; color: Theme.text; font-weight: 600; font-size: 15px; vertical-alignment: center; }
+            Text { text: "" + XrayModule.connections.length + " / " + XrayModule.connection-total; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: 190px;
+                Field {
+                    y: (parent.height - self.height) / 2;
+                    field-height: 34px;
+                    height: 34px;
+                    placeholder: "Search connections";
+                    icon: "search";
+                    value <=> XrayModule.connection-query;
+                    edited => { events-scroll.content-y = 0px; XrayModule.filter-connections(); }
+                }
+            }
+            Rectangle {
+                width: clear.min-width;
+                clear := ActionButton {
+                    label: "Clear Connections";
+                    icon: "trash";
+                    icon-only: true;
+                    y: (parent.height - self.height) / 2;
+                    enabled: XrayModule.connection-total > 0;
+                    clicked => { events-scroll.content-y = 0px; XrayModule.clear-connections(); }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+        Rectangle {
+            height: 32px;
+            background: Theme.field;
+            XrayEventLine { x: 0px; width: parent.width - Theme.scroll-gutter; heading: true; }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+        events-scroll := ScrollView {
+            min-height: 0px;
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            content-height: max(self.visible-height, entries.preferred-height);
+            entries := VerticalLayout {
+                padding-right: Theme.scroll-gutter;
+                padding-bottom: 8px;
+                alignment: start;
+                if XrayModule.connections.length == 0: Text {
+                    text: XrayModule.connection-total == 0 ? "No Xray connection events yet." : "No connections match the search.";
+                    height: 60px;
+                    font-size: 12px;
+                    color: Theme.muted;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                }
+                for event[index] in XrayModule.connections: XrayEventLine { entry: event; stripe: mod(index, 2) == 1; }
+            }
+        }
+        Rectangle { height: 1px; background: Theme.border; }
+        Text {
+            text: "Recent access events reported by Xray.";
+            height: 28px;
+            font-size: 11px;
+            color: Theme.muted;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+}
+
+export component XrayView inherits VerticalLayout {
+    min-width: 0px;
+    min-height: 0px;
+    vertical-stretch: 1;
+    spacing: 12px;
+    HorizontalLayout {
+        height: 58px;
+        spacing: 14px;
+        VerticalLayout {
+            min-width: 0px;
+            alignment: center;
+            spacing: 4px;
+            Text { text: "X-RAY"; color: Theme.text; font-size: 28px; font-weight: 600; }
+            Text { text: "Managed VLESS and local SOCKS5"; color: Theme.muted; font-size: 13px; overflow: elide; }
+        }
+        Rectangle {
+            width: toggle.min-width;
+            toggle := ActionButton {
+                label: XrayModule.running ? "Stop Xray" : "Start Xray";
+                icon: XrayModule.running ? "stop" : "play";
+                primary: !XrayModule.running;
+                enabled: !XrayModule.busy;
+                y: (parent.height - self.height) / 2;
+                clicked => { XrayModule.toggle(); }
+            }
+        }
+    }
+    if XrayModule.error != "": XrayNotice { message: XrayModule.error; error: true; }
+    if XrayModule.error == "" && XrayModule.status != "": XrayNotice { message: XrayModule.status; }
+    if XrayModule.section < 5: settings-scroll := ScrollView {
+        min-height: 0px;
+        vertical-stretch: 1;
+        horizontal-scrollbar-policy: always-off;
+        content-width: self.visible-width;
+        content-height: max(self.visible-height, section-content.preferred-height);
+        section-content := VerticalLayout {
+            alignment: start;
+            padding-bottom: 12px;
+            if XrayModule.section == 0: XrayDashboard {}
+            if XrayModule.section == 1: XrayProfiles {}
+            if XrayModule.section == 2: XrayGeneral {}
+            if XrayModule.section == 3: XrayDns {}
+            if XrayModule.section == 4: XrayFallbacks {}
+        }
+    }
+    if XrayModule.section == 5: XrayConnections {}
+    if XrayModule.section == 6: LogStreamView {
+        title: "Xray log stream";
+        backend-label: "Core";
+        latest-text: XrayModule.log-text;
+        total: XrayModule.log-total;
+        visible-count: XrayModule.log-visible-count;
+        recording: XrayModule.log-recording;
+        verbosity <=> XrayModule.log-verbosity;
+        errors-only <=> XrayModule.log-errors-only;
+        source <=> XrayModule.log-source;
+        follow <=> XrayModule.log-follow;
+        filter => { XrayModule.filter-logs(); }
+        set-recording(record) => { XrayModule.set-log-recording(record); }
+        clear => { XrayModule.clear-logs(); }
+    }
+}

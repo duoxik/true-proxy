@@ -11,9 +11,11 @@ mod rules_list;
 mod traffic;
 mod transfer;
 mod updating;
+#[cfg(windows)]
+mod xray;
 #[cfg(not(windows))]
 use crate::Tray;
-use crate::{ConnectionMonitor, MainWindow};
+use crate::{ConnectionMonitor, MainWindow, XrayModule};
 use anyhow::{Context, Result, ensure};
 use slint::{ComponentHandle, Model, ModelRc, VecModel, winit_030::WinitWindowAccessor};
 use std::{
@@ -291,6 +293,7 @@ fn wire_window_statistics(
                     }
                 }
                 5 => log_view.render(&ui, &statistics),
+                6 => ui.global::<XrayModule>().invoke_refresh_activity(),
                 _ => {
                     timer.stop();
                     return;
@@ -695,6 +698,17 @@ pub fn run() -> Result<()> {
     ));
     refresh(&ui, &state.borrow(), &statuses.lock().unwrap());
     let stats = Arc::new(Statistics::default());
+    #[cfg(windows)]
+    if preview.is_none() {
+        let directory = path
+            .parent()
+            .context("Missing configuration directory")?
+            .join("xray");
+        if let Err(error) = xray::wire(&ui, directory, stats.xray_bypass.clone()) {
+            ui.global::<XrayModule>()
+                .set_error(format!("Could not open Xray settings: {error:#}").into());
+        }
+    }
     if interactive_preview {
         preview::populate_traffic(&stats);
     }

@@ -59,6 +59,8 @@ struct LogBuffer {
 #[derive(Default)]
 pub struct Statistics {
     pub activity: Arc<crate::connections::Connections>,
+    #[cfg(windows)]
+    pub xray_bypass: Arc<crate::xray::runtime::Bypass>,
     pub uploaded: AtomicU64,
     pub downloaded: AtomicU64,
     pub connections: AtomicU64,

@@ -70,9 +70,21 @@ component LogFilterGroup inherits Rectangle {
     }
 }
 
-export component LogsView inherits Rectangle {
-    private property <bool> follow: TechnicalLogs.follow;
-    private property <string> latest-text: TechnicalLogs.text;
+export component LogStreamView inherits Rectangle {
+    in property <string> title: "Live log stream";
+    in property <string> backend-label: "Backend";
+    in property <string> connections-label: "Connections";
+    in property <string> latest-text;
+    in property <int> total;
+    in property <int> visible-count;
+    in property <bool> recording;
+    in-out property <int> verbosity;
+    in-out property <bool> errors-only;
+    in-out property <int> source;
+    in-out property <bool> follow;
+    callback filter;
+    callback set-recording(bool);
+    callback clear;
     private property <string> displayed-text;
     private property <bool> selecting: log-text.has-focus && log-text.cursor-position-byte-offset != log-text.anchor-position-byte-offset;
     vertical-stretch: 1;
@@ -109,16 +121,16 @@ export component LogsView inherits Rectangle {
             padding-right: 14px;
             spacing: 10px;
             Text {
-                text: "Live log stream";
+                text: root.title;
                 color: Theme.text;
                 font-size: 14px;
                 font-weight: 600;
                 vertical-alignment: center;
             }
             Text {
-                text: TechnicalLogs.visible-count == TechnicalLogs.total
-                    ? "latest " + TechnicalLogs.total + " lines"
-                    : TechnicalLogs.visible-count + " of " + TechnicalLogs.total + " lines";
+                text: root.visible-count == root.total
+                    ? "latest " + root.total + " lines"
+                    : root.visible-count + " of " + root.total + " lines";
                 color: Theme.muted;
                 font-family: "Consolas";
                 font-size: 11px;
@@ -129,15 +141,15 @@ export component LogsView inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 label: "Clear";
                 resting-color: Theme.field;
-                clicked => { log-text.clear-selection(); TechnicalLogs.clear(); }
+                clicked => { log-text.clear-selection(); root.clear(); }
             }
             LogFilterButton {
                 y: (parent.height - self.height) / 2;
-                label: TechnicalLogs.recording ? "Pause" : "Start";
-                selected: TechnicalLogs.recording;
+                label: root.recording ? "Pause" : "Start";
+                selected: root.recording;
                 selected-color: Theme.success;
                 resting-color: Theme.field;
-                clicked => { TechnicalLogs.set-recording(!TechnicalLogs.recording); }
+                clicked => { root.set-recording(!root.recording); }
             }
         }
         Rectangle { height: 1px; background: Theme.border; }
@@ -150,45 +162,45 @@ export component LogsView inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 LogFilterButton {
                     label: "Normal";
-                    selected: TechnicalLogs.verbosity == 0;
-                    clicked => { TechnicalLogs.verbosity = 0; TechnicalLogs.filter(); }
+                    selected: root.verbosity == 0;
+                    clicked => { root.verbosity = 0; root.filter(); }
                 }
                 LogFilterButton {
                     label: "Verbose";
-                    selected: TechnicalLogs.verbosity == 1;
-                    clicked => { TechnicalLogs.verbosity = 1; TechnicalLogs.filter(); }
+                    selected: root.verbosity == 1;
+                    clicked => { root.verbosity = 1; root.filter(); }
                 }
             }
             LogFilterGroup {
                 y: (parent.height - self.height) / 2;
                 LogFilterButton {
                     label: "All";
-                    selected: !TechnicalLogs.errors-only;
-                    clicked => { TechnicalLogs.errors-only = false; TechnicalLogs.filter(); }
+                    selected: !root.errors-only;
+                    clicked => { root.errors-only = false; root.filter(); }
                 }
                 LogFilterButton {
                     label: "Error";
-                    selected: TechnicalLogs.errors-only;
-                    clicked => { TechnicalLogs.errors-only = true; TechnicalLogs.filter(); }
+                    selected: root.errors-only;
+                    clicked => { root.errors-only = true; root.filter(); }
                 }
             }
             LogFilterGroup {
                 y: (parent.height - self.height) / 2;
                 LogFilterButton {
                     label: "All sources";
-                    selected: TechnicalLogs.source == 0;
-                    clicked => { TechnicalLogs.source = 0; TechnicalLogs.filter(); }
+                    selected: root.source == 0;
+                    clicked => { root.source = 0; root.filter(); }
                 }
                 LogFilterButton {
-                    label: "Backend";
-                    selected: TechnicalLogs.source == 1;
-                    clicked => { TechnicalLogs.source = 1; TechnicalLogs.filter(); }
+                    label: root.backend-label;
+                    selected: root.source == 1;
+                    clicked => { root.source = 1; root.filter(); }
                 }
                 LogFilterButton {
-                    label: "Connections";
-                    selected: TechnicalLogs.source == 2;
+                    label: root.connections-label;
+                    selected: root.source == 2;
                     accessible-label: "Log source Connections";
-                    clicked => { TechnicalLogs.source = 2; TechnicalLogs.filter(); }
+                    clicked => { root.source = 2; root.filter(); }
                 }
             }
             Rectangle { horizontal-stretch: 1; }
@@ -198,7 +210,7 @@ export component LogsView inherits Rectangle {
                 selected: root.follow;
                 selected-color: Theme.success;
                 resting-color: Theme.field;
-                clicked => { TechnicalLogs.follow = !TechnicalLogs.follow; }
+                clicked => { root.follow = !root.follow; }
             }
         }
         log-scroll := ScrollView {
@@ -211,7 +223,7 @@ export component LogsView inherits Rectangle {
                 x: 14px;
                 y: 8px;
                 height: 24px;
-                text: TechnicalLogs.total == 0 ? "No log entries yet" : "No matching log entries";
+                text: root.total == 0 ? "No log entries yet" : "No matching log entries";
                 color: Theme.muted;
                 font-size: 12px;
                 vertical-alignment: center;
@@ -246,4 +258,18 @@ export component LogsView inherits Rectangle {
             }
         }
     }
+}
+
+export component LogsView inherits LogStreamView {
+    latest-text: TechnicalLogs.text;
+    total: TechnicalLogs.total;
+    visible-count: TechnicalLogs.visible-count;
+    recording: TechnicalLogs.recording;
+    verbosity <=> TechnicalLogs.verbosity;
+    errors-only <=> TechnicalLogs.errors-only;
+    source <=> TechnicalLogs.source;
+    follow <=> TechnicalLogs.follow;
+    filter => { TechnicalLogs.filter(); }
+    set-recording(record) => { TechnicalLogs.set-recording(record); }
+    clear => { TechnicalLogs.clear(); }
 }

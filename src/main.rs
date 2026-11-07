@@ -228,6 +228,57 @@ mod ui_tests {
     }
 
     #[test]
+    fn installed_xray_sections_open_from_the_sidebar_on_first_click() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        ui.show().unwrap();
+        let xray = ui.global::<XrayModule>();
+        let sections = [
+            "Xray Dashboard",
+            "Xray Profiles",
+            "Xray General",
+            "Xray DNS",
+            "Xray Fallbacks",
+            "Xray Connections",
+            "Xray Logs",
+        ];
+        for label in sections {
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, label)
+                    .next()
+                    .is_none()
+            );
+        }
+
+        xray.set_installed(true);
+        let settings = ElementHandle::find_by_accessible_label(&ui, "Settings")
+            .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+            .unwrap();
+        let sidebar_x = settings.absolute_position().x;
+        for (section, label) in sections.into_iter().enumerate() {
+            let button = ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                .unwrap();
+            assert!((button.absolute_position().x - sidebar_x).abs() < 24.);
+            button.mock_single_click(PointerEventButton::Left);
+            assert_eq!(ui.get_page(), 6);
+            assert_eq!(xray.get_section(), section as i32);
+        }
+        ui.window().set_size(slint::LogicalSize::new(960., 640.));
+        ui.set_page(0);
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(90., 455.),
+                delta_x: 0.,
+                delta_y: -1000.,
+            });
+        click(&ui, "Xray Logs");
+        assert_eq!(ui.get_page(), 6);
+        assert_eq!(xray.get_section(), 6);
+    }
+
+    #[test]
     fn first_click_activates_buttons_navigation_and_dialog_without_focus_interception() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();

@@ -143,6 +143,11 @@ pub fn replace_file(source: &Path, target: &Path) -> Result<()> {
 
 pub fn protect(secret: &str) -> Result<String> {
     ensure!(secret.len() <= 255, "The SOCKS5 password exceeds 255 bytes");
+    protect_secret(secret)
+}
+
+pub(crate) fn protect_secret(secret: &str) -> Result<String> {
+    ensure!(secret.len() <= 16 * 1024, "The secret exceeds 16 KiB");
     let input = CRYPT_INTEGER_BLOB {
         cbData: secret.len() as u32,
         pbData: secret.as_ptr() as *mut u8,

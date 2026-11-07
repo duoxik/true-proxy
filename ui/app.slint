@@ -2,12 +2,14 @@ import { DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
-import { Theme, UiIcon, ActionButton, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption } from "common.slint";
+import { Theme, UiIcon, ActionButton, RuleSwitch, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption } from "common.slint";
 export { ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption }
 import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
 import { LogsView, TechnicalLogs } from "logs.slint";
 export { TechnicalLogs }
+import { XrayModule, XrayModuleCard, XrayView, XrayProfileRow, XrayHostRow, XrayConnectionRow } from "xray.slint";
+export { XrayModule, XrayProfileRow, XrayHostRow, XrayConnectionRow }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -38,24 +40,6 @@ component NavItem inherits Rectangle {
     forward-focus: focus;
     border-width: 1px; border-color: focus.has-focus ? Theme.accent : transparent;
     accessible-role: button; accessible-label: root.label; accessible-action-default => { root.clicked(); }
-}
-
-component RuleSwitch inherits Rectangle {
-    in property <bool> checked;
-    in property <bool> enabled: true;
-    in property <string> label;
-    callback toggled;
-    width: 44px; height: 38px;
-    opacity: root.enabled ? 1 : 0.45;
-    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked && root.enabled ? Theme.primary : Theme.switch-off;
-        border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
-        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: Theme.primary-text; animate x { duration: 100ms; } }
-    }
-    TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
-    focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }
-    forward-focus: focus;
-    accessible-role: switch; accessible-label: root.label; accessible-checked: root.checked; accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { root.toggled(); } }
 }
 
 component Disclosure inherits Rectangle {
@@ -669,7 +653,7 @@ export component MainWindow inherits Window {
     in-out property <int> page: 0;
     changed page => { root.sync-connection-observation(); }
     in property <bool> preview-ui: false;
-    property <int> settings-section: 0;
+    in-out property <int> settings-section: 0;
     in-out property <int> dialog: 0;
     in property <bool> active: false;
     in property <bool> busy: false;
@@ -842,22 +826,52 @@ export component MainWindow inherits Window {
                         }
                     }
                     Rectangle { height: 1px; background: Theme.border; }
-                    VerticalLayout {
-                        padding: 10px;
-                        spacing: 4px;
-                        alignment: start;
-                        Text { text: "MAIN"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                        NavItem { label: "Dashboard"; icon: "dashboard"; selected: root.page == 0; clicked => { root.page = 0; } }
-                        NavItem { label: "Proxies"; icon: "server"; selected: root.page == 2; clicked => { root.page = 2; } }
-                        NavItem { label: "Rules"; icon: "rules"; selected: root.page == 1; clicked => { root.page = 1; } }
-                        Rectangle { height: 12px; }
-                        Text { text: "NETWORK"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                        NavItem { label: "Connections"; icon: "activity"; selected: root.page == 3; clicked => { root.page = 3; } }
-                        NavItem { label: "Logs"; icon: "file"; selected: root.page == 5; clicked => { root.page = 5; } }
-                        Rectangle { height: 12px; }
-                        Text { text: "SYSTEM"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                        NavItem { label: "Settings"; icon: "settings"; selected: root.page == 4; clicked => { root.page = 4; } }
-                        Rectangle { vertical-stretch: 1; }
+                    navigation-scroll := ScrollView {
+                        min-height: 0px;
+                        vertical-stretch: 1;
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
+                        content-height: max(self.visible-height, navigation.preferred-height);
+                        navigation := VerticalLayout {
+                            padding: 10px;
+                            spacing: 4px;
+                            alignment: start;
+                            Text { text: "MAIN"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
+                            NavItem { label: "Dashboard"; icon: "dashboard"; selected: root.page == 0; clicked => { root.page = 0; } }
+                            NavItem { label: "Proxies"; icon: "server"; selected: root.page == 2; clicked => { root.page = 2; } }
+                            NavItem { label: "Rules"; icon: "rules"; selected: root.page == 1; clicked => { root.page = 1; } }
+                            Rectangle { height: 12px; }
+                            Text { text: "NETWORK"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
+                            NavItem { label: "Connections"; icon: "activity"; selected: root.page == 3; clicked => { root.page = 3; } }
+                            NavItem { label: "Logs"; icon: "file"; selected: root.page == 5; clicked => { root.page = 5; } }
+                            Rectangle { height: 12px; }
+                            Text { text: "SYSTEM"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
+                            NavItem { label: "Settings"; icon: "settings"; selected: root.page == 4; clicked => { root.page = 4; } }
+                            if XrayModule.installed: VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "X-RAY"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 24px; vertical-alignment: center; }
+                                for item[index] in [
+                                    { label: "Dashboard", icon: "dashboard" },
+                                    { label: "Profiles", icon: "file" },
+                                    { label: "General", icon: "settings" },
+                                    { label: "DNS", icon: "globe" },
+                                    { label: "Fallbacks", icon: "rules" },
+                                    { label: "Connections", icon: "activity" },
+                                    { label: "Logs", icon: "file" },
+                                ]: NavItem {
+                                    height: 30px;
+                                    label: item.label;
+                                    icon: item.icon;
+                                    accessible-label: "Xray " + item.label;
+                                    selected: root.page == 6 && XrayModule.section == index;
+                                    clicked => {
+                                        XrayModule.section = index;
+                                        if root.page == 6 { XrayModule.refresh-activity(); }
+                                        else { root.page = 6; }
+                                    }
+                                }
+                            }
+                        }
                     }
                     Rectangle { height: 1px; background: Theme.border; }
                     VerticalLayout {
@@ -875,7 +889,7 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 padding: 26px;
                 spacing: 16px;
-                if root.page != 3: HorizontalLayout {
+                if root.page != 3 && root.page != 6: HorizontalLayout {
                     height: 58px;
                     spacing: 14px;
                     VerticalLayout {
@@ -1313,6 +1327,7 @@ export component MainWindow inherits Window {
                 }
                 if root.page == 3: ConnectionsView { preview-ui: root.preview-ui; }
                 if root.page == 5: LogsView { }
+                if root.page == 6 && XrayModule.installed: XrayView { }
                 if root.page == 4: HorizontalLayout {
                     spacing: 16px;
                     Rectangle {
@@ -1327,6 +1342,7 @@ export component MainWindow inherits Window {
                             alignment: start;
                             NavItem { label: "General"; icon: "settings"; selected: root.settings-section == 0; clicked => { root.settings-section = 0; } }
                             NavItem { label: "Profiles"; icon: "rules"; selected: root.settings-section == 1; clicked => { root.settings-section = 1; } }
+                            NavItem { label: "Modules"; icon: "server"; selected: root.settings-section == 2; clicked => { root.settings-section = 2; } }
                         }
                     }
                     settings-scroll := ScrollView {
@@ -1338,6 +1354,9 @@ export component MainWindow inherits Window {
                             spacing: 12px;
                             padding-right: 3px;
                             padding-bottom: 14px;
+                            if root.settings-section == 2: XrayModuleCard {
+                                open => { root.page = 6; }
+                            }
                             if root.settings-section == 0: Rectangle {
                                 height: startup-settings.preferred-height;
                                 border-radius: Theme.radius-medium;

@@ -138,6 +138,24 @@ export component ActionButton inherits Rectangle {
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
 }
 
+export component RuleSwitch inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback toggled;
+    width: 44px; height: 38px;
+    opacity: root.enabled ? 1 : 0.45;
+    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked && root.enabled ? Theme.primary : Theme.switch-off;
+        border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
+        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: Theme.primary-text; animate x { duration: 100ms; } }
+    }
+    TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
+    focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }
+    forward-focus: focus;
+    accessible-role: switch; accessible-label: root.label; accessible-checked: root.checked; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.toggled(); } }
+}
+
 export component Field inherits VerticalLayout {
     in property <string> label;
     in property <string> placeholder;

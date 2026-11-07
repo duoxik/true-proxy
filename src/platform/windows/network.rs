@@ -248,6 +248,7 @@ mod tests {
             .unwrap();
         let now = Instant::now();
         let decision = Decision {
+            xray_generation: None,
             action: Action::Direct,
             last: now,
             stamp: (0, 0, 0),
@@ -503,6 +504,7 @@ struct Nat {
 }
 struct Decision {
     action: Action,
+    xray_generation: Option<u64>,
     last: Instant,
     stamp: (u64, u64, u64),
     initial_sequence: u32,
@@ -931,6 +933,8 @@ fn capture(context: CaptureContext) -> Result<()> {
         if decisions.get(&key).is_some_and(|d| {
             d.stamp != stamp
                 || (tcp && packet.is_syn() && d.initial_sequence != packet.tcp_sequence)
+                || d.xray_generation
+                    .is_some_and(|generation| generation != stats.xray_bypass.generation())
         }) {
             if let Some(d) = decisions.remove(&key)
                 && let Some(record) = d.record
@@ -948,6 +952,7 @@ fn capture(context: CaptureContext) -> Result<()> {
             if !tcp
                 && has_domain_rules
                 && d.owner.pid != std::process::id()
+                && d.xray_generation.is_none()
                 && now.duration_since(d.dns_check) >= Duration::from_secs(1)
             {
                 d.dns_check = now;
@@ -1065,7 +1070,12 @@ fn capture(context: CaptureContext) -> Result<()> {
                 stamp = generations.stamp(owner.pid, packet.flow, false);
             }
             let own_process = owner.pid == std::process::id();
-            let names = if own_process {
+            let managed_xray =
+                stats
+                    .xray_bypass
+                    .classify(owner.pid, packet.flow.destination, packet.protocol);
+            let internal = own_process || managed_xray.is_some();
+            let names = if internal {
                 Vec::new()
             } else {
                 domains.lock().unwrap().lookup(packet.flow.destination.ip())
@@ -1077,10 +1087,11 @@ fn capture(context: CaptureContext) -> Result<()> {
                 protocol: packet.protocol,
                 domains: &names,
             };
-            let action = if own_process {
-                Action::Direct
-            } else {
-                rules::resolve(&config, &flow)
+            let action = match managed_xray {
+                Some((_, true)) => Action::Direct,
+                Some((_, false)) => Action::Block,
+                None if own_process => Action::Direct,
+                None => rules::resolve(&config, &flow),
             };
             let needs_syn = tcp && matches!(action, Action::Proxy(_)) && !packet.is_syn();
             let observe = match &action {
@@ -1089,7 +1100,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 Action::Proxy(_) => tcp && !needs_syn,
             };
             let mut record = None;
-            if !own_process && (observe || stats.log_tracking()) {
+            if !internal && (observe || stats.log_tracking()) {
                 let route = match &action {
                     Action::Direct => "Direct".into(),
                     Action::Block => "Block".into(),
@@ -1188,6 +1199,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 key,
                 Decision {
                     action: action.clone(),
+                    xray_generation: managed_xray.map(|(generation, _)| generation),
                     last: now,
                     stamp,
                     initial_sequence: packet.tcp_sequence,

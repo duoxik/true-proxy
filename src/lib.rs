@@ -14,3 +14,5 @@ pub mod transfer;
 #[cfg(any(windows, test))]
 mod udp;
 pub mod updates;
+#[cfg(windows)]
+pub mod xray;
