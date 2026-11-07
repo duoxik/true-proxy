@@ -252,6 +252,28 @@ mod ui_tests {
         }
 
         xray.set_installed(true);
+        for (heading, link) in [
+            ("PROXY", "Dashboard"),
+            ("NETWORK", "Connections"),
+            ("SYSTEM", "Settings"),
+            ("X-RAY", "Xray Dashboard"),
+        ] {
+            let group = ElementHandle::find_by_accessible_label(&ui, heading)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                .unwrap();
+            assert_eq!(group.accessible_expanded(), Some(true));
+            group.mock_single_click(PointerEventButton::Left);
+            assert_eq!(group.accessible_expanded(), Some(false));
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, link)
+                    .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                    .is_none()
+            );
+            assert_eq!(ui.get_page(), 0);
+            group.mock_single_click(PointerEventButton::Left);
+            assert_eq!(group.accessible_expanded(), Some(true));
+        }
+
         let settings = ElementHandle::find_by_accessible_label(&ui, "Settings")
             .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
             .unwrap();
@@ -261,6 +283,7 @@ mod ui_tests {
                 .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
                 .unwrap();
             assert!((button.absolute_position().x - sidebar_x).abs() < 24.);
+            assert_eq!(button.size().height, settings.size().height);
             button.mock_single_click(PointerEventButton::Left);
             assert_eq!(ui.get_page(), 6);
             assert_eq!(xray.get_section(), section as i32);
@@ -276,6 +299,76 @@ mod ui_tests {
         click(&ui, "Xray Logs");
         assert_eq!(ui.get_page(), 6);
         assert_eq!(xray.get_section(), 6);
+    }
+
+    #[test]
+    fn xray_profiles_refresh_only_the_clicked_subscription() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        let profile = |id: &str, name: &str| XrayProfileRow {
+            id: id.into(),
+            name: name.into(),
+            ..Default::default()
+        };
+        xray.set_profiles(slint::ModelRc::new(slint::VecModel::from(vec![profile(
+            "manual-id",
+            "Manual node",
+        )])));
+        xray.set_subscriptions(slint::ModelRc::new(slint::VecModel::from(vec![
+            XraySubscriptionGroup {
+                id: "source-a".into(),
+                name: "Subscription 1".into(),
+                profiles: slint::ModelRc::new(slint::VecModel::from(vec![
+                    profile("profile-a1", "Node A1"),
+                    profile("profile-a2", "Node A2"),
+                ])),
+            },
+            XraySubscriptionGroup {
+                id: "source-b".into(),
+                name: "Subscription 2".into(),
+                profiles: slint::ModelRc::new(slint::VecModel::from(vec![profile(
+                    "profile-b1",
+                    "Node B1",
+                )])),
+            },
+        ])));
+        let refreshed = Rc::new(Cell::new(slint::SharedString::default()));
+        xray.on_refresh_subscription({
+            let refreshed = refreshed.clone();
+            move |id| refreshed.set(id)
+        });
+        ui.show().unwrap();
+        click(&ui, "Xray Profiles");
+
+        for name in ["Manual node", "Node A1", "Node A2", "Node B1"] {
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, &format!("Activate {name}"))
+                    .next()
+                    .is_some()
+            );
+            assert!(
+                ElementHandle::find_by_accessible_label(
+                    &ui,
+                    &format!("Refresh subscription for {name}"),
+                )
+                .next()
+                .is_none()
+            );
+        }
+        for (label, id) in [
+            ("Refresh Subscription 1", "source-a"),
+            ("Refresh Subscription 2", "source-b"),
+        ] {
+            assert_eq!(
+                ElementHandle::find_by_accessible_label(&ui, label).count(),
+                1
+            );
+            click(&ui, label);
+            assert_eq!(refreshed.take().as_str(), id);
+        }
     }
 
     #[test]

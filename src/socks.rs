@@ -128,7 +128,7 @@ pub async fn connect(proxy: &Proxy, target: SocketAddr) -> Result<TcpStream> {
         .map(|(stream, _)| stream)
 }
 
-/// CONNECT by name for the manual GeoIP check. The SOCKS server resolves the
+/// CONNECT by name for GeoIP checks. The SOCKS server resolves the
 /// destination, and its informational bound address never requires a lookup.
 #[cfg(any(windows, test))]
 pub(crate) async fn connect_hostname(proxy: &Proxy, host: &str, port: u16) -> Result<TcpStream> {

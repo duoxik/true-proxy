@@ -7,7 +7,7 @@ use std::{
     ffi::{OsStr, OsString},
     fs::{File, OpenOptions},
     io::{self, BufReader, Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpStream},
+    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     os::windows::{
         ffi::OsStrExt,
         fs::OpenOptionsExt,
@@ -21,7 +21,8 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_INSUFFICIENT_BUFFER, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_TIMEOUT,
+        ERROR_INSUFFICIENT_BUFFER, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
@@ -45,10 +46,10 @@ use windows_sys::Win32::{
         Threading::{
             CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW,
             CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
-            GetCurrentProcess, InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
-            OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, ResumeThread,
-            STARTF_USESTDHANDLES, STARTUPINFOEXW, TerminateProcess, UpdateProcThreadAttribute,
-            WaitForSingleObject,
+            GetCurrentProcess, GetExitCodeProcess, InitializeProcThreadAttributeList,
+            LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            PROCESS_INFORMATION, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+            TerminateProcess, UpdateProcThreadAttribute, WaitForSingleObject,
         },
     },
 };
@@ -70,6 +71,26 @@ impl Identity {
         // SAFETY: the process handle stays owned for the duration of this call.
         unsafe { WaitForSingleObject(self.process.as_raw_handle(), 0) == WAIT_TIMEOUT }
     }
+
+    fn exit_code(&self) -> Option<u32> {
+        let mut code = 0;
+        // SAFETY: the process handle is owned, and the output storage is writable.
+        unsafe {
+            (WaitForSingleObject(self.process.as_raw_handle(), 0) == WAIT_OBJECT_0
+                && GetExitCodeProcess(self.process.as_raw_handle(), &mut code) != 0)
+                .then_some(code)
+        }
+    }
+}
+
+pub(super) fn check_socks_port(port: u16) -> Result<()> {
+    ensure!(port != 0, "Choose a SOCKS port between 1 and 65535");
+    let endpoint = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let _tcp = TcpListener::bind(endpoint)
+        .map_err(|error| anyhow::anyhow!("Xray SOCKS TCP port {port} is unavailable: {error}"))?;
+    let _udp = UdpSocket::bind(endpoint)
+        .map_err(|error| anyhow::anyhow!("Xray SOCKS UDP port {port} is unavailable: {error}"))?;
+    Ok(())
 }
 
 pub(super) struct Child {
@@ -221,10 +242,14 @@ impl Child {
         let start = Instant::now();
         let endpoint = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
         while start.elapsed() < timeout {
-            ensure!(
-                self.identity.alive(),
-                "Xray exited before its local SOCKS port was ready"
-            );
+            if !self.identity.alive() {
+                if let Some(code) = self.identity.exit_code() {
+                    bail!(
+                        "Xray exited before its local SOCKS port was ready (Windows exit code 0x{code:08X})"
+                    );
+                }
+                bail!("Xray exited before its local SOCKS port was ready");
+            }
             if owns_loopback_listener(self.identity.pid, port)
                 && socks_ready(endpoint)
                 && owns_loopback_listener(self.identity.pid, port)

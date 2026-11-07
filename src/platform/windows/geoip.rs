@@ -1,4 +1,4 @@
-//! On-demand HTTPS lookup over an already negotiated SOCKS5 tunnel.
+//! HTTPS lookup of the exit location through a SOCKS5 proxy.
 use crate::{config::Proxy, socks};
 use anyhow::{Context, Result};
 use schannel::{

@@ -360,33 +360,54 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     let xray = ui.global::<XrayModule>();
     xray.set_installed(true);
     xray.set_version("v26.10.21".into());
+    xray.set_error("Xray exited before its local SOCKS port was ready".into());
+    save(adapter, &destination.join("xray-modules-installed.png"))?;
+    xray.set_error("".into());
     xray.set_status("Preview · sample data".into());
     xray.set_running(true);
     xray.set_uptime("00:21:16".into());
     xray.set_connection_count(38);
     xray.set_upload("29".into());
     xray.set_download("9".into());
-    xray.set_profiles(model(vec![
-        XrayProfileRow {
-            id: "primary".into(),
-            name: "Primary".into(),
-            summary: "vpn.example.test:443 · VLESS / TLS / Vision".into(),
-            active: true,
-            subscription: true,
+    xray.set_profiles(model(vec![XrayProfileRow {
+        id: "primary".into(),
+        name: "Primary".into(),
+        summary: "VLESS · vpn.example.test:443".into(),
+        active: true,
+    }]));
+    xray.set_subscriptions(model(vec![XraySubscriptionGroup {
+        id: "sample-source".into(),
+        name: "Subscription 1".into(),
+        profiles: model(vec![
+            XrayProfileRow {
+                id: "backup".into(),
+                name: "Backup".into(),
+                summary: "VLESS · backup.example.test:443".into(),
+                active: false,
+            },
+            XrayProfileRow {
+                id: "regional".into(),
+                name: "Regional".into(),
+                summary: "VLESS · regional.example.test:443".into(),
+                active: false,
+            },
+        ]),
+    }]));
+    xray.set_dns("https://resolver.example.test/dns-query".into());
+    xray.set_hosts(model(vec![
+        XrayHostRow {
+            host: "backup.example.test".into(),
+            address: "—".into(),
         },
-        XrayProfileRow {
-            id: "backup".into(),
-            name: "Backup".into(),
-            summary: "backup.example.test:443 · VLESS / TLS".into(),
-            active: false,
-            subscription: false,
+        XrayHostRow {
+            host: "regional.example.test".into(),
+            address: "203.0.113.7".into(),
+        },
+        XrayHostRow {
+            host: "vpn.example.test".into(),
+            address: "203.0.113.6".into(),
         },
     ]));
-    xray.set_dns("https://resolver.example.test/dns-query".into());
-    xray.set_hosts(model(vec![XrayHostRow {
-        host: "vpn.example.test".into(),
-        address: "203.0.113.6".into(),
-    }]));
     xray.set_geo_ip_tags("ru".into());
     xray.set_geo_site_tags("category-ru".into());
     let defaults = true_proxy::xray::profile::Settings::default();

@@ -4,17 +4,20 @@ use base64::{Engine as _, engine::general_purpose};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File},
     io::{ErrorKind, Read, Write},
     net::{IpAddr, ToSocketAddrs},
     path::Path,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::OnceLock,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 
 const MAX_PROFILES: usize = 128;
 const MAX_SETTINGS: u64 = 2 * 1024 * 1024;
+const HOST_LOOKUP_CONCURRENCY: usize = 4;
+const HOST_LOOKUP_TIMEOUT: Duration = Duration::from_secs(12);
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -176,7 +179,7 @@ impl Settings {
             .context("Select a VLESS profile first")
     }
 
-    pub fn import(&mut self, input: &str) -> Result<()> {
+    pub fn import(&mut self, input: &str) -> Result<BTreeSet<String>> {
         let input = input.trim();
         ensure!(input.len() <= 256 * 1024, "Xray import exceeds 256 KiB");
         if input.starts_with("https://") {
@@ -186,32 +189,26 @@ impl Settings {
                     .is_ok_and(|value| value == url.as_str())
             });
             if let Some(existing) = existing {
-                return self.refresh_source(&existing.id.clone());
+                return self.refresh_subscription(&existing.id.clone());
             }
             let nodes = fetch_subscription(&url)?;
             let id = new_id();
-            self.merge_nodes(nodes, Some(&id))?;
+            let domains = self.merge_nodes(nodes, Some(&id))?;
             self.subscriptions.push(Subscription {
                 id,
                 protected_url: crate::platform::windows::protect_secret(url.as_str())?,
             });
+            Ok(domains)
         } else {
-            self.merge_nodes(parse_nodes(input.as_bytes())?, None)?;
+            self.merge_nodes(parse_nodes(input.as_bytes())?, None)
         }
-        Ok(())
     }
 
-    pub fn refresh_subscription(&mut self, profile_id: &str) -> Result<()> {
-        let id = self
-            .profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .and_then(|profile| profile.subscription.clone())
-            .context("This profile has no subscription")?;
-        self.refresh_source(&id)
+    pub fn subscription_ids(&self) -> impl Iterator<Item = &str> {
+        self.subscriptions.iter().map(|source| source.id.as_str())
     }
 
-    fn refresh_source(&mut self, id: &str) -> Result<()> {
+    pub fn refresh_subscription(&mut self, id: &str) -> Result<BTreeSet<String>> {
         let subscription = self
             .subscriptions
             .iter()
@@ -223,8 +220,17 @@ impl Settings {
         self.merge_nodes(nodes, Some(id))
     }
 
-    fn merge_nodes(&mut self, nodes: Vec<Node>, subscription: Option<&str>) -> Result<()> {
+    fn merge_nodes(
+        &mut self,
+        nodes: Vec<Node>,
+        subscription: Option<&str>,
+    ) -> Result<BTreeSet<String>> {
         let select_first = self.profiles.is_empty() && self.active.is_none();
+        let domains = nodes
+            .iter()
+            .filter(|node| node.host.parse::<IpAddr>().is_err())
+            .map(|node| node.host.clone())
+            .collect();
         let existing: BTreeMap<_, _> = self
             .profiles
             .iter()
@@ -273,7 +279,8 @@ impl Settings {
         if select_first {
             self.active = self.profiles.first().map(|profile| profile.id.clone());
         }
-        Ok(())
+        self.prune_hosts();
+        Ok(domains)
     }
 
     pub fn remove_profile(&mut self, id: &str) {
@@ -286,23 +293,85 @@ impl Settings {
                 .iter()
                 .any(|profile| profile.subscription.as_deref() == Some(&source.id))
         });
+        self.prune_hosts();
     }
 
-    pub fn pin_selected(&mut self) -> Result<()> {
-        let profile = self.selected()?;
-        ensure!(
-            profile.host.parse::<IpAddr>().is_err(),
-            "This profile already uses an IP address"
-        );
-        let host = profile.host.clone();
-        let address = (host.as_str(), profile.port)
-            .to_socket_addrs()
-            .context("Windows could not resolve the VPN server")?
-            .next()
-            .context("Windows returned no addresses for the VPN server")?
-            .ip();
-        self.hosts.insert(host, address);
-        Ok(())
+    pub fn host_domains(&self) -> BTreeSet<&str> {
+        self.profiles
+            .iter()
+            .map(|profile| profile.host.as_str())
+            .filter(|host| host.parse::<IpAddr>().is_err())
+            .collect()
+    }
+
+    pub fn upstream_ip(&self, profile: &Profile) -> Option<IpAddr> {
+        profile
+            .host
+            .parse()
+            .ok()
+            .or_else(|| self.hosts.get(&profile.host).copied())
+    }
+
+    pub fn prune_hosts(&mut self) {
+        self.hosts.retain(|host, _| {
+            host.parse::<IpAddr>().is_err()
+                && self.profiles.iter().any(|profile| profile.host == *host)
+        });
+    }
+
+    pub fn resolve_hosts(&mut self, mut domains: BTreeSet<String>) -> usize {
+        if domains.is_empty() {
+            return 0;
+        }
+        let count = domains.len();
+        // Share the blocking thread limit even if Windows takes longer than our deadline.
+        static RESOLVER: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+        let Some(resolver) = RESOLVER.get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .max_blocking_threads(HOST_LOOKUP_CONCURRENCY)
+                .build()
+                .ok()
+        }) else {
+            return count;
+        };
+        let active_domain = self
+            .selected()
+            .ok()
+            .and_then(|profile| domains.take(profile.host.as_str()));
+        let mut domains = active_domain.into_iter().chain(domains);
+        let mut lookups = tokio::task::JoinSet::new();
+        let mut resolved = 0;
+        resolver.block_on(async {
+            let _ = tokio::time::timeout(HOST_LOOKUP_TIMEOUT, async {
+                loop {
+                    while lookups.len() < HOST_LOOKUP_CONCURRENCY {
+                        let Some(host) = domains.next() else { break };
+                        let previous = self.hosts.get(&host).copied();
+                        lookups.spawn_blocking(move || {
+                            let mut addresses = (host.as_str(), 0).to_socket_addrs().ok()?;
+                            let first = addresses.next()?.ip();
+                            let address = previous
+                                .filter(|ip| {
+                                    *ip == first || addresses.any(|address| address.ip() == *ip)
+                                })
+                                .unwrap_or(first);
+                            Some((host, address))
+                        });
+                    }
+                    match lookups.join_next().await {
+                        Some(Ok(Some((host, address)))) => {
+                            self.hosts.insert(host, address);
+                            resolved += 1;
+                        }
+                        Some(_) => {}
+                        None => break,
+                    }
+                }
+            })
+            .await;
+        });
+        count - resolved
     }
 }
 
@@ -585,5 +654,42 @@ mod tests {
             "vpn.example.test"
         );
         assert_eq!(restored.active, settings.active);
+    }
+
+    #[test]
+    fn host_cache_keeps_shared_domain_until_its_last_profile_is_removed() {
+        let mut settings = Settings::default();
+        let domains = settings.import(NODE).unwrap();
+        assert_eq!(domains, BTreeSet::from(["vpn.example.test".to_owned()]));
+        settings.import(&NODE.replace(":443?", ":8443?")).unwrap();
+        settings
+            .import(&NODE.replace("vpn.example.test", "192.0.2.10"))
+            .unwrap();
+        let address = "192.0.2.11".parse().unwrap();
+        settings.hosts.insert("vpn.example.test".into(), address);
+
+        let first = settings.profiles[0].id.clone();
+        settings.remove_profile(&first);
+        assert_eq!(settings.upstream_ip(&settings.profiles[0]), Some(address));
+        assert_eq!(
+            settings.upstream_ip(&settings.profiles[1]),
+            Some("192.0.2.10".parse().unwrap())
+        );
+
+        let last = settings.profiles[0].id.clone();
+        settings.remove_profile(&last);
+        assert!(settings.hosts.is_empty());
+    }
+
+    #[test]
+    fn failed_host_resolution_preserves_previously_saved_address() {
+        let mut settings = Settings::default();
+        let address = "192.0.2.11".parse().unwrap();
+        // The system resolver rejects a name containing a NUL before querying DNS.
+        let host = "invalid\0host".to_owned();
+        settings.hosts.insert(host.clone(), address);
+
+        assert_eq!(settings.resolve_hosts(BTreeSet::from([host.clone()])), 1);
+        assert_eq!(settings.hosts.get(&host), Some(&address));
     }
 }

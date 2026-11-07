@@ -2,7 +2,8 @@ import { ScrollView } from "std-widgets.slint";
 import { ActionButton, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
 
-export struct XrayProfileRow { id: string, name: string, summary: string, active: bool, subscription: bool }
+export struct XrayProfileRow { id: string, name: string, summary: string, active: bool }
+export struct XraySubscriptionGroup { id: string, name: string, profiles: [XrayProfileRow] }
 export struct XrayHostRow { host: string, address: string }
 export struct XrayConnectionRow { time: string, protocol: string, destination: string, source: string, route: string, detail: string }
 
@@ -14,11 +15,13 @@ export global XrayModule {
     in property <string> latest-version;
     in property <string> status;
     in property <string> error;
+    in property <string> module-error;
     in property <string> uptime: "00:00:00";
     in property <int> connection-count;
     in property <string> upload: "0";
     in property <string> download: "0";
     in property <[XrayProfileRow]> profiles;
+    in property <[XraySubscriptionGroup]> subscriptions;
     in-out property <string> profile-input;
     in property <string> port: "2081";
     in property <string> dns: "System";
@@ -52,8 +55,7 @@ export global XrayModule {
     callback remove-profile(string);
     callback save-port(string);
     callback save-dns(string);
-    callback pin-host;
-    callback remove-host(string);
+    callback refresh-hosts;
     callback save-geo(string, string, string, string, string);
     callback refresh-geo;
     callback refresh-activity;
@@ -86,7 +88,7 @@ component XrayCard inherits Rectangle {
         padding: 16px;
         spacing: 10px;
         alignment: start;
-        Text { text: root.title; font-size: 16px; font-weight: 600; color: Theme.text; }
+        if root.title != "": Text { text: root.title; font-size: 16px; font-weight: 600; color: Theme.text; }
         if root.caption != "": XrayNote { text: root.caption; }
         @children
     }
@@ -133,8 +135,27 @@ export component XrayModuleCard inherits XrayCard {
             vertical-alignment: center;
         }
     }
-    if XrayModule.error != "": XrayNotice { message: XrayModule.error; error: true; }
-    if XrayModule.error == "" && XrayModule.status != "": XrayNote { text: XrayModule.status; }
+    if XrayModule.installed: HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+        ActionButton {
+            label: "Check for Updates";
+            icon: "refresh";
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.check-updates(); }
+        }
+        if XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: ActionButton {
+            label: "Install " + XrayModule.latest-version;
+            icon: "download";
+            primary: true;
+            enabled: !XrayModule.running && !XrayModule.busy;
+            clicked => { XrayModule.install-update(); }
+        }
+    }
+    if XrayModule.running && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: XrayNote {
+        text: "Stop Xray to install the update.";
+    }
+    if XrayModule.module-error != "": XrayNotice { message: XrayModule.module-error; error: true; }
 }
 
 component XrayMetric inherits Rectangle {
@@ -191,28 +212,46 @@ component XrayDashboard inherits VerticalLayout {
             }
         }
     }
-    XrayCard {
-        title: "Core updates";
-        caption: "Installed version · " + XrayModule.version;
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-            ActionButton {
-                label: "Check for Updates";
-                icon: "refresh";
+}
+
+component XrayProfileItem inherits Rectangle {
+    in property <XrayProfileRow> profile;
+    height: 54px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: root.profile.active ? Theme.accent-soft : Theme.field;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            min-width: 0px;
+            spacing: 3px;
+            Text { text: root.profile.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { text: root.profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
+        }
+        Rectangle {
+            width: 44px;
+            RuleSwitch {
+                label: "Activate " + root.profile.name;
+                checked: root.profile.active;
                 enabled: !XrayModule.busy;
-                clicked => { XrayModule.check-updates(); }
-            }
-            if XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: ActionButton {
-                label: "Install " + XrayModule.latest-version;
-                icon: "download";
-                primary: true;
-                enabled: !XrayModule.running && !XrayModule.busy;
-                clicked => { XrayModule.install-update(); }
+                y: (parent.height - self.height) / 2;
+                toggled => { XrayModule.activate-profile(root.profile.id); }
             }
         }
-        if XrayModule.running && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: XrayNote {
-            text: "Stop Xray to install the update.";
+        Rectangle {
+            width: delete.min-width;
+            delete := ActionButton {
+                label: "Remove " + root.profile.name;
+                icon: "trash";
+                icon-only: true;
+                y: (parent.height - self.height) / 2;
+                enabled: !XrayModule.busy;
+                clicked => { XrayModule.remove-profile(root.profile.id); }
+            }
         }
     }
 }
@@ -236,59 +275,38 @@ component XrayProfiles inherits VerticalLayout {
         }
     }
     XrayCard {
-        title: "Profiles";
-        if XrayModule.profiles.length == 0: XrayNote { text: "Import a profile to get started."; }
-        for profile in XrayModule.profiles: Rectangle {
-            height: 54px;
-            border-radius: Theme.radius-small;
-            border-width: 1px;
-            border-color: Theme.border;
-            background: profile.active ? Theme.accent-soft : Theme.field;
-            HorizontalLayout {
-                padding-left: 12px;
-                padding-right: 8px;
-                spacing: 8px;
-                VerticalLayout {
-                    alignment: center;
-                    min-width: 0px;
-                    spacing: 3px;
-                    Text { text: profile.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
-                    Text { text: profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
-                }
-                if profile.subscription: Rectangle {
-                    width: refresh.min-width;
-                    refresh := ActionButton {
-                        label: "Refresh subscription for " + profile.name;
-                        icon: "refresh";
-                        icon-only: true;
-                        y: (parent.height - self.height) / 2;
-                        enabled: !XrayModule.busy;
-                        clicked => { XrayModule.refresh-subscription(profile.id); }
-                    }
-                }
-                Rectangle {
-                    width: 44px;
-                    RuleSwitch {
-                        label: "Activate " + profile.name;
-                        checked: profile.active;
-                        enabled: !XrayModule.busy;
-                        y: (parent.height - self.height) / 2;
-                        toggled => { XrayModule.activate-profile(profile.id); }
-                    }
-                }
-                Rectangle {
-                    width: delete.min-width;
-                    delete := ActionButton {
-                        label: "Remove " + profile.name;
-                        icon: "trash";
-                        icon-only: true;
-                        y: (parent.height - self.height) / 2;
-                        enabled: !XrayModule.busy;
-                        clicked => { XrayModule.remove-profile(profile.id); }
-                    }
-                }
+        title: "Manual Profiles";
+        if XrayModule.profiles.length == 0: XrayNote { text: "No manually imported profiles."; }
+        for row in XrayModule.profiles: XrayProfileItem { profile: row; }
+    }
+    if XrayModule.subscriptions.length == 0: XrayCard {
+        title: "Subscriptions";
+        XrayNote { text: "No subscriptions imported."; }
+    }
+    for group in XrayModule.subscriptions: XrayCard {
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: group.name;
+                font-size: 16px;
+                font-weight: 600;
+                color: Theme.text;
+                min-width: 0px;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ActionButton {
+                label: "Refresh";
+                accessible-label: "Refresh " + group.name;
+                icon: "refresh";
+                height: 32px;
+                enabled: !XrayModule.busy;
+                clicked => { XrayModule.refresh-subscription(group.id); }
             }
         }
+        if group.profiles.length == 0: XrayNote { text: "No profiles in this subscription."; }
+        for row in group.profiles: XrayProfileItem { profile: row; }
     }
 }
 
@@ -322,23 +340,28 @@ component XrayDns inherits VerticalLayout {
     }
     XrayCard {
         title: "VPN server hosts";
-        caption: "Unpinned VPN server names use Windows DNS. A pin applies to Xray only and keeps the original TLS server name.";
+        caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original TLS server name.";
         HorizontalLayout {
             alignment: start;
             ActionButton {
-                label: "Add to hosts";
-                icon: "plus";
-                enabled: !XrayModule.busy && XrayModule.profiles.length > 0;
-                clicked => { XrayModule.pin-host(); }
+                label: "Refresh";
+                icon: "refresh";
+                enabled: !XrayModule.busy && XrayModule.hosts.length > 0;
+                clicked => { XrayModule.refresh-hosts(); }
             }
         }
-        if XrayModule.hosts.length == 0: XrayNote { text: "No pinned server addresses."; }
+        if XrayModule.hosts.length == 0: XrayNote { text: "No VPN server hostnames."; }
+        if XrayModule.hosts.length > 0: HorizontalLayout {
+            spacing: 8px;
+            height: 24px;
+            Text { text: "HOST"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+            Text { text: "ADDRESS"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+        }
         for entry in XrayModule.hosts: HorizontalLayout {
             spacing: 8px;
-            height: 38px;
-            Text { text: entry.host; color: Theme.text; vertical-alignment: center; overflow: elide; min-width: 0px; }
-            Text { text: entry.address; color: Theme.secondary; font-family: "Consolas"; vertical-alignment: center; overflow: elide; min-width: 0px; }
-            ActionButton { label: "Remove " + entry.host; icon: "trash"; icon-only: true; enabled: !XrayModule.busy; clicked => { XrayModule.remove-host(entry.host); } }
+            height: 30px;
+            Text { text: entry.host; color: Theme.text; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+            Text { text: entry.address; color: Theme.secondary; font-family: "Consolas"; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
         }
     }
 }

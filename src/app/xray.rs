@@ -1,9 +1,12 @@
 use super::{model, uptime};
-use crate::{MainWindow, XrayConnectionRow, XrayHostRow, XrayModule, XrayProfileRow};
+use crate::{
+    MainWindow, XrayConnectionRow, XrayHostRow, XrayModule, XrayProfileRow, XraySubscriptionGroup,
+};
 use anyhow::{Context, Result, ensure};
 use slint::ComponentHandle;
 use std::{
     cell::{OnceCell, RefCell},
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
     thread,
@@ -26,8 +29,7 @@ enum Command {
     Remove(String),
     Port(String),
     Dns(String),
-    PinHost,
-    RemoveHost(String),
+    RefreshHosts,
     Geo {
         ips: String,
         domains: String,
@@ -37,6 +39,15 @@ enum Command {
     },
     RefreshGeo,
     Record(bool),
+}
+
+impl Command {
+    fn manages_core(&self) -> bool {
+        matches!(
+            self,
+            Self::Install | Self::CheckUpdates | Self::InstallUpdate
+        )
+    }
 }
 
 struct Controller {
@@ -91,10 +102,39 @@ impl Controller {
     ) -> Result<()> {
         let mut next = self.settings.clone();
         update(&mut next)?;
+        self.save_settings(next, runtime_change)
+    }
+
+    fn save_settings(&mut self, next: Settings, runtime_change: bool) -> Result<()> {
+        let upstream = |settings: &Settings| {
+            settings
+                .selected()
+                .ok()
+                .map(|profile| (profile.port, settings.upstream_ip(profile)))
+        };
+        let upstream_changed =
+            self.settings.active != next.active || upstream(&self.settings) != upstream(&next);
         next.save(&self.settings_path)?;
         self.settings = next;
-        self.pending |= runtime_change && self.runtime.is_some();
+        self.pending |= self.runtime.is_some() && (runtime_change || upstream_changed);
         Ok(())
+    }
+
+    fn refresh_hosts(&mut self, all: bool) -> Result<(bool, usize)> {
+        let mut next = self.settings.clone();
+        let domains = next
+            .host_domains()
+            .into_iter()
+            .filter(|host| all || !next.hosts.contains_key(*host))
+            .map(str::to_owned)
+            .collect();
+        next.prune_hosts();
+        let failed = next.resolve_hosts(domains);
+        let changed = next.hosts != self.settings.hosts;
+        if changed {
+            self.save_settings(next, false)?;
+        }
+        Ok((changed, failed))
     }
 
     fn perform(&mut self, command: Command) -> Result<()> {
@@ -127,12 +167,6 @@ impl Controller {
                     .installed
                     .as_ref()
                     .is_none_or(|installed| newer(&release.version, &installed.version));
-                self.status = if available {
-                    "Update available"
-                } else {
-                    "Xray is up to date"
-                }
-                .into();
                 self.latest = available.then_some(release);
             }
             Command::Toggle => {
@@ -147,22 +181,38 @@ impl Controller {
                 }
             }
             Command::Import(input) => {
-                self.change(false, |settings| settings.import(&input))?;
+                self.change(false, |settings| {
+                    let domains = settings.import(&input)?;
+                    settings.resolve_hosts(domains);
+                    Ok(())
+                })?;
             }
             Command::RefreshSubscription(id) => {
-                self.change(false, |settings| settings.refresh_subscription(&id))?;
+                self.change(false, |settings| {
+                    let domains = settings.refresh_subscription(&id)?;
+                    settings.resolve_hosts(domains);
+                    Ok(())
+                })?;
             }
             Command::Activate(id) => {
                 self.change(true, |settings| {
-                    ensure!(
-                        settings.profiles.iter().any(|profile| profile.id == id),
-                        "Xray profile not found"
-                    );
-                    settings.active = if settings.active.as_deref() == Some(id.as_str()) {
-                        None
+                    let profile = settings
+                        .profiles
+                        .iter()
+                        .find(|profile| profile.id == id)
+                        .context("Xray profile not found")?;
+                    if settings.active.as_deref() == Some(id.as_str()) {
+                        settings.active = None;
                     } else {
-                        Some(id)
-                    };
+                        let missing_host = settings
+                            .upstream_ip(profile)
+                            .is_none()
+                            .then(|| profile.host.clone());
+                        settings.active = Some(id);
+                        if let Some(host) = missing_host {
+                            settings.resolve_hosts(std::iter::once(host).collect());
+                        }
+                    }
                     Ok(())
                 })?;
             }
@@ -184,11 +234,13 @@ impl Controller {
                 settings.dns = profile::parse_dns(&text)?;
                 Ok(())
             })?,
-            Command::PinHost => self.change(true, Settings::pin_selected)?,
-            Command::RemoveHost(host) => self.change(true, |settings| {
-                settings.hosts.remove(&host);
-                Ok(())
-            })?,
+            Command::RefreshHosts => {
+                let (_, failed) = self.refresh_hosts(true)?;
+                ensure!(
+                    failed == 0,
+                    "Could not resolve {failed} VPN server addresses. Previously saved addresses were kept."
+                );
+            }
             Command::Geo {
                 ips,
                 domains,
@@ -234,6 +286,9 @@ impl Controller {
     fn start(&mut self) -> Result<()> {
         let installed = self.installed.as_ref().context("Install Xray-core first")?;
         let profile = self.settings.selected()?;
+        let upstream_ip = self.settings.upstream_ip(profile).context(
+            "The VPN server has no saved IP address. Open X-RAY → DNS and select Refresh.",
+        )?;
         let outbound = profile.outbound()?;
         let geo_directory = assets::geo_directory(&self.directory)?
             .or_else(|| installed.executable.parent().map(Path::to_path_buf))
@@ -242,7 +297,7 @@ impl Controller {
             socks_port: self.settings.socks_port,
             upstream: &profile.host,
             upstream_port: profile.port,
-            upstream_ip: self.settings.hosts.get(&profile.host).copied(),
+            upstream_ip: Some(upstream_ip),
             outbound: &outbound,
             dns_servers: &self.settings.dns,
             direct_domains: &self.settings.direct_domains,
@@ -326,11 +381,10 @@ struct View {
     status: String,
     geo_status: String,
     started: Option<std::time::Instant>,
-    error: String,
 }
 
 impl View {
-    fn new(controller: &Controller, error: String) -> Self {
+    fn new(controller: &Controller) -> Self {
         let status = if controller.pending {
             "Restart Xray to apply saved changes".into()
         } else {
@@ -349,7 +403,6 @@ impl View {
             status,
             geo_status: controller.geo_status.clone(),
             started: controller.runtime.as_ref().map(Runtime::started_at),
-            error,
         }
     }
 
@@ -361,7 +414,6 @@ impl View {
         xray.set_running(self.started.is_some());
         xray.set_status(self.status.into());
         xray.set_geo_status(self.geo_status.into());
-        xray.set_error(self.error.into());
         xray.set_port(self.settings.socks_port.to_string().into());
         xray.set_dns(if self.settings.dns.is_empty() {
             "Default".into()
@@ -370,29 +422,50 @@ impl View {
         });
         xray.set_geo_ip_tags(self.settings.direct_ips.join(", ").into());
         xray.set_geo_site_tags(self.settings.direct_domains.join(", ").into());
-        xray.set_geo_ip_url(self.settings.geoip_url.into());
-        xray.set_geo_site_url(self.settings.geosite_url.into());
+        xray.set_geo_ip_url(self.settings.geoip_url.as_str().into());
+        xray.set_geo_site_url(self.settings.geosite_url.as_str().into());
         xray.set_geo_refresh_hours(self.settings.geo_refresh_hours.to_string().into());
-        xray.set_profiles(model(
+        xray.set_hosts(model(
             self.settings
-                .profiles
+                .host_domains()
                 .into_iter()
-                .map(|profile| XrayProfileRow {
-                    active: self.settings.active.as_deref() == Some(profile.id.as_str()),
-                    id: profile.id.into(),
-                    name: profile.name.into(),
-                    summary: format!("VLESS · {}:{}", profile.host, profile.port).into(),
-                    subscription: profile.subscription.is_some(),
+                .map(|host| XrayHostRow {
+                    host: host.into(),
+                    address: self
+                        .settings
+                        .hosts
+                        .get(host)
+                        .map_or_else(|| "—".to_owned(), |address| address.to_string())
+                        .into(),
                 })
                 .collect(),
         ));
-        xray.set_hosts(model(
+        let mut manual = Vec::new();
+        let mut groups = BTreeMap::<&str, Vec<XrayProfileRow>>::new();
+        for profile in &self.settings.profiles {
+            let row = XrayProfileRow {
+                active: self.settings.active.as_deref() == Some(profile.id.as_str()),
+                id: profile.id.as_str().into(),
+                name: profile.name.as_str().into(),
+                summary: format!("VLESS · {}:{}", profile.host, profile.port).into(),
+            };
+            if let Some(source) = &profile.subscription {
+                groups.entry(source.as_str()).or_default().push(row);
+            } else {
+                manual.push(row);
+            }
+        }
+        xray.set_profiles(model(manual));
+        xray.set_subscriptions(model(
             self.settings
-                .hosts
-                .into_iter()
-                .map(|(host, address)| XrayHostRow {
-                    host: host.into(),
-                    address: address.to_string().into(),
+                .subscription_ids()
+                .enumerate()
+                .filter_map(|(index, id)| {
+                    Some(XraySubscriptionGroup {
+                        id: id.into(),
+                        name: format!("Subscription {}", index + 1).into(),
+                        profiles: model(groups.remove(id)?),
+                    })
                 })
                 .collect(),
         ));
@@ -403,42 +476,66 @@ impl View {
     }
 }
 
+fn set_error(xray: &XrayModule<'_>, manages_core: bool, error: String) {
+    if manages_core {
+        xray.set_module_error(error.into());
+    } else {
+        xray.set_error(error.into());
+    }
+}
+
 fn spawn_worker(
     mut controller: Controller,
     weak: slint::Weak<MainWindow>,
     started: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
 ) -> std::io::Result<mpsc::SyncSender<Command>> {
-    let (sender, receiver) = mpsc::sync_channel(4);
+    let (sender, receiver) = mpsc::sync_channel::<Command>(4);
     thread::Builder::new()
         .name("xray-module".into())
         .spawn(move || {
+            let host_migration = match controller.refresh_hosts(false) {
+                Ok((true, _)) => Some(String::new()),
+                Ok((false, _)) => None,
+                Err(error) => Some(error.to_string()),
+            };
+            if let Some(error) = host_migration {
+                let view = View::new(&controller);
+                let weak = weak.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        view.apply(&ui, false);
+                        ui.global::<XrayModule>().set_error(error.into());
+                    }
+                });
+            }
             loop {
                 let interval = if controller.runtime.is_some() {
                     Duration::from_secs(1)
                 } else {
                     Duration::from_secs(60)
                 };
-                let (result, command_done) = match receiver.recv_timeout(interval) {
-                    Ok(command) => (
-                        Some(
-                            controller
-                                .perform(command)
-                                .err()
-                                .map_or_else(String::new, |error| error.to_string()),
-                        ),
-                        true,
-                    ),
-                    Err(mpsc::RecvTimeoutError::Timeout) => (controller.poll(), false),
+                let (result, command_done, manages_core) = match receiver.recv_timeout(interval) {
+                    Ok(command) => {
+                        let manages_core = command.manages_core();
+                        let error = controller
+                            .perform(command)
+                            .err()
+                            .map_or_else(String::new, |error| error.to_string());
+                        (Some(error), true, manages_core)
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => (controller.poll(), false, false),
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 if let Some(error) = result {
-                    let view = View::new(&controller, error);
+                    let view = View::new(&controller);
                     *started.lock().unwrap() = view.started;
                     let weak = weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = weak.upgrade() {
                             view.apply(&ui, command_done);
-                            ui.global::<XrayModule>().invoke_refresh_activity();
+                            let xray = ui.global::<XrayModule>();
+                            set_error(&xray, manages_core, error);
+                            xray.invoke_refresh_activity();
                         }
                     });
                 }
@@ -452,7 +549,7 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
     let controller = Controller::load(directory, bypass, activity.clone())?;
     let installed = controller.installed.is_some();
     let started = Arc::new(std::sync::Mutex::new(None));
-    View::new(&controller, String::new()).apply(ui, true);
+    View::new(&controller).apply(ui, true);
     let initial = RefCell::new(Some(controller));
     let sender = OnceCell::new();
     let weak = ui.as_weak();
@@ -467,21 +564,26 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
     }
     let xray = ui.global::<XrayModule>();
     let weak = ui.as_weak();
-    let send = std::rc::Rc::new(move |command| {
+    let send = std::rc::Rc::new(move |command: Command| {
         if let Some(ui) = weak.upgrade() {
             let xray = ui.global::<XrayModule>();
             if xray.get_busy() {
                 return;
             }
+            let manages_core = command.manages_core();
             if sender
                 .get_or_init(&start_worker)
                 .as_ref()
                 .is_some_and(|sender| sender.try_send(command).is_ok())
             {
                 xray.set_busy(true);
-                xray.set_error("".into());
+                set_error(&xray, manages_core, String::new());
             } else {
-                xray.set_error("The Xray module worker is unavailable".into());
+                set_error(
+                    &xray,
+                    manages_core,
+                    "The Xray module worker is unavailable".into(),
+                );
             }
         }
     });
@@ -499,7 +601,7 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
     bind!(on_check_updates, Command::CheckUpdates);
     bind!(on_install_update, Command::InstallUpdate);
     bind!(on_toggle, Command::Toggle);
-    bind!(on_pin_host, Command::PinHost);
+    bind!(on_refresh_hosts, Command::RefreshHosts);
     bind!(on_refresh_geo, Command::RefreshGeo);
     bind!(on_import_profile, Command::Import, string);
     bind!(
@@ -511,7 +613,6 @@ pub(super) fn wire(ui: &MainWindow, directory: PathBuf, bypass: Arc<Bypass>) -> 
     bind!(on_remove_profile, Command::Remove, string);
     bind!(on_save_port, Command::Port, string);
     bind!(on_save_dns, Command::Dns, string);
-    bind!(on_remove_host, Command::RemoveHost, string);
     {
         let send = send.clone();
         xray.on_save_geo(move |ips, domains, geoip, geosite, hours| {

@@ -1,10 +1,11 @@
-True Proxy 0.11.0
+True Proxy 0.11.1
 
-- Settings → Modules installs the optional Windows x64 Xray-core from an official release and verifies its SHA-256. After installation, X-RAY appears as a group in the sidebar with a dashboard, update controls, and six configuration and monitoring sections.
-- X-RAY supports VLESS RAW/TCP + TLS, including Vision. Profiles imports `vless://` links and HTTPS subscriptions containing links in text or Base64. Start Xray to expose a local SOCKS5 listener at `127.0.0.1:2081` by default.
-- DNS configures resolvers for the tunnel. Add to hosts pins the VPN server address for Xray while preserving its TLS server name. Fallbacks supports configurable GeoIP and GeoSite sources, Direct tags, and periodic updates. The defaults use XTLS GeoIP Lite and GeoSite Standard with Russian tags.
-- X-RAY Connections shows recent access events reported by the core. Logs has independent recording, level and source filters, clearing, and text copying. Access events indicate accepted or rejected requests.
+- X-RAY Profiles groups manually imported profiles and subscriptions separately. Each subscription has its own Refresh button.
+- X-RAY DNS shows a read-only table of VPN server addresses. True Proxy resolves hostnames as profiles and subscriptions change or when you select Refresh. Xray connects to the saved IP and preserves the TLS server name.
+- Settings → Modules hosts Xray-core update controls. The update check stays quiet when the installed version is current. Startup errors appear in X-RAY with the Windows exit code or core output when available.
+- The sidebar has consistent spacing and collapsible groups. Main is now Proxy. Connections uses DPI-aware Windows app icons.
+- Automatic proxy checks refresh the exit location, keeping the last known location when a lookup fails.
 
-Windows x64. WinDivert is bundled in the executable. The interception backend is experimental. Xray module checks cover verified downloads and local SOCKS startup and shutdown. End-to-end traffic through a remote VLESS server with WinDivert requires integration testing.
+Windows x64. WinDivert is bundled in the executable. The interception backend is experimental.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.11.0/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.11.1/docs/branding/slint-badge.png)](https://slint.dev)

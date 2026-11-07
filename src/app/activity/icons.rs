@@ -6,15 +6,17 @@ use std::{
     sync::mpsc::{Receiver, SyncSender, sync_channel},
     thread,
 };
-use true_proxy::platform::{PROCESS_ICON_SIZE, process_icon};
+use true_proxy::platform::process_icon;
 
 const CACHE_LIMIT: usize = 512;
 const QUEUE_LIMIT: usize = 32;
+const LOGICAL_SIZE: f32 = 20.0;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Key {
     pid: u32,
     name: String,
+    size: u32,
 }
 
 struct Worker {
@@ -30,7 +32,7 @@ impl Worker {
             .name("process-icons".into())
             .spawn(move || {
                 while let Ok(key) = pending.recv() {
-                    let pixels = process_icon(key.pid, &key.name);
+                    let pixels = process_icon(key.pid, &key.name, key.size);
                     if completed.send((key, pixels)).is_err() {
                         break;
                     }
@@ -49,7 +51,7 @@ struct Loader {
 }
 
 impl Loader {
-    fn get(&mut self, name: &str, pid: u32) -> Image {
+    fn get(&mut self, name: &str, pid: u32, size: u32) -> Image {
         if pid == 0 {
             return Image::default();
         }
@@ -60,17 +62,15 @@ impl Loader {
         // scheduled by the loader while the window or page is hidden.
         for (key, pixels) in worker.results.try_iter() {
             if let (Some(icon), Some(pixels)) = (self.cached.get_mut(&key), pixels) {
-                let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                    &pixels,
-                    PROCESS_ICON_SIZE,
-                    PROCESS_ICON_SIZE,
-                );
+                let buffer =
+                    SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&pixels, key.size, key.size);
                 *icon = Image::from_rgba8(buffer);
             }
         }
         let key = Key {
             pid,
             name: name.to_owned(),
+            size,
         };
         if let Some(icon) = self.cached.get(&key) {
             return icon.clone();
@@ -91,6 +91,15 @@ impl Loader {
 
 pub(super) fn wire(ui: &MainWindow) {
     let loader = RefCell::new(Loader::default());
+    let weak = ui.as_weak();
     ui.global::<ConnectionMonitor>()
-        .on_process_icon(move |name, pid| loader.borrow_mut().get(&name, pid as u32));
+        .on_process_icon(move |name, pid| {
+            let Some(ui) = weak.upgrade() else {
+                return Image::default();
+            };
+            let size = (LOGICAL_SIZE * ui.window().scale_factor())
+                .round()
+                .clamp(16.0, 64.0) as u32;
+            loader.borrow_mut().get(&name, pid as u32, size)
+        });
 }

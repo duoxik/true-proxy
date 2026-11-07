@@ -1,6 +1,5 @@
 //! Read embedded icons from local executable resources for the Connections view.
 use super::{process::image_path, wide};
-use crate::platform::PROCESS_ICON_SIZE;
 use std::{ffi::OsStr, path::Path, ptr};
 use windows_sys::Win32::{
     Graphics::Gdi::{
@@ -9,22 +8,19 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::GetDriveTypeW,
     UI::{
-        Shell::ExtractIconExW,
+        Shell::SHDefExtractIconW,
         WindowsAndMessaging::{DI_NORMAL, DestroyIcon, DrawIconEx, HICON},
     },
 };
 
-const SIDE: i32 = PROCESS_ICON_SIZE as i32;
-const BYTES: usize = PROCESS_ICON_SIZE as usize * PROCESS_ICON_SIZE as usize * 4;
-
-/// A square image in straight-alpha RGBA, if the observed executable has an icon.
-pub fn process_icon(pid: u32, process_name: &str) -> Option<Vec<u8>> {
+/// A square image of the requested pixel size (16–64) in straight-alpha RGBA.
+pub fn process_icon(pid: u32, process_name: &str, size: u32) -> Option<Vec<u8>> {
     let path = image_path(pid).ok()?;
     let basename = Path::new(&path).file_name()?.to_str()?;
     if basename.to_lowercase() != process_name.to_lowercase() || !local_drive(&path) {
         return None;
     }
-    rasterize(Path::new(&path).as_os_str())
+    rasterize(Path::new(&path).as_os_str(), size)
 }
 
 fn local_drive(path: &str) -> bool {
@@ -51,24 +47,30 @@ struct Icon(HICON);
 impl Drop for Icon {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            // SAFETY: ExtractIconExW returns an owned icon handle.
+            // SAFETY: SHDefExtractIconW returns an owned icon handle.
             unsafe { DestroyIcon(self.0) };
         }
     }
 }
 
-fn rasterize(path: &OsStr) -> Option<Vec<u8>> {
-    let mut icon = Icon(ptr::null_mut());
-    let path = wide(path);
-    // SAFETY: path is NUL-terminated and the large-icon output has room for one handle.
-    let count = unsafe { ExtractIconExW(path.as_ptr(), 0, &mut icon.0, ptr::null_mut(), 1) };
-    if count != 1 || icon.0.is_null() {
+fn rasterize(path: &OsStr, size: u32) -> Option<Vec<u8>> {
+    if !(16..=64).contains(&size) {
         return None;
     }
-    let mut canvas = Canvas::new()?;
+    let mut icon = Icon(ptr::null_mut());
+    let path = wide(path);
+    // Request the actual physical size so Windows can choose the embedded frame
+    // before scaling and DrawIconEx can paint at that same size.
+    // SAFETY: path is NUL-terminated and the large-icon output is writable.
+    let result =
+        unsafe { SHDefExtractIconW(path.as_ptr(), 0, 0, &mut icon.0, ptr::null_mut(), size) };
+    if result != 0 || icon.0.is_null() {
+        return None;
+    }
+    let mut canvas = Canvas::new(size as i32)?;
     let black = canvas.draw(&icon, 0)?;
     let white = canvas.draw(&icon, 255)?;
-    let mut rgba = Vec::with_capacity(BYTES);
+    let mut rgba = Vec::with_capacity(black.len());
     let mut has_visible_pixels = false;
     for (black, white) in black
         .as_chunks::<4>()
@@ -102,10 +104,11 @@ struct Canvas {
     dc: HDC,
     bitmap: HBITMAP,
     bits: *mut u8,
+    side: i32,
 }
 
 impl Canvas {
-    fn new() -> Option<Self> {
+    fn new(side: i32) -> Option<Self> {
         // SAFETY: a null reference requests an owned memory DC.
         let dc = unsafe { CreateCompatibleDC(ptr::null_mut()) };
         if dc.is_null() {
@@ -114,8 +117,8 @@ impl Canvas {
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: SIDE,
-                biHeight: -SIDE,
+                biWidth: side,
+                biHeight: -side,
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB,
@@ -132,6 +135,7 @@ impl Canvas {
             dc,
             bitmap,
             bits: bits.cast(),
+            side,
         };
         if canvas.bitmap.is_null() || canvas.bits.is_null() {
             return None;
@@ -141,19 +145,20 @@ impl Canvas {
         (!previous.is_null()).then_some(canvas)
     }
 
-    fn draw(&mut self, icon: &Icon, background: u8) -> Option<[u8; BYTES]> {
-        let mut pixels = [0; BYTES];
-        // SAFETY: the live DIB has BYTES of writable storage. This canvas is
-        // private to the current thread. Flush GDI before reading its pixels.
+    fn draw(&mut self, icon: &Icon, background: u8) -> Option<Vec<u8>> {
+        let bytes = (self.side * self.side * 4) as usize;
+        let mut pixels = vec![0; bytes];
+        // SAFETY: the DIB has `side * side * 4` bytes of writable storage
+        // and is private to this thread. Flush GDI before reading its pixels.
         unsafe {
-            self.bits.write_bytes(background, BYTES);
+            self.bits.write_bytes(background, bytes);
             let drawn = DrawIconEx(
                 self.dc,
                 0,
                 0,
                 icon.0,
-                SIDE,
-                SIDE,
+                self.side,
+                self.side,
                 0,
                 ptr::null_mut(),
                 DI_NORMAL,
@@ -162,7 +167,7 @@ impl Canvas {
             if drawn == 0 || flushed == 0 {
                 return None;
             }
-            ptr::copy_nonoverlapping(self.bits, pixels.as_mut_ptr(), BYTES);
+            ptr::copy_nonoverlapping(self.bits, pixels.as_mut_ptr(), bytes);
         }
         Some(pixels)
     }
@@ -186,12 +191,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_icon_rasterizes_with_transparency() {
+    fn embedded_icon_rasterizes_at_requested_sizes_with_transparency() {
         let path = Path::new(env!("OUT_DIR")).join("true-proxy.ico");
-        let pixels = rasterize(path.as_os_str()).unwrap();
-        assert_eq!(pixels.len(), BYTES);
-        let (pixels, _) = pixels.as_chunks::<4>();
-        assert!(pixels.iter().any(|pixel| pixel[3] == 0));
-        assert!(pixels.iter().any(|pixel| pixel[3] == 255));
+        for size in [16, 20, 25, 30, 40, 64] {
+            let pixels = rasterize(path.as_os_str(), size).unwrap();
+            assert_eq!(pixels.len(), (size * size * 4) as usize);
+            let (pixels, _) = pixels.as_chunks::<4>();
+            assert!(pixels.iter().any(|pixel| pixel[3] == 0));
+            assert!(pixels.iter().any(|pixel| pixel[3] == 255));
+        }
+        assert!(rasterize(path.as_os_str(), 15).is_none());
+        assert!(rasterize(path.as_os_str(), 65).is_none());
     }
 }

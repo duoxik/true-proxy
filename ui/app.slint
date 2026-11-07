@@ -8,8 +8,8 @@ import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
 import { LogsView, TechnicalLogs } from "logs.slint";
 export { TechnicalLogs }
-import { XrayModule, XrayModuleCard, XrayView, XrayProfileRow, XrayHostRow, XrayConnectionRow } from "xray.slint";
-export { XrayModule, XrayProfileRow, XrayHostRow, XrayConnectionRow }
+import { XrayModule, XrayModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow } from "xray.slint";
+export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -40,6 +40,76 @@ component NavItem inherits Rectangle {
     forward-focus: focus;
     border-width: 1px; border-color: focus.has-focus ? Theme.accent : transparent;
     accessible-role: button; accessible-label: root.label; accessible-action-default => { root.clicked(); }
+}
+
+struct SidebarLink { label: string, icon: string, target: int }
+
+component SidebarGroup inherits VerticalLayout {
+    in property <string> title;
+    in property <[SidebarLink]> links;
+    in property <int> selection: -1;
+    in property <string> accessibility-prefix;
+    private property <bool> expanded: true;
+    callback open(int);
+    spacing: 2px;
+
+    Rectangle {
+        height: 24px;
+        border-radius: Theme.radius-small;
+        background: touch.has-hover ? Theme.surface-hover : transparent;
+        border-width: 1px;
+        border-color: focus.has-focus ? Theme.accent : transparent;
+        accessible-role: button;
+        accessible-label: root.title;
+        accessible-expanded: root.expanded;
+        accessible-action-default => { root.expanded = !root.expanded; }
+        forward-focus: focus;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 10px;
+            Text {
+                text: root.title;
+                color: Theme.muted;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+            Rectangle {
+                width: 16px;
+                UiIcon {
+                    name: root.expanded ? "chevron-down" : "chevron-right";
+                    width: 16px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+        touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { focus.focus(); root.expanded = !root.expanded; }
+        }
+        focus := FocusScope {
+            width: 0px;
+            key-pressed(event) => {
+                if event.text == Key.Space || event.text == Key.Return {
+                    root.expanded = !root.expanded;
+                    return accept;
+                }
+                return reject;
+            }
+        }
+    }
+
+    for link in (root.expanded ? root.links : []): NavItem {
+        height: 32px;
+        label: link.label;
+        icon: link.icon;
+        accessible-label: root.accessibility-prefix + link.label;
+        selected: root.selection == link.target;
+        clicked => { root.open(link.target); }
+    }
 }
 
 component Disclosure inherits Rectangle {
@@ -834,41 +904,50 @@ export component MainWindow inherits Window {
                         content-height: max(self.visible-height, navigation.preferred-height);
                         navigation := VerticalLayout {
                             padding: 10px;
-                            spacing: 4px;
+                            spacing: 8px;
                             alignment: start;
-                            Text { text: "MAIN"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                            NavItem { label: "Dashboard"; icon: "dashboard"; selected: root.page == 0; clicked => { root.page = 0; } }
-                            NavItem { label: "Proxies"; icon: "server"; selected: root.page == 2; clicked => { root.page = 2; } }
-                            NavItem { label: "Rules"; icon: "rules"; selected: root.page == 1; clicked => { root.page = 1; } }
-                            Rectangle { height: 12px; }
-                            Text { text: "NETWORK"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                            NavItem { label: "Connections"; icon: "activity"; selected: root.page == 3; clicked => { root.page = 3; } }
-                            NavItem { label: "Logs"; icon: "file"; selected: root.page == 5; clicked => { root.page = 5; } }
-                            Rectangle { height: 12px; }
-                            Text { text: "SYSTEM"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 22px; }
-                            NavItem { label: "Settings"; icon: "settings"; selected: root.page == 4; clicked => { root.page = 4; } }
-                            if XrayModule.installed: VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "X-RAY"; color: Theme.muted; font-size: 10px; font-weight: 600; height: 24px; vertical-alignment: center; }
-                                for item[index] in [
-                                    { label: "Dashboard", icon: "dashboard" },
-                                    { label: "Profiles", icon: "file" },
-                                    { label: "General", icon: "settings" },
-                                    { label: "DNS", icon: "globe" },
-                                    { label: "Fallbacks", icon: "rules" },
-                                    { label: "Connections", icon: "activity" },
-                                    { label: "Logs", icon: "file" },
-                                ]: NavItem {
-                                    height: 30px;
-                                    label: item.label;
-                                    icon: item.icon;
-                                    accessible-label: "Xray " + item.label;
-                                    selected: root.page == 6 && XrayModule.section == index;
-                                    clicked => {
-                                        XrayModule.section = index;
-                                        if root.page == 6 { XrayModule.refresh-activity(); }
-                                        else { root.page = 6; }
-                                    }
+                            SidebarGroup {
+                                title: "PROXY";
+                                selection: root.page;
+                                links: [
+                                    { label: "Dashboard", icon: "dashboard", target: 0 },
+                                    { label: "Proxies", icon: "server", target: 2 },
+                                    { label: "Rules", icon: "rules", target: 1 },
+                                ];
+                                open(page) => { root.page = page; }
+                            }
+                            SidebarGroup {
+                                title: "NETWORK";
+                                selection: root.page;
+                                links: [
+                                    { label: "Connections", icon: "activity", target: 3 },
+                                    { label: "Logs", icon: "file", target: 5 },
+                                ];
+                                open(page) => { root.page = page; }
+                            }
+                            SidebarGroup {
+                                title: "SYSTEM";
+                                selection: root.page;
+                                links: [{ label: "Settings", icon: "settings", target: 4 }];
+                                open(page) => { root.page = page; }
+                            }
+                            if XrayModule.installed: SidebarGroup {
+                                title: "X-RAY";
+                                accessibility-prefix: "Xray ";
+                                selection: root.page == 6 ? XrayModule.section : -1;
+                                links: [
+                                    { label: "Dashboard", icon: "dashboard", target: 0 },
+                                    { label: "Profiles", icon: "file", target: 1 },
+                                    { label: "General", icon: "settings", target: 2 },
+                                    { label: "DNS", icon: "globe", target: 3 },
+                                    { label: "Fallbacks", icon: "rules", target: 4 },
+                                    { label: "Connections", icon: "activity", target: 5 },
+                                    { label: "Logs", icon: "file", target: 6 },
+                                ];
+                                open(section) => {
+                                    XrayModule.section = section;
+                                    if root.page == 6 { XrayModule.refresh-activity(); }
+                                    else { root.page = 6; }
                                 }
                             }
                         }

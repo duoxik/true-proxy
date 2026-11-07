@@ -149,10 +149,10 @@ pub fn wire_table(ui: &MainWindow) {
     });
 }
 pub async fn check(proxy: &Proxy) -> Health {
-    measure(proxy, Instant::now(), true).await
+    measure(proxy, Instant::now()).await
 }
 
-async fn measure(proxy: &Proxy, checked_at: Instant, locate: bool) -> Health {
+async fn measure(proxy: &Proxy, checked_at: Instant) -> Health {
     let mut health = Health {
         key: key(proxy),
         checked_at,
@@ -167,9 +167,7 @@ async fn measure(proxy: &Proxy, checked_at: Instant, locate: bool) -> Health {
             health.tcp = true;
             health.udp = udp;
             health.latency = latency;
-            if locate {
-                health.location = platform::proxy_location(proxy).await;
-            }
+            health.location = platform::proxy_location(proxy).await;
         }
         Err(error) => health.error = format!("{error:#}"),
     }
@@ -351,7 +349,7 @@ async fn check_automatic(
         while checks.len() < AUTO_CONCURRENCY {
             let Some(proxy) = proxies.next() else { break };
             checks.spawn(async move {
-                let health = measure(&proxy, started, false).await;
+                let health = measure(&proxy, started).await;
                 (proxy.id, health)
             });
         }

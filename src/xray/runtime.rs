@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     io::{self, BufRead},
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -72,6 +72,8 @@ struct ActivityState {
     stats: Stats,
     logs: VecDeque<LogLine>,
     connections: VecDeque<ConnectionEvent>,
+    starting: bool,
+    startup_failure: Option<String>,
 }
 
 #[derive(Default)]
@@ -120,17 +122,32 @@ impl Activity {
         let mut state = self.state.lock().unwrap();
         state.stats = Stats::default();
         state.connections.clear();
+        state.starting = true;
+        state.startup_failure = None;
+    }
+
+    fn finish_startup(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        state.starting = false;
+        state.startup_failure.take()
     }
 
     fn receive(&self, line: &str) {
         let (time, message) = split_time(line);
         let event = access_event(time, message);
         let access = event.is_some();
+        let fatal = message.starts_with("Failed to start:")
+            || message.starts_with("panic:")
+            || message.starts_with("fatal error:")
+            || message.contains("[Error]");
         let recording = self.recording();
-        if !access && !recording {
+        if !access && !recording && !fatal {
             return;
         }
         let mut state = self.state.lock().unwrap();
+        if fatal && state.starting {
+            state.startup_failure = Some(message.replace(char::is_control, " "));
+        }
         if let Some(event) = event {
             if event.status == "Accepted" {
                 state.stats.accepted = state.stats.accepted.saturating_add(1);
@@ -145,7 +162,7 @@ impl Activity {
             push_bounded(&mut state.connections, event);
         }
         if recording {
-            let level = if message.contains("[Error]") {
+            let level = if fatal {
                 "Error"
             } else if message.contains("[Warning]") {
                 "Warning"
@@ -225,7 +242,27 @@ fn access_event(time: &str, message: &str) -> Option<ConnectionEvent> {
 }
 
 fn read_output(mut reader: impl BufRead, activity: &Activity, secret: &str) -> io::Result<()> {
-    let mut line = Vec::with_capacity(LINE_LIMIT);
+    // Read far enough past the display limit to redact credentials crossing it.
+    let limit = LINE_LIMIT + secret.len();
+    let mut line = Vec::with_capacity(limit);
+    let receive = |line: &[u8]| {
+        let text = String::from_utf8_lossy(line);
+        let mut end = text.floor_char_boundary(LINE_LIMIT);
+        if !secret.is_empty()
+            && let Some((start, _)) = text
+                .match_indices(secret)
+                .find(|(start, _)| *start < end && *start + secret.len() > end)
+        {
+            end = start;
+        }
+        let text = &text[..end];
+        if !secret.is_empty() && text.contains(secret) {
+            let redacted = text.replace(secret, "[redacted]");
+            activity.receive(redacted[..redacted.floor_char_boundary(LINE_LIMIT)].trim_end());
+        } else {
+            activity.receive(text.trim_end());
+        }
+    };
     loop {
         let bytes = reader.fill_buf()?;
         if bytes.is_empty() {
@@ -233,18 +270,16 @@ fn read_output(mut reader: impl BufRead, activity: &Activity, secret: &str) -> i
         }
         let newline = bytes.iter().position(|&byte| byte == b'\n');
         let count = newline.unwrap_or(bytes.len());
-        let capacity = LINE_LIMIT - line.len();
+        let capacity = limit - line.len();
         line.extend_from_slice(&bytes[..count.min(capacity)]);
         reader.consume(count + usize::from(newline.is_some()));
         if newline.is_some() {
-            let text = String::from_utf8_lossy(&line);
-            if text.contains(secret) {
-                activity.receive(text.trim_end().replace(secret, "[redacted]").as_str());
-            } else {
-                activity.receive(text.trim_end());
-            }
+            receive(&line);
             line.clear();
         }
+    }
+    if !line.is_empty() {
+        receive(&line);
     }
     Ok(())
 }
@@ -258,14 +293,11 @@ fn upstream(settings: &Settings<'_>) -> Result<SocketAddr> {
         settings.upstream_port != 0,
         "The VLESS server port is invalid"
     );
-    if let Some(ip) = settings.upstream_ip {
-        return Ok(SocketAddr::new(ip, settings.upstream_port));
-    }
-    (settings.upstream, settings.upstream_port)
-        .to_socket_addrs()
-        .context("Windows could not resolve the VLESS server")?
-        .next()
-        .context("Windows returned no address for the VLESS server")
+    let ip = settings
+        .upstream_ip
+        .or_else(|| settings.upstream.parse().ok())
+        .context("Refresh VPN server addresses in X-RAY → DNS before starting Xray")?;
+    Ok(SocketAddr::new(ip, settings.upstream_port))
 }
 
 fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value, String)> {
@@ -521,6 +553,7 @@ impl Runtime {
     ) -> Result<Self> {
         #[cfg(windows)]
         {
+            windows::check_socks_port(settings.socks_port)?;
             let address = upstream(&settings)?;
             let (config, secret) = configuration(&settings, address)?;
             let child = Child::spawn(installed, settings.geo_directory, &activity, secret)?;
@@ -534,10 +567,26 @@ impl Runtime {
                 bypass,
                 started: Instant::now(),
             };
-            runtime.child.start(serde_json::to_vec(&config)?)?;
-            runtime
+            let ready = runtime
                 .child
-                .wait_socks(settings.socks_port, Duration::from_secs(5))?;
+                .start(serde_json::to_vec(&config)?)
+                .and_then(|()| {
+                    runtime
+                        .child
+                        .wait_socks(settings.socks_port, Duration::from_secs(5))
+                });
+            if ready.is_err() {
+                // Stop drains the child's output after it exits, so a fast
+                // failure cannot race ahead of the diagnostic reader.
+                runtime.stop();
+            }
+            let failure = activity.finish_startup();
+            if let Err(error) = ready {
+                if let Some(failure) = failure {
+                    anyhow::bail!("{error}: {failure}");
+                }
+                return Err(error);
+            }
             Ok(runtime)
         }
         #[cfg(not(windows))]
@@ -591,7 +640,7 @@ mod tests {
                 "tlsSettings": {"serverName": "node.example", "allowInsecure": true}
             },
         });
-        let settings = Settings {
+        let mut settings = Settings {
             socks_port: 2081,
             upstream: "node.example",
             upstream_port: 443,
@@ -615,6 +664,14 @@ mod tests {
             json!([DNS_INBOUND])
         );
         assert_eq!(value["routing"]["rules"][1]["outboundTag"], DIRECT);
+
+        settings.upstream_ip = None;
+        assert!(upstream(&settings).is_err());
+        settings.upstream = "2001:db8::1";
+        assert_eq!(
+            upstream(&settings).unwrap(),
+            "[2001:db8::1]:443".parse().unwrap()
+        );
     }
 
     #[test]
@@ -633,6 +690,34 @@ mod tests {
         activity.clear_connections();
         assert!(activity.connections().is_empty());
         assert_eq!(activity.stats().accepted, 300);
+    }
+
+    #[test]
+    fn startup_failure_is_redacted_and_kept_without_recording_logs() {
+        let activity = Activity::default();
+        let secret = "f0594cf1-14b5-4dcc-8123-4df23c516f10";
+        activity.new_session();
+        let output = format!("Xray fixture\nFailed to start: could not listen ({secret})");
+        read_output(output.as_bytes(), &activity, secret).unwrap();
+        assert_eq!(
+            activity.finish_startup().as_deref(),
+            Some("Failed to start: could not listen ([redacted])"),
+        );
+        assert!(activity.logs().is_empty());
+
+        activity.new_session();
+        let prefix = "Failed to start: ";
+        let padding = "x".repeat(LINE_LIMIT - prefix.len() - 8);
+        let output = format!("{prefix}{padding}{secret}");
+        read_output(output.as_bytes(), &activity, secret).unwrap();
+        assert_eq!(
+            activity.finish_startup().unwrap(),
+            format!("{prefix}{padding}")
+        );
+
+        activity.new_session();
+        read_output("Xray fixture\n".as_bytes(), &activity, secret).unwrap();
+        assert!(activity.finish_startup().is_none());
     }
 
     #[cfg(windows)]
