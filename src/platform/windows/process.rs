@@ -186,7 +186,7 @@ pub fn running_processes() -> Result<Vec<crate::platform::RunningProcess>> {
     Ok(grouped.into_values().collect())
 }
 
-fn image_path(pid: u32) -> Result<String> {
+pub(super) fn image_path(pid: u32) -> Result<String> {
     // Query-only access; the owned handle is closed before any parsing can fail.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     ensure!(

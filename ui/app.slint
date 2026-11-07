@@ -44,11 +44,10 @@ component RuleSwitch inherits Rectangle {
     in property <bool> checked;
     in property <bool> enabled: true;
     in property <string> label;
-    in property <color> checked-color: Theme.primary;
     callback toggled;
     width: 44px; height: 38px;
     opacity: root.enabled ? 1 : 0.45;
-    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked ? root.checked-color : Theme.switch-off;
+    Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked && root.enabled ? Theme.primary : Theme.switch-off;
         border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
         Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: Theme.primary-text; animate x { duration: 100ms; } }
     }
@@ -105,30 +104,18 @@ component RouteChoice inherits Rectangle {
     }
 }
 
-component FallbackSelector inherits Rectangle {
-    in property <string> label;
+component FallbackSelector inherits ActionButton {
     in property <[ProxyRow]> proxies;
-    in property <bool> enabled: true;
     property <bool> proxy-open: false;
     callback selected(int, string);
-    height: 38px; border-radius: Theme.radius-small; border-width: 1px;
-    border-color: focus.has-focus || menu.is-open ? Theme.accent : Theme.border;
-    background: !root.enabled ? Theme.disabled : touch.has-hover ? Theme.surface-hover : Theme.field;
-    accessible-role: button; accessible-label: "Default route: " + root.label; accessible-enabled: root.enabled; accessible-expanded: menu.is-open;
-    accessible-action-default => { root.open-menu(); }
-    forward-focus: focus;
-    function open-menu() { if root.enabled { root.proxy-open = false; menu.show(); } }
+    label: "Edit fallback route";
+    icon: "edit";
+    icon-only: true;
+    height: 36px;
+    accessible-expanded: menu.is-open;
+    clicked => { root.proxy-open = false; menu.show(); }
     function choose-route(kind: int, proxy-id: string) { if root.enabled { root.selected(kind, proxy-id); } menu.close(); }
-    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
-        Text { text: root.label; color: root.enabled ? Theme.text : Theme.muted; font-size: 12px; overflow: elide; vertical-alignment: center; accessible-role: none; }
-        Rectangle {
-            width: 18px;
-            UiIcon { name: menu.is-open ? "chevron-up" : "chevron-down"; y: (parent.height - self.height) / 2; }
-        }
-    }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.open-menu(); } }
-    focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow { root.open-menu(); return accept; } return reject; } }
-    menu := PopupWindow { x: 0px; y: -self.height - 6px; width: root.width; height: max(126px, min(root.proxies.length, 7) * 38px + 12px);
+    menu := PopupWindow { x: root.width - self.width; y: -self.height - 6px; width: 260px; height: max(126px, min(root.proxies.length, 7) * 38px + 12px);
         close-policy: close-on-click-outside;
         forward-focus: menu-focus;
         menu-focus := FocusScope {
@@ -320,6 +307,16 @@ component RulePriority inherits Rectangle {
     }
 }
 
+component FixedRuleLock inherits Rectangle {
+    width: 24px;
+    UiIcon {
+        name: "lock";
+        ink: Theme.muted;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
 component RuleCard inherits Rectangle {
     in property <bool> enabled: true;
     height: content.preferred-height;
@@ -481,7 +478,6 @@ component RulePreview inherits Rectangle {
             RuleSwitch {
                 label: "Rule " + root.name;
                 checked: root.active;
-                checked-color: root.fixed-route ? Theme.muted : Theme.success;
                 enabled: !root.fixed-route && !root.busy;
                 toggled => { root.toggled(); }
             }
@@ -1117,18 +1113,14 @@ export component MainWindow inherits Window {
                                         RulePriority { number: 1; }
                                         Text { text: "Local"; accessible-label: "1. Local"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
                                         Rectangle { width: 132px; RouteBadge { value: "Direct"; icon: "direct"; y: (parent.height - self.height) / 2; } }
-                                        RuleSwitch { checked: true; checked-color: Theme.switch-off; label: "Rule Local"; height: 36px; enabled: false; }
+                                        RuleSwitch { checked: true; label: "Rule Local"; height: 36px; enabled: false; }
                                         ActionButton {
                                             label: "Edit local network"; icon: "edit"; icon-only: true;
                                             height: 36px; enabled: !root.busy;
                                             clicked => { root.edit-local-network(); }
                                         }
                                         ActionButton { label: "Delete local rule"; icon: "trash"; icon-only: true; height: 36px; enabled: false; }
-                                        VerticalLayout {
-                                            spacing: 2px;
-                                            ActionButton { label: "Move local rule up"; icon: "chevron-up"; icon-only: true; min-width: 24px; max-width: 24px; height: 17px; enabled: false; }
-                                            ActionButton { label: "Move local rule down"; icon: "chevron-down"; icon-only: true; min-width: 24px; max-width: 24px; height: 17px; enabled: false; }
-                                        }
+                                        FixedRuleLock {}
                                     }
                                 }
                                 if root.rule-query != "" && root.visible-rules.length == 0: Text {
@@ -1182,14 +1174,26 @@ export component MainWindow inherits Window {
                                 }
                                 fallback-card := RuleCard {
                                     HorizontalLayout {
-                                        height: 38px;
+                                        height: 36px;
                                         spacing: 8px;
                                         RulePriority { number: root.rules.length + 2; }
                                         Text { text: "Fallback"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
-                                        Rectangle { width: 260px;
-                                            fallback-selector := FallbackSelector { label: root.fallback-label; proxies: root.proxies; enabled: !root.busy; selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); } }
+                                        Rectangle {
+                                            width: 132px;
+                                            RouteBadge {
+                                                value: root.fallback-label;
+                                                icon: root.fallback-label == "Direct" ? "direct" : root.fallback-label == "Block" ? "block" : "server";
+                                                y: (parent.height - self.height) / 2;
+                                            }
                                         }
-                                        Rectangle { width: 18px; UiIcon { name: "lock"; ink: Theme.muted; y: (parent.height - self.height) / 2; } }
+                                        RuleSwitch { checked: true; label: "Rule Fallback"; height: 36px; enabled: false; }
+                                        fallback-selector := FallbackSelector {
+                                            proxies: root.proxies;
+                                            enabled: !root.busy;
+                                            selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); }
+                                        }
+                                        ActionButton { label: "Delete fallback rule"; icon: "trash"; icon-only: true; height: 36px; enabled: false; }
+                                        FixedRuleLock {}
                                     }
                                 }
                             }

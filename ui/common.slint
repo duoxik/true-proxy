@@ -5,7 +5,7 @@ export struct ProxyRow { id: string, key: string, name: string, address: string,
 export struct RuleRow { id: string, name: string, route: string, enabled: bool, priority: int }
 export struct LogRow { id: string, process: string, pid: string, destination: string, route: string, message: string, source: string, started: string, elapsed: string, status: string, state: int }
 export struct ProcessChoice { key: string, name: string, path: string, pids: string, instances: int, selected: bool }
-export struct ProcessSummary { name: string, active: int, events: int, uploaded: string, downloaded: string, expanded: bool, connections: [LogRow] }
+export struct ProcessSummary { name: string, icon: image, active: int, events: int, uploaded: string, downloaded: string, expanded: bool, connections: [LogRow] }
 export struct ConnectionFilterOption { key: string, label: string, checked: bool }
 
 export global Theme {

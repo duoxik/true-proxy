@@ -349,18 +349,18 @@ mod ui_tests {
             ["Edit local network"],
             "The local route must only expose CIDR editing"
         );
-        for label in [
-            "Rule Local",
-            "Delete local rule",
-            "Move local rule up",
-            "Move local rule down",
-        ] {
+        for label in ["Rule Local", "Delete local rule"] {
             let control = labels
                 .iter()
                 .find(|element| element.accessible_label().as_deref() == Some(label))
                 .unwrap();
             assert_eq!(control.accessible_enabled(), Some(false));
         }
+        assert!(!labels.iter().any(|element| {
+            element
+                .accessible_label()
+                .is_some_and(|label| label.starts_with("Move local rule"))
+        }));
 
         ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
             crate::RuleRow {

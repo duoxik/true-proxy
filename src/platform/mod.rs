@@ -5,6 +5,13 @@ use std::path::Path;
 
 #[cfg(windows)]
 pub mod windows;
+pub const PROCESS_ICON_SIZE: u32 = 24;
+#[cfg(windows)]
+pub use windows::process_icon;
+#[cfg(not(windows))]
+pub fn process_icon(_pid: u32, _process_name: &str) -> Option<Vec<u8>> {
+    None
+}
 #[cfg(windows)]
 pub use windows::passive::PassiveConnections;
 #[cfg(windows)]

@@ -160,6 +160,8 @@ component JournalLine inherits HorizontalLayout {
     in property <bool> group;
     in property <bool> expanded;
     in property <string> application;
+    in property <image> application-icon;
+    private property <bool> has-application-icon: root.application-icon.width > 0;
     in property <string> source;
     in property <string> destination;
     in property <string> target-detail;
@@ -198,8 +200,17 @@ component JournalLine inherits HorizontalLayout {
                 width: 24px;
                 height: 24px;
                 border-radius: Theme.radius-small;
-                background: Theme.accent-soft;
-                UiIcon {
+                background: root.has-application-icon ? transparent : Theme.accent-soft;
+                if root.has-application-icon: Image {
+                    x: 3px;
+                    y: 3px;
+                    width: 18px;
+                    height: 18px;
+                    source: root.application-icon;
+                    image-fit: contain;
+                    accessible-role: none;
+                }
+                if !root.has-application-icon: UiIcon {
                     x: 5px;
                     y: 5px;
                     width: 14px;
@@ -252,6 +263,7 @@ component JournalGroup inherits Rectangle {
                 group: true;
                 expanded: root.process.expanded;
                 application: root.process.name;
+                application-icon: root.process.icon;
                 destination: root.process.events + (root.process.events == 1 ? " connection" : " connections");
                 status: root.process.active + " active";
                 status-ink: root.process.active > 0 ? Theme.success : Theme.secondary;
@@ -315,6 +327,7 @@ export global ConnectionMonitor {
     callback toggle-connection-status(string, bool);
     callback reset-connection-filters;
     callback expand-process(string);
+    callback process-icon(string, int) -> image;
 }
 
 export component ConnectionsView inherits VerticalLayout {

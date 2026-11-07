@@ -10,6 +10,13 @@ use std::{
 use true_proxy::{config::Action, connections::Snapshot, engine::Statistics};
 
 mod filters;
+#[cfg(windows)]
+mod icons;
+
+#[cfg(windows)]
+pub(super) fn wire_icons(ui: &MainWindow) {
+    icons::wire(ui);
+}
 
 /// Core transfer counters run independently from the visible monitor.
 pub fn observable(ui: &MainWindow) -> bool {
@@ -187,12 +194,25 @@ pub fn render(ui: &MainWindow, statistics: &Statistics) {
         .map(|(key, rows)| {
             let active = rows.iter().filter(|r| !r.status.finished()).count();
             let counters = counters.get(&key);
+            let icon = if key == "\0other" {
+                slint::Image::default()
+            } else {
+                let representative = rows
+                    .iter()
+                    .find(|row| !row.status.finished())
+                    .unwrap_or(&rows[0]);
+                monitor.invoke_process_icon(
+                    representative.info.process.clone().into(),
+                    representative.info.pid as i32,
+                )
+            };
             ProcessSummary {
                 name: if key == "\0other" {
                     "Other processes".into()
                 } else {
                     rows[0].info.process.clone().into()
                 },
+                icon,
                 active: active as i32,
                 events: rows.len() as i32,
                 expanded: expanded.contains(&key),
@@ -380,6 +400,17 @@ mod tests {
     fn process_search_and_route_checkboxes_group_proxies_and_preserve_stable_models() {
         let (ui, stats) = window(&[("p1", "VPN"), ("p2", "VPN")]);
         let monitor = ui.global::<ConnectionMonitor>();
+        monitor.on_process_icon(|name, pid| {
+            if name == "Game.exe" && pid == 10 {
+                slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                    &[131_u8, 84, 234, 255],
+                    1,
+                    1,
+                ))
+            } else {
+                slint::Image::default()
+            }
+        });
         let _game = start(
             &stats,
             "Game.exe",
@@ -403,6 +434,7 @@ mod tests {
         assert_eq!(monitor.get_total_received(), "4.0 KB");
         assert_eq!(monitor.get_total_traffic(), "6.0 KB");
         let stable = monitor.get_process_summaries();
+        assert_eq!(stable.row_data(0).unwrap().icon.size().width, 1);
         let children = stable.row_data(0).unwrap().connections;
         assert_eq!(children.row_data(0).unwrap().route, "Proxy · VPN");
         let route_models = monitor.get_connection_route_filters();

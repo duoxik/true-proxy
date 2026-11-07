@@ -312,6 +312,7 @@ fn main() -> Result<()> {
     connections.set_process_summaries(model(vec![
         ProcessSummary {
             name: "browser.exe".into(),
+            icon: slint::Image::default(),
             active: 2,
             events: 2,
             uploaded: "1.2 MB".into(),
@@ -321,6 +322,7 @@ fn main() -> Result<()> {
         },
         ProcessSummary {
             name: "game.exe".into(),
+            icon: slint::Image::default(),
             active: 1,
             events: 1,
             uploaded: "856 KB".into(),

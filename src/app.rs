@@ -202,6 +202,10 @@ fn wire_window_statistics(
     connection_preferences: Option<PathBuf>,
     passive_source: Option<(State, SyncSender<Command>)>,
 ) -> Rc<slint::Timer> {
+    #[cfg(windows)]
+    if passive_source.is_some() {
+        activity::wire_icons(ui);
+    }
     activity::wire(ui, statistics.clone(), connection_preferences);
     let log_view = logs::wire(ui, statistics.clone(), log_preferences, preview_connections);
     let timer = Rc::new(slint::Timer::default());

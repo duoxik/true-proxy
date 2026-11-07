@@ -108,7 +108,11 @@ mod tests {
     fn first_click_and_proxy_hover_save_one_atomic_selection_with_deferred_application() {
         let fixture = Fixture::new(true);
         let ui = fixture.window();
-        click(&ui, "Default route: Direct");
+        assert_eq!(
+            button(&ui, "Delete fallback rule").accessible_enabled(),
+            Some(false)
+        );
+        click(&ui, "Edit fallback route");
         click(&ui, "Route: Block");
         assert_eq!(
             Config::load(&fixture.path).unwrap().default_action,
@@ -125,7 +129,7 @@ mod tests {
 
         let running_snapshot = fixture.state.borrow().clone();
         ui.set_active(true);
-        click(&ui, "Default route: Block");
+        click(&ui, "Edit fallback route");
         let proxy = button(&ui, "Route: Proxy");
         let position = proxy.absolute_position();
         let size = proxy.size();
@@ -137,12 +141,14 @@ mod tests {
             .unwrap();
         let anchor = selector.absolute_position();
         // The testing API's absolute_position is relative to its popup. Input
-        // needs the main-window coordinates of this popup, six pixels above
-        // the selector. This is a real hover event, without activating Proxy.
+        // needs the main-window coordinates of the popup, right-aligned
+        // with the edit button and six pixels above it.
         ui.window()
             .dispatch_event(slint::platform::WindowEvent::PointerMoved {
                 position: slint::LogicalPosition::new(
-                    anchor.x + position.x + size.width / 2.,
+                    anchor.x + selector.size().width - popup.size().width
+                        + position.x
+                        + size.width / 2.,
                     anchor.y - popup.size().height - 6. + position.y + size.height / 2.,
                 ),
             });
@@ -155,7 +161,7 @@ mod tests {
         assert_eq!(ui.get_fallback_label(), "Proxy · Second");
         assert_eq!(running_snapshot.default_action, Action::Block);
         assert!(ui.get_routing_pending());
-        click(&ui, "Default route: Proxy · Second");
+        click(&ui, "Edit fallback route");
         click(&ui, "Route: Direct");
         assert_eq!(
             Config::load(&fixture.path).unwrap().default_action,
@@ -169,7 +175,7 @@ mod tests {
         let fixture = Fixture::new(false);
         let ui = fixture.window();
         let saved = std::fs::read(&fixture.path).unwrap();
-        click(&ui, "Default route: Direct");
+        click(&ui, "Edit fallback route");
         assert_eq!(
             button(&ui, "Route: Proxy").accessible_enabled(),
             Some(false)
@@ -193,10 +199,10 @@ mod tests {
         let saved = std::fs::read(&fixture.path).unwrap();
         ui.set_busy(true);
         assert_eq!(
-            button(&ui, "Default route: Direct").accessible_enabled(),
+            button(&ui, "Edit fallback route").accessible_enabled(),
             Some(false)
         );
-        click(&ui, "Default route: Direct");
+        click(&ui, "Edit fallback route");
         assert_eq!(
             ElementHandle::find_by_accessible_label(&ui, "Route: Proxy")
                 .filter(|e| e.accessible_role() == Some(AccessibleRole::Button))

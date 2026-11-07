@@ -1,6 +1,6 @@
 [package]
 name = "true-proxy"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 rust-version = "1.92"
 description = "Lightweight per-application SOCKS5 router for Windows"

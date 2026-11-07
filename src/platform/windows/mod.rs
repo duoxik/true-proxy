@@ -9,11 +9,13 @@ pub mod passive;
 pub mod picker;
 pub mod presentation;
 pub mod process;
+mod process_icons;
 pub mod startup;
 pub mod tray;
 pub mod update;
 
 pub use geoip::proxy_location;
+pub use process_icons::process_icon;
 
 use anyhow::{Context, Result, ensure};
 use std::{path::Path, ptr};
