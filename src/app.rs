@@ -648,14 +648,11 @@ pub fn run() -> Result<()> {
     } else {
         Config::load(&path)?
     };
+    let paused = arguments.iter().any(|a| a == "--paused");
     let auto_start = preview.is_none()
-        && should_start(
-            &config,
-            arguments.iter().any(|a| a == "--paused"),
-            arguments.iter().any(|a| a == "--enable"),
-        );
+        && should_start(&config, paused, arguments.iter().any(|a| a == "--enable"));
     let state = Rc::new(RefCell::new(config));
-    if preview.is_none() && arguments.iter().any(|a| a == "--paused") {
+    if preview.is_none() && paused {
         remember_routing(&state, &path, false)?;
     }
     let ui = MainWindow::new()?;
@@ -698,17 +695,6 @@ pub fn run() -> Result<()> {
     ));
     refresh(&ui, &state.borrow(), &statuses.lock().unwrap());
     let stats = Arc::new(Statistics::default());
-    #[cfg(windows)]
-    if preview.is_none() {
-        let directory = path
-            .parent()
-            .context("Missing configuration directory")?
-            .join("xray");
-        if let Err(error) = xray::wire(&ui, directory, stats.xray_bypass.clone()) {
-            ui.global::<XrayModule>()
-                .set_error(format!("Could not open Xray settings: {error:#}").into());
-        }
-    }
     if interactive_preview {
         preview::populate_traffic(&stats);
     }
@@ -1189,6 +1175,41 @@ pub fn run() -> Result<()> {
 
     if auto_start {
         ui.set_busy(true);
+    }
+    #[cfg(windows)]
+    let restoring_xray = if preview.is_none() {
+        let directory = path
+            .parent()
+            .context("Missing configuration directory")?
+            .join("xray");
+        let startup = auto_start.then(|| (sender.clone(), state.borrow().clone()));
+        match xray::wire(
+            &ui,
+            directory,
+            stats.xray_bypass.clone(),
+            paused,
+            move |ui| {
+                if let Some((sender, config)) = startup
+                    && sender.try_send(Command::Start(config)).is_err()
+                {
+                    ui.set_busy(false);
+                    ui.set_notice("Could not start routing. Try again.".into());
+                }
+            },
+        ) {
+            Ok(restoring) => restoring,
+            Err(error) => {
+                ui.global::<XrayModule>()
+                    .set_error(format!("Could not open Xray settings: {error:#}").into());
+                false
+            }
+        }
+    } else {
+        false
+    };
+    #[cfg(not(windows))]
+    let restoring_xray = false;
+    if auto_start && !restoring_xray {
         sender.send(Command::Start(state.borrow().clone()))?;
     }
     let automatic_probes = preview

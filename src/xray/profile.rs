@@ -46,6 +46,7 @@ struct Subscription {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
+    pub enabled: bool,
     pub socks_port: u16,
     pub profiles: Vec<Profile>,
     subscriptions: Vec<Subscription>,
@@ -64,6 +65,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            enabled: false,
             socks_port: 2081,
             profiles: Vec::new(),
             subscriptions: Vec::new(),

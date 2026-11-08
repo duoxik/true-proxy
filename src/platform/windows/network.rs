@@ -667,6 +667,7 @@ impl Network {
         });
         // Opening the driver is the first operation that intercepts real traffic.
         let device = driver.open()?;
+        stats.xray_bypass.attach_dns_cache(&domains);
         let stopping = Arc::new(AtomicBool::new(false));
         for listener in [v4, v6] {
             runtime.spawn(accept_loop(

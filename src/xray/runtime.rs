@@ -1,6 +1,6 @@
 //! A managed Xray instance with one loopback SOCKS inbound and one VLESS node.
 
-use crate::config::Protocol;
+use crate::{config::Protocol, dns::DomainCache};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -8,7 +8,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -54,6 +54,7 @@ pub struct ConnectionEvent {
     pub time: String,
     pub source: String,
     pub destination: String,
+    pub observed_domain: Option<String>,
     pub protocol: String,
     pub route: String,
     pub status: String,
@@ -80,9 +81,17 @@ struct ActivityState {
 pub struct Activity {
     recording: AtomicBool,
     state: Mutex<ActivityState>,
+    bypass: Option<Arc<Bypass>>,
 }
 
 impl Activity {
+    pub fn new(bypass: Arc<Bypass>) -> Self {
+        Self {
+            bypass: Some(bypass),
+            ..Self::default()
+        }
+    }
+
     pub fn set_recording(&self, enabled: bool) {
         self.recording.store(enabled, Ordering::Release);
     }
@@ -134,7 +143,15 @@ impl Activity {
 
     fn receive(&self, line: &str) {
         let (time, message) = split_time(line);
-        let event = access_event(time, message);
+        let event = access_event(time, message).map(|mut event| {
+            if event.status == "Accepted"
+                && let Ok(address) = event.destination.parse::<SocketAddr>()
+                && let Some(bypass) = &self.bypass
+            {
+                event.observed_domain = bypass.observed_domain(address.ip());
+            }
+            event
+        });
         let access = event.is_some();
         let fatal = message.starts_with("Failed to start:")
             || message.starts_with("panic:")
@@ -235,6 +252,7 @@ fn access_event(time: &str, message: &str) -> Option<ConnectionEvent> {
         time: time.to_owned(),
         source: source.to_owned(),
         destination: destination.to_owned(),
+        observed_domain: None,
         protocol: protocol.to_owned(),
         route: route.to_owned(),
         status: status.to_owned(),
@@ -436,6 +454,7 @@ struct Allowance {
 
 #[derive(Default)]
 pub struct Bypass {
+    dns_cache: Mutex<Weak<Mutex<DomainCache>>>,
     #[cfg(windows)]
     pid: std::sync::atomic::AtomicU32,
     #[cfg(windows)]
@@ -447,6 +466,21 @@ pub struct Bypass {
 }
 
 impl Bypass {
+    pub fn attach_dns_cache(&self, cache: &Arc<Mutex<DomainCache>>) {
+        *self.dns_cache.lock().unwrap() = Arc::downgrade(cache);
+    }
+
+    fn observed_domain(&self, ip: IpAddr) -> Option<String> {
+        let cache = self.dns_cache.lock().unwrap().upgrade()?;
+        let mut names = cache.lock().unwrap().lookup(ip);
+        // A shared address is ambiguous even with recent forward DNS answers.
+        if names.len() == 1 {
+            names.pop().filter(|name| !name.is_empty())
+        } else {
+            None
+        }
+    }
+
     pub fn generation(&self) -> u64 {
         #[cfg(windows)]
         {
@@ -676,6 +710,59 @@ mod tests {
         activity.clear_connections();
         assert!(activity.connections().is_empty());
         assert_eq!(activity.stats().accepted, 300);
+    }
+
+    #[test]
+    fn connection_events_use_only_unambiguous_current_dns_observations() {
+        fn dns_answer(label: &[u8], ttl: u32, ip: &[u8]) -> Vec<u8> {
+            let kind = if ip.len() == 4 { 1 } else { 28 };
+            let mut response = vec![0x12, 0x34, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+            response.push(label.len() as u8);
+            response.extend_from_slice(label);
+            response.extend_from_slice(&[4, b't', b'e', b's', b't', 0, 0, kind, 0, 1]);
+            response.extend_from_slice(&[0xc0, 0x0c, 0, kind, 0, 1]);
+            response.extend_from_slice(&ttl.to_be_bytes());
+            response.extend_from_slice(&[0, ip.len() as u8]);
+            response.extend_from_slice(ip);
+            response
+        }
+
+        let bypass = Arc::new(Bypass::default());
+        let activity = Activity::new(bypass.clone());
+        let cache = Arc::new(Mutex::new(DomainCache::default()));
+        bypass.attach_dns_cache(&cache);
+        let address = &[192, 0, 2, 9];
+        let observe = |label: &[u8], ttl, ip: &[u8]| {
+            cache.lock().unwrap().observe(&dns_answer(label, ttl, ip));
+        };
+        let connect = |target| {
+            activity.receive(&format!(
+                "from tcp:127.0.0.1:1 accepted {target} [socks -> vless]"
+            ));
+            activity.connections().remove(0)
+        };
+
+        observe(b"expired", 0, address);
+        assert_eq!(connect("tcp:192.0.2.9:443").observed_domain, None);
+        observe(b"service", 60, address);
+        let event = connect("tcp:192.0.2.9:443");
+        assert_eq!(event.destination, "192.0.2.9:443");
+        assert_eq!(event.observed_domain.as_deref(), Some("service.test"));
+        observe(b"other", 60, address);
+        assert_eq!(connect("tcp:192.0.2.9:443").observed_domain, None);
+
+        let ipv6: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
+        let ipv6 = ipv6.octets();
+        observe(b"ipv6", 60, &ipv6);
+        let event = connect("udp:[2001:db8::1]:443");
+        assert_eq!(event.destination, "[2001:db8::1]:443");
+        assert_eq!(event.observed_domain.as_deref(), Some("ipv6.test"));
+
+        let named = connect("tcp:requested.test:443");
+        assert_eq!(named.destination, "requested.test:443");
+        assert_eq!(named.observed_domain, None);
+        drop(cache);
+        assert_eq!(connect("udp:[2001:db8::1]:443").observed_domain, None);
     }
 
     #[test]

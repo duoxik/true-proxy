@@ -1,9 +1,10 @@
-True Proxy 0.11.2
+True Proxy 0.11.3
 
-- X-RAY Fallbacks suggests GeoIP and Geosite tags from the installed databases. Selected tags can be removed individually. Press Enter to add a custom tag.
-- Tunnel DNS accepts `tcp://host:port` for DNS-over-TCP through VLESS, alongside IP addresses and HTTPS DoH URLs.
-- Xray-core starts detached from the Windows console and retains its restricted privileges. This addresses a possible cause of startup error `0xC0000142`.
+- Xray and True Proxy routing remember their on or off states independently. When both were enabled, True Proxy attempts to restore Xray before starting routing.
+- Xray automatically saves valid edits to its SOCKS port, Tunnel DNS, and Fallbacks. A Restart banner appears when running Xray needs a restart to apply a change.
+- X-RAY Connections shows searchable DNS names alongside destination IPs when True Proxy has one current, unambiguous DNS observation.
+- Standard Windows editing shortcuts Ctrl+A/C/V/X/Z/Y work with the Russian keyboard layout.
 
 Windows x64. WinDivert is bundled in the executable. The interception backend is experimental.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.11.2/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.11.3/docs/branding/slint-badge.png)](https://slint.dev)

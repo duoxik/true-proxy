@@ -424,7 +424,8 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         XrayConnectionRow {
             time: "14:32:04".into(),
             protocol: "TCP".into(),
-            destination: "example.org:443".into(),
+            destination: "203.0.113.3:443".into(),
+            observed_domain: "example.org".into(),
             source: "127.0.0.1:52071".into(),
             route: "VLESS".into(),
             detail: "Accepted".into(),
@@ -433,6 +434,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
             time: "14:32:01".into(),
             protocol: "UDP".into(),
             destination: "198.51.100.17:3478".into(),
+            observed_domain: "".into(),
             source: "127.0.0.1:52069".into(),
             route: "Direct".into(),
             detail: "Accepted".into(),
@@ -462,6 +464,10 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     .enumerate()
     {
         xray.set_section(section as i32);
+        xray.set_pending(*name == "general");
+        if *name == "general" {
+            xray.set_port("2082".into());
+        }
         save(adapter, &destination.join(format!("xray-{name}.png")))?;
     }
     Ok(())

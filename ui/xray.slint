@@ -5,12 +5,16 @@ import { LogStreamView } from "logs.slint";
 export struct XrayProfileRow { id: string, name: string, summary: string, active: bool }
 export struct XraySubscriptionGroup { id: string, name: string, profiles: [XrayProfileRow] }
 export struct XrayHostRow { host: string, address: string }
-export struct XrayConnectionRow { time: string, protocol: string, destination: string, source: string, route: string, detail: string }
+export struct XrayConnectionRow { time: string, protocol: string, destination: string, observed-domain: string, source: string, route: string, detail: string }
 
 export global XrayModule {
     in property <bool> installed;
     in property <bool> busy;
     in property <bool> running;
+    in property <bool> pending;
+    in property <bool> settings-saving;
+    in property <int> settings-revision;
+    in property <string> settings-error;
     in property <string> version;
     in property <string> latest-version;
     in property <string> status;
@@ -23,8 +27,9 @@ export global XrayModule {
     in property <[XrayProfileRow]> profiles;
     in property <[XraySubscriptionGroup]> subscriptions;
     in-out property <string> profile-input;
-    in property <string> port: "2081";
-    in property <string> dns: "System";
+    in-out property <string> port: "2081";
+    in property <string> listener-port: "2081";
+    in-out property <string> dns: "Default";
     in property <[XrayHostRow]> hosts;
     in property <[string]> geo-ip-selected;
     in property <[string]> geo-site-selected;
@@ -32,9 +37,9 @@ export global XrayModule {
     in property <[string]> geo-site-suggestions;
     in-out property <string> geo-ip-query;
     in-out property <string> geo-site-query;
-    in property <string> geo-ip-url;
-    in property <string> geo-site-url;
-    in property <string> geo-refresh-hours;
+    in-out property <string> geo-ip-url;
+    in-out property <string> geo-site-url;
+    in-out property <string> geo-refresh-hours;
     in property <string> geo-status;
     in property <[XrayConnectionRow]> connections;
     in property <int> connection-total;
@@ -53,17 +58,17 @@ export global XrayModule {
     callback check-updates;
     callback install-update;
     callback toggle;
+    callback restart;
     callback import-profile(string);
     callback refresh-subscription(string);
     callback activate-profile(string);
     callback remove-profile(string);
-    callback save-port(string);
-    callback save-dns(string);
+    callback settings-edited;
+    callback commit-settings;
     callback refresh-hosts;
     callback filter-geo-tags(bool, string);
     callback select-geo-tag(bool, string);
     callback remove-geo-tag(bool, string);
-    callback save-geo(string, string, string);
     callback refresh-geo;
     callback refresh-activity;
     callback filter-connections;
@@ -205,7 +210,7 @@ component XrayDashboard inherits VerticalLayout {
             spacing: 10px;
             alignment: start;
             Text {
-                text: "127.0.0.1:" + XrayModule.port;
+                text: "127.0.0.1:" + XrayModule.listener-port;
                 font-family: "Consolas";
                 font-size: 14px;
                 color: Theme.text;
@@ -321,14 +326,13 @@ component XrayGeneral inherits XrayCard {
     title: "SOCKS5 listener";
     caption: "The listener binds to 127.0.0.1. The default port is 2081.";
     HorizontalLayout {
-        spacing: 8px;
         alignment: start;
-        port-field := Field { width: 144px; placeholder: "2081"; value: XrayModule.port; field-height: 38px; }
-        ActionButton {
-            label: "Save Port";
-            primary: true;
-            enabled: !XrayModule.busy;
-            clicked => { XrayModule.save-port(port-field.value); }
+        Field {
+            width: 144px;
+            placeholder: "2081";
+            value <=> XrayModule.port;
+            field-height: 38px;
+            edited => { XrayModule.settings-edited(); }
         }
     }
 }
@@ -339,10 +343,11 @@ component XrayDns inherits VerticalLayout {
     XrayCard {
         title: "Tunnel DNS";
         caption: "Use Default for the VPN server’s usual resolution, or enter IP addresses, TCP DNS URLs, or DNS-over-HTTPS URLs separated by commas.";
-        HorizontalLayout {
-            spacing: 8px;
-            dns-field := Field { value: XrayModule.dns; placeholder: "Default, tcp://1.1.1.1:53, or https://resolver.example/dns-query"; field-height: 38px; }
-            ActionButton { label: "Save DNS"; primary: true; enabled: !XrayModule.busy; clicked => { XrayModule.save-dns(dns-field.value); } }
+        Field {
+            value <=> XrayModule.dns;
+            placeholder: "Default, tcp://1.1.1.1:53, or https://resolver.example/dns-query";
+            field-height: 38px;
+            edited => { XrayModule.settings-edited(); }
         }
     }
     XrayCard {
@@ -513,23 +518,16 @@ component XrayFallbacks inherits XrayCard {
             query <=> XrayModule.geo-site-query;
         }
     }
-    ip-url := Field { label: "GeoIP database source"; placeholder: "HTTPS download URL"; value: XrayModule.geo-ip-url; }
-    site-url := Field { label: "Geosite database source"; placeholder: "HTTPS download URL"; value: XrayModule.geo-site-url; }
-    hours := Field { label: "Refresh interval in hours"; placeholder: "0 for manual updates"; value: XrayModule.geo-refresh-hours; }
+    Field { label: "GeoIP database source"; placeholder: "HTTPS download URL"; value <=> XrayModule.geo-ip-url; edited => { XrayModule.settings-edited(); } }
+    Field { label: "Geosite database source"; placeholder: "HTTPS download URL"; value <=> XrayModule.geo-site-url; edited => { XrayModule.settings-edited(); } }
+    Field { label: "Refresh interval in hours"; placeholder: "0 for manual updates"; value <=> XrayModule.geo-refresh-hours; edited => { XrayModule.settings-edited(); } }
     if XrayModule.geo-status != "": XrayNote { text: XrayModule.geo-status; }
     HorizontalLayout {
-        spacing: 8px;
         alignment: start;
-        ActionButton {
-            label: "Save Fallbacks";
-            primary: true;
-            enabled: !XrayModule.busy;
-            clicked => { XrayModule.save-geo(ip-url.value, site-url.value, hours.value); }
-        }
         ActionButton {
             label: "Update Databases";
             icon: "refresh";
-            enabled: !XrayModule.busy;
+            enabled: !XrayModule.busy && !XrayModule.settings-saving && XrayModule.settings-error == "";
             clicked => { XrayModule.refresh-geo(); }
         }
     }
@@ -549,7 +547,8 @@ component XrayEventLine inherits Rectangle {
     in property <bool> heading;
     in property <bool> stripe;
     in property <XrayConnectionRow> entry;
-    height: root.heading ? 32px : 36px;
+    property <bool> show-domain: !root.heading && root.entry.observed-domain != "";
+    height: root.heading ? 32px : root.show-domain ? 46px : 36px;
     background: root.heading || root.stripe ? Theme.field : Theme.surface;
     HorizontalLayout {
         padding-left: 14px;
@@ -557,7 +556,19 @@ component XrayEventLine inherits Rectangle {
         spacing: 8px;
         XrayEventCell { heading: root.heading; width: 73px; text: root.heading ? "TIME" : root.entry.time; }
         XrayEventCell { heading: root.heading; width: 58px; text: root.heading ? "PROTOCOL" : root.entry.protocol; }
-        XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 3; text: root.heading ? "TARGET" : root.entry.destination; }
+        VerticalLayout {
+            min-width: 0px;
+            preferred-width: 0px;
+            horizontal-stretch: 3;
+            alignment: center;
+            spacing: 2px;
+            XrayEventCell { heading: root.heading; text: root.heading ? "TARGET" : root.entry.destination; }
+            if root.show-domain: XrayEventCell {
+                text: "DNS · " + root.entry.observed-domain;
+                color: Theme.muted;
+                font-size: 11px;
+            }
+        }
         XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; text: root.heading ? "SOURCE" : root.entry.source; }
         XrayEventCell { heading: root.heading; width: 76px; text: root.heading ? "ROUTE" : root.entry.route; }
         XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; text: root.heading ? "RESULT" : root.entry.detail; }
@@ -668,12 +679,29 @@ export component XrayView inherits VerticalLayout {
                 label: XrayModule.running ? "Stop Xray" : "Start Xray";
                 icon: XrayModule.running ? "stop" : "play";
                 primary: !XrayModule.running;
-                enabled: !XrayModule.busy;
+                enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.settings-saving && XrayModule.settings-error == ""));
                 y: (parent.height - self.height) / 2;
                 clicked => { XrayModule.toggle(); }
             }
         }
     }
+    if XrayModule.pending: Rectangle {
+        height: pending-content.preferred-height;
+        background: Theme.warning-surface;
+        border-radius: Theme.radius-medium;
+        pending-content := HorizontalLayout {
+            padding: 12px;
+            spacing: 14px;
+            Text { text: "Restart to apply Xray configuration changes. Xray will pause briefly and its proxy connections will close."; color: Theme.warning; font-size: 12px; vertical-alignment: center; wrap: word-wrap; min-width: 0px; }
+            ActionButton {
+                label: "Restart";
+                height: 34px;
+                enabled: XrayModule.running && !XrayModule.busy && !XrayModule.settings-saving && XrayModule.settings-error == "";
+                clicked => { XrayModule.restart(); }
+            }
+        }
+    }
+    if XrayModule.settings-error != "": XrayNotice { message: XrayModule.settings-error; error: true; }
     if XrayModule.error != "": XrayNotice { message: XrayModule.error; error: true; }
     if XrayModule.error == "" && XrayModule.status != "": XrayNotice { message: XrayModule.status; }
     if XrayModule.section < 5: settings-scroll := ScrollView {

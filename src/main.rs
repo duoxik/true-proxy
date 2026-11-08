@@ -372,6 +372,45 @@ mod ui_tests {
     }
 
     #[test]
+    fn xray_edits_settings_inline_and_restart_is_explicit() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        xray.set_running(true);
+        let edits = Rc::new(Cell::new(0));
+        xray.on_settings_edited({
+            let edits = edits.clone();
+            move || edits.set(edits.get() + 1)
+        });
+        let restarts = Rc::new(Cell::new(0));
+        xray.on_restart({
+            let restarts = restarts.clone();
+            move || restarts.set(restarts.get() + 1)
+        });
+        ui.show().unwrap();
+        click(&ui, "Xray General");
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Save Port")
+                .next()
+                .is_none()
+        );
+        click(&ui, "2081");
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "2".into() });
+        assert_eq!(edits.get(), 1);
+        assert_eq!(restarts.get(), 0);
+        xray.set_pending(true);
+        xray.set_settings_saving(true);
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 0);
+        xray.set_settings_saving(false);
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 1);
+    }
+
+    #[test]
     fn xray_geo_picker_selects_and_removes_a_tag_on_first_click() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
