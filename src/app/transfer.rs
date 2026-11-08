@@ -27,6 +27,7 @@ fn paint(ui: &MainWindow, document: &Document) {
     }
     let first = ui.get_import_first_line().max(0) as usize;
     let count = ui.get_import_visible_lines().clamp(1, 200) as usize;
+    let dark = ui.get_dark_theme();
     ui.set_import_lines(model(
         document
             .starts
@@ -43,7 +44,7 @@ fn paint(ui: &MainWindow, document: &Document) {
                 let line = document.text[start..end].trim_end_matches(['\r', '\n']);
                 JsonLine {
                     number: number as i32,
-                    text: json_highlight::line(line),
+                    text: json_highlight::line(line, dark),
                 }
             })
             .collect(),
@@ -418,7 +419,15 @@ mod tests {
         ui.set_import_visible_lines(30);
         ui.invoke_import_viewport();
         assert!(ui.get_import_lines().row_count() <= 30);
-        assert_eq!(ui.get_import_lines().row_data(0).unwrap().number, 1000);
+        let light = ui.get_import_lines().row_data(0).unwrap();
+        assert_eq!(light.number, 1000);
+        let source = ui.get_import_json();
+        ui.set_dark_theme(true);
+        slint::platform::update_timers_and_animations();
+        let dark = ui.get_import_lines().row_data(0).unwrap();
+        assert_eq!(dark.number, light.number);
+        assert_ne!(dark.text, light.text);
+        assert_eq!(ui.get_import_json(), source);
         validate_now(&ui, &" ".repeat(9000));
         assert_eq!(
             ui.get_import_lines().row_count(),

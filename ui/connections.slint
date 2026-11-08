@@ -335,15 +335,10 @@ export component ConnectionsView inherits VerticalLayout {
     min-width: 0px;
     spacing: 10px;
     HorizontalLayout {
-        height: 52px;
+        height: 44px;
         spacing: 8px;
         vertical-stretch: 0;
-        VerticalLayout {
-            alignment: center;
-            spacing: 3px;
-            Text { text: "Traffic Monitor"; color: Theme.text; font-size: 28px; font-weight: 600; }
-            Text { text: "Live traffic and session history"; color: Theme.muted; font-size: 12px; }
-        }
+        Text { text: "Traffic Monitor"; color: Theme.text; font-size: 28px; font-weight: 600; vertical-alignment: center; }
         Rectangle { horizontal-stretch: 1; }
         if root.preview-ui: Rectangle {
             width: 92px;

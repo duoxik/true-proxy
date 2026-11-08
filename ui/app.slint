@@ -719,7 +719,12 @@ export component MainWindow inherits Window {
     title: root.preview-ui ? (root.page == 3 ? "True Proxy · Connections UI Preview" : "True Proxy · UI Preview") : "True Proxy";
     preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
-    init => { Palette.color-scheme = ColorScheme.light; }
+    in-out property <bool> dark-theme <=> Theme.dark;
+    init => { Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light; }
+    changed dark-theme => {
+        Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
+        if root.dialog == 3 { root.import-viewport(); }
+    }
     in-out property <int> page: 0;
     changed page => { root.sync-connection-observation(); }
     in property <bool> preview-ui: false;
@@ -832,6 +837,7 @@ export component MainWindow inherits Window {
     callback save-local-network;
     callback select-fallback(int, string);
     callback set-autostart(bool);
+    callback choose-theme(bool);
     callback hide-window;
     callback sync-connection-observation;
     callback suspend-connection-observation;
@@ -913,22 +919,9 @@ export component MainWindow inherits Window {
                                     { label: "Dashboard", icon: "dashboard", target: 0 },
                                     { label: "Proxies", icon: "server", target: 2 },
                                     { label: "Rules", icon: "rules", target: 1 },
-                                ];
-                                open(page) => { root.page = page; }
-                            }
-                            SidebarGroup {
-                                title: "NETWORK";
-                                selection: root.page;
-                                links: [
                                     { label: "Connections", icon: "activity", target: 3 },
                                     { label: "Logs", icon: "file", target: 5 },
                                 ];
-                                open(page) => { root.page = page; }
-                            }
-                            SidebarGroup {
-                                title: "SYSTEM";
-                                selection: root.page;
-                                links: [{ label: "Settings", icon: "settings", target: 4 }];
                                 open(page) => { root.page = page; }
                             }
                             if XrayModule.installed: SidebarGroup {
@@ -950,6 +943,12 @@ export component MainWindow inherits Window {
                                     else { root.page = 6; }
                                 }
                             }
+                            SidebarGroup {
+                                title: "SYSTEM";
+                                selection: root.page;
+                                links: [{ label: "Settings", icon: "settings", target: 4 }];
+                                open(page) => { root.page = page; }
+                            }
                         }
                     }
                     Rectangle { height: 1px; background: Theme.border; }
@@ -969,31 +968,17 @@ export component MainWindow inherits Window {
                 padding: 26px;
                 spacing: 16px;
                 if root.page != 3 && root.page != 6: HorizontalLayout {
-                    height: 58px;
+                    height: 44px;
                     spacing: 14px;
-                    VerticalLayout {
+                    Text {
+                        text: ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
+                        color: Theme.text;
+                        font-size: 28px;
+                        font-weight: 600;
+                        overflow: elide;
                         min-width: 0px;
-                        alignment: center;
-                        spacing: 4px;
-                        Text {
-                            text: ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
-                            color: Theme.text;
-                            font-size: 28px;
-                            font-weight: 600;
-                            overflow: elide;
-                            min-width: 0px;
-                        }
-                        Text {
-                            text: root.page == 1 ? root.rules.length + " configured rules · Use arrows to reorder priority"
-                                : root.page == 2 ? root.proxies.length + " configured proxy servers"
-                                : root.page == 4 ? "Manage your configuration and application preferences"
-                                : root.page == 5 ? "Backend and connection events"
-                                : "Real-time proxy network monitoring";
-                            color: Theme.muted;
-                            font-size: 13px;
-                            overflow: elide;
-                            min-width: 0px;
-                        }
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
                     }
                     Rectangle {
                         width: page-action.min-width;
@@ -1435,6 +1420,34 @@ export component MainWindow inherits Window {
                             padding-bottom: 14px;
                             if root.settings-section == 2: XrayModuleCard {
                                 open => { root.page = 6; }
+                            }
+                            if root.settings-section == 0: Rectangle {
+                                height: appearance-settings.preferred-height;
+                                border-radius: Theme.radius-medium;
+                                border-width: 1px;
+                                border-color: Theme.border;
+                                background: Theme.surface;
+                                appearance-settings := VerticalLayout { padding: 16px; spacing: 9px; alignment: start;
+                                    Text { text: "Appearance"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                                    HorizontalLayout {
+                                        alignment: start;
+                                        spacing: 8px;
+                                        ActionButton {
+                                            label: "Light";
+                                            accessible-label: "Light theme";
+                                            primary: !root.dark-theme;
+                                            height: 34px;
+                                            clicked => { root.choose-theme(false); }
+                                        }
+                                        ActionButton {
+                                            label: "Dark";
+                                            accessible-label: "Dark theme";
+                                            primary: root.dark-theme;
+                                            height: 34px;
+                                            clicked => { root.choose-theme(true); }
+                                        }
+                                    }
+                                }
                             }
                             if root.settings-section == 0: Rectangle {
                                 height: startup-settings.preferred-height;

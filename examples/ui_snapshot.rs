@@ -249,7 +249,7 @@ fn main() -> Result<()> {
             .enumerate()
             .map(|(index, text)| JsonLine {
                 number: index as i32,
-                text: json_highlight::line(text),
+                text: json_highlight::line(text, false),
             })
             .collect(),
     ));
@@ -346,6 +346,22 @@ fn main() -> Result<()> {
     save(&main_adapter, &destination.join("logs.png"))?;
     #[cfg(windows)]
     xray_previews(&ui, &main_adapter, &destination)?;
+    ui.set_dark_theme(true);
+    ui.set_page(0);
+    save(&main_adapter, &destination.join("dashboard-dark.png"))?;
+    ui.set_page(3);
+    save(&main_adapter, &destination.join("connections-dark.png"))?;
+    ui.set_page(4);
+    ui.set_settings_section(0);
+    save(&main_adapter, &destination.join("settings-dark.png"))?;
+    #[cfg(windows)]
+    {
+        let xray = ui.global::<XrayModule>();
+        xray.set_status("".into());
+        xray.set_section(0);
+        ui.set_page(6);
+        save(&main_adapter, &destination.join("xray-dashboard-dark.png"))?;
+    }
     ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());
     Ok(())

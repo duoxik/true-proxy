@@ -1,12 +1,22 @@
 use crate::MainWindow;
+use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
 use slint::{
     ComponentHandle,
-    winit_030::{EventResult, WinitWindowAccessor, winit::event::WindowEvent},
+    winit_030::{
+        EventResult, WinitWindowAccessor,
+        winit::{event::WindowEvent, window::Theme as WindowTheme},
+    },
 };
 #[cfg(windows)]
 use slint::{
     platform::WindowEvent as SlintWindowEvent,
     winit_030::winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey},
+};
+use std::{
+    fs::{self, File},
+    io::{ErrorKind, Read, Write},
+    path::{Path, PathBuf},
 };
 
 /// Invalidate the full opaque surface only when it may have been discarded.
@@ -15,11 +25,90 @@ pub fn refresh(ui: &MainWindow) {
     ui.set_surface_fresh(!ui.get_surface_fresh());
     ui.window().request_redraw();
 }
-pub fn wire(ui: &MainWindow) {
+#[derive(Default, Deserialize, Serialize)]
+#[serde(default)]
+struct Preferences {
+    dark_theme: bool,
+}
+
+impl Preferences {
+    fn load(path: &Path) -> Result<Self> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error.into()),
+        };
+        let mut contents = Vec::new();
+        file.take(4097).read_to_end(&mut contents)?;
+        ensure!(
+            contents.len() <= 4096,
+            "Appearance preferences exceed 4 KiB"
+        );
+        serde_json::from_slice(&contents).context("Could not read appearance preferences")
+    }
+
+    fn save(&self, path: &Path) -> Result<()> {
+        fs::create_dir_all(
+            path.parent()
+                .context("Missing appearance preferences directory")?,
+        )?;
+        let temporary = path.with_extension("tmp");
+        let mut file = File::create(&temporary)?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.sync_all()?;
+        drop(file);
+        true_proxy::platform::replace_file(&temporary, path)
+            .context("Could not save appearance preferences")
+    }
+}
+
+pub(super) fn apply_native_theme(ui: &MainWindow) {
+    let theme = if ui.get_dark_theme() {
+        WindowTheme::Dark
+    } else {
+        WindowTheme::Light
+    };
+    ui.window()
+        .with_winit_window(|window| window.set_theme(Some(theme)));
+}
+
+fn wire_theme(ui: &MainWindow, path: Option<PathBuf>) {
+    if let Some(path) = path.as_deref() {
+        match Preferences::load(path) {
+            Ok(preferences) => ui.set_dark_theme(preferences.dark_theme),
+            Err(error) => super::report(ui, Err(error)),
+        }
+    }
+    let weak = ui.as_weak();
+    ui.on_choose_theme(move |dark_theme| {
+        let Some(ui) = weak.upgrade() else { return };
+        if ui.get_dark_theme() == dark_theme {
+            return;
+        }
+        if let Some(path) = &path
+            && let Err(error) = (Preferences { dark_theme }).save(path)
+        {
+            super::report(&ui, Err(error));
+            return;
+        }
+        ui.set_dark_theme(dark_theme);
+        apply_native_theme(&ui);
+        refresh(&ui);
+    });
+}
+
+pub fn wire(ui: &MainWindow, preferences_path: Option<PathBuf>) {
+    wire_theme(ui, preferences_path);
     let weak = ui.as_weak();
     #[cfg(windows)]
     let mut modifiers = ModifiersState::empty();
     ui.window().on_winit_window_event(move |_window, event| {
+        if let WindowEvent::ThemeChanged(theme) = event
+            && let Some(ui) = weak.upgrade()
+            && (*theme == WindowTheme::Dark) != ui.get_dark_theme()
+        {
+            apply_native_theme(&ui);
+        }
         #[cfg(windows)]
         match event {
             WindowEvent::ModifiersChanged(current) => modifiers = current.state(),
@@ -130,6 +219,41 @@ mod tests {
     use super::*;
     use i_slint_backend_testing::{AccessibleRole, ElementHandle};
     use slint::platform::{Key as SlintKey, PointerEventButton};
+
+    #[test]
+    fn theme_switches_from_settings_and_survives_a_new_window() {
+        i_slint_backend_testing::init_no_event_loop();
+        let directory =
+            std::env::temp_dir().join(format!("true-proxy-appearance-{}", super::super::id()));
+        let path = directory.join("appearance.json");
+        let window = || {
+            let ui = MainWindow::new().unwrap();
+            ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+            wire_theme(&ui, Some(path.clone()));
+            ui.set_page(4);
+            ui.show().unwrap();
+            ui
+        };
+        let click = |ui: &MainWindow, label| {
+            ElementHandle::find_by_accessible_label(ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                .unwrap()
+                .mock_single_click(PointerEventButton::Left);
+        };
+
+        let ui = window();
+        assert!(!ui.get_dark_theme());
+        click(&ui, "Dark theme");
+        assert!(ui.get_dark_theme() && Preferences::load(&path).unwrap().dark_theme);
+        ui.hide().unwrap();
+
+        let ui = window();
+        assert!(ui.get_dark_theme());
+        click(&ui, "Light theme");
+        assert!(!ui.get_dark_theme() && !Preferences::load(&path).unwrap().dark_theme);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
 
     #[test]
     fn russian_editing_shortcuts_use_the_native_input_and_test_clipboard() {

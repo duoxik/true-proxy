@@ -436,7 +436,7 @@ impl Controller {
         self.pending = false;
         self.runtime_geo = Some(geo_directory);
         self.runtime_port = Some(self.settings.socks_port);
-        self.status = format!("SOCKS5 listening on 127.0.0.1:{}", self.settings.socks_port);
+        self.status.clear();
         Ok(())
     }
 

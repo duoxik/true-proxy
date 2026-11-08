@@ -11,7 +11,12 @@ fn escape(text: &str, result: &mut String) {
         }
     }
 }
-pub fn line(text: &str) -> StyledText {
+pub fn line(text: &str, dark: bool) -> StyledText {
+    let (key, string, number, keyword, punctuation) = if dark {
+        ("#c6a9ff", "#83dba3", "#f0c676", "#f9a8d4", "#bcc1bd")
+    } else {
+        ("#6235bf", "#167b45", "#8c5808", "#ad2865", "#4f5c6c")
+    };
     // Large minified documents still remain editable; color work per visible line is bounded.
     let end = text.char_indices().nth(8192).map_or(text.len(), |(i, _)| i);
     let text = &text[..end];
@@ -34,9 +39,9 @@ pub fn line(text: &str) -> StyledText {
                     }
                 }
                 if bytes[at..].iter().find(|b| !b.is_ascii_whitespace()) == Some(&b':') {
-                    "#6235bf"
+                    key
                 } else {
-                    "#167b45"
+                    string
                 }
             }
             b'-' | b'0'..=b'9' => {
@@ -46,14 +51,14 @@ pub fn line(text: &str) -> StyledText {
                 {
                     at += 1;
                 }
-                "#8c5808"
+                number
             }
             b't' | b'f' | b'n' => {
                 at += 1;
                 while at < bytes.len() && bytes[at].is_ascii_alphabetic() {
                     at += 1;
                 }
-                "#ad2865"
+                keyword
             }
             _ => {
                 at += text[at..].chars().next().unwrap().len_utf8();
@@ -62,7 +67,7 @@ pub fn line(text: &str) -> StyledText {
                 {
                     at += text[at..].chars().next().unwrap().len_utf8();
                 }
-                "#4f5c6c"
+                punctuation
             }
         };
         // Escaped invalid strings can end at a UTF-8 continuation byte. Keep the
@@ -95,9 +100,11 @@ mod tests {
             "-1.2e+3 true false null",
             "\"C:\\\\Игры\\\\a.exe\"",
         ] {
-            let result = line(sample);
-            assert!(result != StyledText::default() || sample.is_empty());
+            for dark in [false, true] {
+                let result = line(sample, dark);
+                assert!(result != StyledText::default() || sample.is_empty());
+            }
         }
-        let _ = line(&"я".repeat(10000));
+        let _ = line(&"я".repeat(10000), false);
     }
 }

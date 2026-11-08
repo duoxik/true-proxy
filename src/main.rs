@@ -252,11 +252,36 @@ mod ui_tests {
         }
 
         xray.set_installed(true);
-        for (heading, link) in [
-            ("PROXY", "Dashboard"),
-            ("NETWORK", "Connections"),
-            ("SYSTEM", "Settings"),
-            ("X-RAY", "Xray Dashboard"),
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "NETWORK")
+                .next()
+                .is_none()
+        );
+        let sidebar_y = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                .unwrap()
+                .absolute_position()
+                .y
+        };
+        for pair in [
+            "PROXY",
+            "Rules",
+            "Connections",
+            "Logs",
+            "X-RAY",
+            "Xray Logs",
+            "SYSTEM",
+            "Settings",
+        ]
+        .windows(2)
+        {
+            assert!(sidebar_y(pair[0]) < sidebar_y(pair[1]));
+        }
+        for (heading, links) in [
+            ("PROXY", &["Dashboard", "Connections", "Logs"][..]),
+            ("X-RAY", &["Xray Dashboard"]),
+            ("SYSTEM", &["Settings"]),
         ] {
             let group = ElementHandle::find_by_accessible_label(&ui, heading)
                 .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
@@ -264,11 +289,13 @@ mod ui_tests {
             assert_eq!(group.accessible_expanded(), Some(true));
             group.mock_single_click(PointerEventButton::Left);
             assert_eq!(group.accessible_expanded(), Some(false));
-            assert!(
-                ElementHandle::find_by_accessible_label(&ui, link)
-                    .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
-                    .is_none()
-            );
+            for link in links {
+                assert!(
+                    ElementHandle::find_by_accessible_label(&ui, link)
+                        .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                        .is_none()
+                );
+            }
             assert_eq!(ui.get_page(), 0);
             group.mock_single_click(PointerEventButton::Left);
             assert_eq!(group.accessible_expanded(), Some(true));
@@ -299,6 +326,58 @@ mod ui_tests {
         click(&ui, "Xray Logs");
         assert_eq!(ui.get_page(), 6);
         assert_eq!(xray.get_section(), 6);
+    }
+
+    #[test]
+    fn xray_dashboard_selects_profiles_and_opens_the_profiles_page() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        let profile = |id: &str, name: &str| XrayProfileRow {
+            id: id.into(),
+            name: name.into(),
+            ..Default::default()
+        };
+        xray.set_profiles(slint::ModelRc::new(slint::VecModel::from(vec![profile(
+            "manual-id",
+            "Manual node",
+        )])));
+        xray.set_subscriptions(slint::ModelRc::new(slint::VecModel::from(vec![
+            XraySubscriptionGroup {
+                id: "source-id".into(),
+                name: "Subscription 1".into(),
+                profiles: slint::ModelRc::new(slint::VecModel::from(vec![profile(
+                    "subscription-id",
+                    "Subscription node",
+                )])),
+            },
+        ])));
+        let selected = Rc::new(Cell::new(slint::SharedString::default()));
+        xray.on_activate_profile({
+            let selected = selected.clone();
+            move |id| selected.set(id)
+        });
+        ui.show().unwrap();
+        click(&ui, "Xray Dashboard");
+        click(&ui, "Activate Manual node");
+        assert_eq!(selected.take().as_str(), "manual-id");
+        click(&ui, "Activate Subscription node");
+        assert_eq!(selected.take().as_str(), "subscription-id");
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Remove Manual node")
+                .next()
+                .is_none()
+        );
+        click(&ui, "Open Profiles");
+        assert_eq!(ui.get_page(), 6);
+        assert_eq!(xray.get_section(), 1);
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Remove Manual node")
+                .next()
+                .is_some()
+        );
     }
 
     #[test]

@@ -9,36 +9,38 @@ export struct ProcessSummary { name: string, icon: image, active: int, events: i
 export struct ConnectionFilterOption { key: string, label: string, checked: bool }
 
 export global Theme {
-    out property <color> background: #f1f3f5;
-    out property <color> background-refresh: #f1f3f6;
-    out property <color> sidebar: #ffffff;
-    out property <color> surface: #ffffff;
-    out property <color> surface-hover: #f7f5ff;
-    out property <color> pressed: #ede7ff;
-    out property <color> field: #f7f8f9;
-    out property <color> border: #e0e3e7;
-    out property <color> text: #141d2d;
-    out property <color> secondary: #4f5c6c;
-    out property <color> muted: #687585;
-    out property <color> accent: #7846db;
-    out property <color> accent-hover: #6235bf;
-    out property <color> accent-soft: #f3efff;
-    out property <color> primary: #8354ea;
-    out property <color> primary-hover: #7546d9;
-    out property <color> primary-pressed: #6739c9;
-    out property <color> primary-text: #ffffff;
-    out property <color> disabled: #eff1f4;
-    out property <color> disabled-text: #758191;
-    out property <color> success: #167b45;
-    out property <color> warning: #8c5808;
-    out property <color> warning-surface: #fff7e5;
-    out property <color> danger: #b72b40;
-    out property <color> switch-off: #cbd0d6;
-    out property <color> selection: #e9ddff;
-    out property <color> overlay: #19212e82;
-    out property <color> success-soft: #ebf9f0;
-    out property <color> danger-soft: #fff1f2;
-    out property <color> blue: #2864ca;
+    in property <bool> dark;
+    out property <color> background: dark ? #121313 : #f1f3f5;
+    out property <color> background-refresh: dark ? #131414 : #f1f3f6;
+    out property <color> sidebar: dark ? #161718 : #ffffff;
+    out property <color> surface: dark ? #191b1c : #ffffff;
+    out property <color> surface-hover: dark ? #232627 : #f7f5ff;
+    out property <color> pressed: dark ? #2a2e2b : #ede7ff;
+    out property <color> field: dark ? #202223 : #f7f8f9;
+    out property <color> border: dark ? #313536 : #e0e3e7;
+    out property <color> text: dark ? #edf0eb : #141d2d;
+    out property <color> secondary: dark ? #bcc1bd : #4f5c6c;
+    out property <color> muted: dark ? #969e98 : #687585;
+    out property <color> accent: dark ? #d4f45a : #7846db;
+    out property <color> accent-hover: dark ? #e1fa82 : #6235bf;
+    out property <color> accent-soft: dark ? #2b341d : #f3efff;
+    out property <color> primary: dark ? #d4f45a : #8354ea;
+    out property <color> primary-hover: dark ? #e1fa82 : #7546d9;
+    out property <color> primary-pressed: dark ? #b5d547 : #6739c9;
+    out property <color> primary-text: dark ? #18210d : #ffffff;
+    out property <color> disabled: dark ? #242727 : #eff1f4;
+    out property <color> disabled-text: dark ? #89918a : #758191;
+    out property <color> success: dark ? #83dba3 : #167b45;
+    out property <color> warning: dark ? #f0c676 : #8c5808;
+    out property <color> warning-surface: dark ? #3a2c1b : #fff7e5;
+    out property <color> danger: dark ? #f18a96 : #b72b40;
+    out property <color> switch-off: dark ? #454b49 : #cbd0d6;
+    out property <color> switch-off-thumb: dark ? #edf0eb : #ffffff;
+    out property <color> selection: dark ? #3c4c27 : #e9ddff;
+    out property <color> overlay: dark ? #000000a8 : #19212e82;
+    out property <color> success-soft: dark ? #1d3327 : #ebf9f0;
+    out property <color> danger-soft: dark ? #382427 : #fff1f2;
+    out property <color> blue: dark ? #8bb5ff : #2864ca;
     out property <length> radius-small: 10px;
     out property <length> radius-medium: 14px;
     out property <length> radius-large: 18px;
@@ -147,7 +149,7 @@ export component RuleSwitch inherits Rectangle {
     opacity: root.enabled ? 1 : 0.45;
     Rectangle { y: (parent.height - self.height) / 2; width: 42px; height: 24px; border-radius: 12px; background: root.checked && root.enabled ? Theme.primary : Theme.switch-off;
         border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
-        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: Theme.primary-text; animate x { duration: 100ms; } }
+        Rectangle { x: root.checked ? 21px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.checked && root.enabled ? Theme.primary-text : Theme.switch-off-thumb; animate x { duration: 100ms; } }
     }
     TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }

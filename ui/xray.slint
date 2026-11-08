@@ -192,7 +192,60 @@ component XrayMetric inherits Rectangle {
     }
 }
 
+component XrayProfileItem inherits Rectangle {
+    in property <XrayProfileRow> profile;
+    in property <bool> compact;
+    height: root.compact ? 42px : 54px;
+    border-radius: Theme.radius-small;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: root.profile.active ? Theme.accent-soft : Theme.field;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 8px;
+        VerticalLayout {
+            alignment: center;
+            min-width: 0px;
+            horizontal-stretch: 1;
+            spacing: 3px;
+            Text { text: root.profile.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { text: root.profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
+        }
+        if root.compact: Text {
+            text: root.profile.active ? "Selected" : "Available";
+            color: root.profile.active ? Theme.accent : Theme.muted;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-stretch: 0;
+        }
+        Rectangle {
+            width: 44px;
+            RuleSwitch {
+                label: "Activate " + root.profile.name;
+                checked: root.profile.active;
+                enabled: !XrayModule.busy;
+                y: (parent.height - self.height) / 2;
+                toggled => { XrayModule.activate-profile(root.profile.id); }
+            }
+        }
+        if !root.compact: Rectangle {
+            width: delete.min-width;
+            delete := ActionButton {
+                label: "Remove " + root.profile.name;
+                icon: "trash";
+                icon-only: true;
+                y: (parent.height - self.height) / 2;
+                enabled: !XrayModule.busy;
+                clicked => { XrayModule.remove-profile(root.profile.id); }
+            }
+        }
+    }
+}
+
 component XrayDashboard inherits VerticalLayout {
+    callback open-profiles;
+    private property <bool> has-profiles: XrayModule.profiles.length > 0 || XrayModule.subscriptions.length > 0;
     alignment: start;
     spacing: 12px;
     HorizontalLayout {
@@ -224,45 +277,37 @@ component XrayDashboard inherits VerticalLayout {
             }
         }
     }
-}
-
-component XrayProfileItem inherits Rectangle {
-    in property <XrayProfileRow> profile;
-    height: 54px;
-    border-radius: Theme.radius-small;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: root.profile.active ? Theme.accent-soft : Theme.field;
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 8px;
-        spacing: 8px;
-        VerticalLayout {
-            alignment: center;
-            min-width: 0px;
-            spacing: 3px;
-            Text { text: root.profile.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
-            Text { text: root.profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
-        }
-        Rectangle {
-            width: 44px;
-            RuleSwitch {
-                label: "Activate " + root.profile.name;
-                checked: root.profile.active;
-                enabled: !XrayModule.busy;
-                y: (parent.height - self.height) / 2;
-                toggled => { XrayModule.activate-profile(root.profile.id); }
+    XrayCard {
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Available Profiles";
+                font-size: 16px;
+                font-weight: 600;
+                color: Theme.text;
+                min-width: 0px;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            ActionButton {
+                label: "Open Profiles";
+                icon: "arrow-right";
+                height: 32px;
+                clicked => { root.open-profiles(); }
             }
         }
-        Rectangle {
-            width: delete.min-width;
-            delete := ActionButton {
-                label: "Remove " + root.profile.name;
-                icon: "trash";
-                icon-only: true;
-                y: (parent.height - self.height) / 2;
-                enabled: !XrayModule.busy;
-                clicked => { XrayModule.remove-profile(root.profile.id); }
+        if !root.has-profiles: XrayNote {
+            text: "No profiles imported.";
+        }
+        if root.has-profiles: VerticalLayout {
+            spacing: 6px;
+            alignment: start;
+            for row in XrayModule.profiles: XrayProfileItem { profile: row; compact: true; }
+            for group in XrayModule.subscriptions: VerticalLayout {
+                spacing: 6px;
+                alignment: start;
+                for row in group.profiles: XrayProfileItem { profile: row; compact: true; }
             }
         }
     }
@@ -646,15 +691,6 @@ component XrayConnections inherits Rectangle {
                 for event[index] in XrayModule.connections: XrayEventLine { entry: event; stripe: mod(index, 2) == 1; }
             }
         }
-        Rectangle { height: 1px; background: Theme.border; }
-        Text {
-            text: "Recent access events reported by Xray.";
-            height: 28px;
-            font-size: 11px;
-            color: Theme.muted;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
     }
 }
 
@@ -664,15 +700,9 @@ export component XrayView inherits VerticalLayout {
     vertical-stretch: 1;
     spacing: 12px;
     HorizontalLayout {
-        height: 58px;
+        height: 44px;
         spacing: 14px;
-        VerticalLayout {
-            min-width: 0px;
-            alignment: center;
-            spacing: 4px;
-            Text { text: "X-RAY"; color: Theme.text; font-size: 28px; font-weight: 600; }
-            Text { text: "Managed VLESS and local SOCKS5"; color: Theme.muted; font-size: 13px; overflow: elide; }
-        }
+        Text { text: "X-RAY"; color: Theme.text; font-size: 28px; font-weight: 600; min-width: 0px; horizontal-stretch: 1; vertical-alignment: center; }
         Rectangle {
             width: toggle.min-width;
             toggle := ActionButton {
@@ -713,7 +743,13 @@ export component XrayView inherits VerticalLayout {
         section-content := VerticalLayout {
             alignment: start;
             padding-bottom: 12px;
-            if XrayModule.section == 0: XrayDashboard {}
+            if XrayModule.section == 0: XrayDashboard {
+                open-profiles => {
+                    settings-scroll.content-y = 0px;
+                    XrayModule.section = 1;
+                    XrayModule.refresh-activity();
+                }
+            }
             if XrayModule.section == 1: XrayProfiles {}
             if XrayModule.section == 2: XrayGeneral {}
             if XrayModule.section == 3: XrayDns {}

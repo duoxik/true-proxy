@@ -186,9 +186,7 @@ fn focus_window(ui: &impl ComponentHandle) {
 fn show_main_window(ui: &MainWindow) -> Result<()> {
     ui.window().set_minimized(false);
     ui.show()?;
-    ui.window().with_winit_window(|window| {
-        window.set_theme(Some(slint::winit_030::winit::window::Theme::Light));
-    });
+    appearance::apply_native_theme(ui);
     focus_window(ui);
     appearance::refresh(ui);
     ui.invoke_sync_connection_observation();
@@ -660,7 +658,12 @@ pub fn run() -> Result<()> {
         ui.set_preview_ui(true);
         ui.set_page(preview_page);
     }
-    appearance::wire(&ui);
+    appearance::wire(
+        &ui,
+        preview
+            .is_none()
+            .then(|| path.with_file_name("appearance.json")),
+    );
     let _updates = match updating::wire(&ui, path.with_file_name("updates.json"), preview.is_some())
     {
         Ok(controller) => controller,
