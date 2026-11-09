@@ -1,9 +1,11 @@
 use super::assets;
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose};
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File},
     io::{ErrorKind, Read, Write},
@@ -184,8 +186,9 @@ impl Settings {
     pub fn import(&mut self, input: &str) -> Result<BTreeSet<String>> {
         let input = input.trim();
         ensure!(input.len() <= 256 * 1024, "Xray import exceeds 256 KiB");
-        if input.starts_with("https://") {
-            let url = https_url(input)?;
+        let input = unwrap_v2raytun(input)?;
+        if link_scheme(&input).eq_ignore_ascii_case("https") {
+            let url = https_url(&input)?;
             let existing = self.subscriptions.iter().find(|entry| {
                 crate::platform::unprotect(&entry.protected_url)
                     .is_ok_and(|value| value == url.as_str())
@@ -494,6 +497,46 @@ fn fetch_subscription(url: &Url) -> Result<Vec<Node>> {
     parse_nodes(&bytes)
 }
 
+fn link_scheme(input: &str) -> &str {
+    input.split_once("://").map_or("", |(scheme, _)| scheme)
+}
+
+fn unwrap_v2raytun(input: &str) -> Result<Cow<'_, str>> {
+    let Some((scheme, path)) = input.split_once("://") else {
+        return Ok(Cow::Borrowed(input));
+    };
+    if !scheme.eq_ignore_ascii_case("v2raytun") {
+        return Ok(Cow::Borrowed(input));
+    }
+    let (action, payload) = path.split_once('/').unwrap_or((path, ""));
+    ensure!(
+        !action.eq_ignore_ascii_case("crypt"),
+        "Encrypted v2RayTun links require the original HTTPS subscription or VLESS link"
+    );
+    ensure!(
+        action.eq_ignore_ascii_case("import") && !payload.is_empty(),
+        "Expected a v2raytun://import/ link with a VLESS or HTTPS URL"
+    );
+
+    let supported = |value: &str| {
+        let scheme = link_scheme(value);
+        scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("vless")
+    };
+    // Decode only an encoded wrapper. Escapes in an already plain URL belong to that URL.
+    let payload = if supported(payload) {
+        Cow::Borrowed(payload)
+    } else {
+        percent_decode_str(payload)
+            .decode_utf8()
+            .context("Invalid encoding in the v2RayTun import link")?
+    };
+    ensure!(
+        supported(&payload) && !payload.chars().any(char::is_control),
+        "A v2RayTun import link must contain a single VLESS or HTTPS URL"
+    );
+    Ok(payload)
+}
+
 struct Node {
     name: String,
     host: String,
@@ -654,6 +697,51 @@ mod tests {
     use super::*;
 
     const NODE: &str = "vless://00000000-0000-4000-8000-000000000001@vpn.example.test:443?type=tcp&security=tls&flow=xtls-rprx-vision&sni=cert.example.test&alpn=http%2F1.1&fp=chrome#Demo";
+
+    #[test]
+    fn imports_wrapped_vless_and_keeps_subscription_url_escapes() {
+        let mut settings = Settings::default();
+        settings
+            .import(&format!("v2raytun://import/{NODE}"))
+            .unwrap();
+        let encoded =
+            percent_encoding::utf8_percent_encode(NODE, percent_encoding::NON_ALPHANUMERIC);
+        settings
+            .import(&format!("V2RAYTUN://IMPORT/{encoded}"))
+            .unwrap();
+        assert_eq!(settings.profiles.len(), 1);
+        assert_eq!(settings.selected().unwrap().name, "Demo");
+
+        let url = "https://example.test/list?token=a+b%2Fc&option=1";
+        let encoded =
+            percent_encoding::utf8_percent_encode(url, percent_encoding::NON_ALPHANUMERIC);
+        assert_eq!(
+            unwrap_v2raytun(&format!("v2raytun://import/{url}")).unwrap(),
+            url
+        );
+        assert_eq!(
+            unwrap_v2raytun(&format!("v2raytun://import/{encoded}")).unwrap(),
+            url
+        );
+    }
+
+    #[test]
+    fn rejects_encrypted_and_unsupported_v2raytun_links() {
+        let mut settings = Settings::default();
+        let error = settings.import("v2raytun://crypt/example").unwrap_err();
+        assert!(error.to_string().contains("Encrypted v2RayTun links"));
+        assert!(
+            settings
+                .import("v2raytun://import/http://example.test")
+                .is_err()
+        );
+        assert!(
+            settings
+                .import("v2raytun://import/https%3A%2F%2Fexample.test%0Aother")
+                .is_err()
+        );
+        assert!(settings.profiles.is_empty());
+    }
 
     #[test]
     fn vless_and_base64_subscription_preserve_tls_and_filter_unsupported_nodes() {

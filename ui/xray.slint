@@ -318,10 +318,10 @@ component XrayProfiles inherits VerticalLayout {
     spacing: 12px;
     XrayCard {
         title: "Import profile";
-        caption: "Paste a VLESS link or an HTTPS subscription, then select the profile to run.";
+        caption: "Paste a VLESS link, an HTTPS subscription, or a v2raytun://import/ link.";
         HorizontalLayout {
             spacing: 8px;
-            Field { value <=> XrayModule.profile-input; placeholder: "VLESS link or subscription URL"; secret: true; field-height: 38px; }
+            Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun import link"; secret: true; field-height: 38px; }
             ActionButton {
                 label: "Import";
                 icon: "plus";

@@ -4473,13 +4473,14 @@ dependencies = [
 
 [[package]]
 name = "true-proxy"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "anyhow",
  "base64",
  "i-slint-backend-testing",
  "ipnet",
  "libloading 0.9.0",
+ "percent-encoding",
  "png",
  "schannel",
  "semver",
