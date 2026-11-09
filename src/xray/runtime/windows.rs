@@ -106,21 +106,44 @@ impl Child {
         installed: &Installed,
         geo_directory: &Path,
         activity: &Arc<Activity>,
-        secret: String,
+        secrets: Vec<String>,
     ) -> Result<Self> {
-        let binary = installed.executable.canonicalize()?;
         let geo_directory = geo_directory.canonicalize()?;
-        let workdir = binary
-            .parent()
-            .context("Missing Xray installation directory")?;
+        let (mut child, output) = Self::spawn_piped(
+            &installed.executable,
+            &installed.sha256,
+            "xray.exe run -format json -config stdin:",
+            Some(&geo_directory),
+        )
+        .context("Could not launch Xray")?;
+        activity.new_session();
+        let activity = activity.clone();
+        child.reader = Some(
+            thread::Builder::new()
+                .name("xray-logs".into())
+                .spawn(move || {
+                    let _ = read_output(BufReader::new(output), &activity, &secrets);
+                })?,
+        );
+        Ok(child)
+    }
+
+    fn spawn_piped(
+        binary: &Path,
+        sha256: &str,
+        command: &str,
+        geo_directory: Option<&Path>,
+    ) -> Result<(Self, File)> {
+        let binary = binary.canonicalize()?;
+        let workdir = binary.parent().context("Missing executable directory")?;
         // Hold a read-only sharing handle across verification and process creation.
         // Windows denies a conflicting writer or renamer until this handle closes.
         let _locked = OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ)
             .open(&binary)
-            .context("Could not lock the installed Xray binary for launch")?;
-        updates::verify_file(&binary, &installed.sha256)?;
+            .context("Could not lock the executable for launch")?;
+        updates::verify_file(&binary, sha256)?;
 
         let job = make_job()?;
         let (read_config, write_config) = pipe()?;
@@ -137,7 +160,7 @@ impl Child {
         startup.StartupInfo.hStdOutput = inherited[1];
         startup.StartupInfo.hStdError = inherited[1];
         startup.lpAttributeList = attributes.raw();
-        // The GUI parent has no console. Keep Xray detached so Windows does
+        // The GUI parent has no console. Keep the child detached so Windows does
         // not have to initialize a hidden console under the restricted token.
         let flags = CREATE_SUSPENDED
             | DETACHED_PROCESS
@@ -145,8 +168,8 @@ impl Child {
             | EXTENDED_STARTUPINFO_PRESENT;
         let application = wide(binary.as_os_str());
         let directory = wide(workdir.as_os_str());
-        let environment = environment(&geo_directory);
-        let mut command = wide(OsStr::new("xray.exe run -format json -config stdin:"));
+        let environment = environment(geo_directory);
+        let mut command = wide(OsStr::new(command));
         let mut process = PROCESS_INFORMATION::default();
         // SAFETY: all paths and the command are NUL-terminated, the environment
         // is a double-NUL-terminated UTF-16 block, and the inheritable handles
@@ -183,7 +206,7 @@ impl Child {
         };
         last_error(
             created != 0,
-            "Could not launch Xray with restricted privileges",
+            "Could not launch the process with restricted privileges",
         )?;
         // SAFETY: a successful create returns unique process and thread handles.
         let identity = Arc::new(Identity {
@@ -191,7 +214,7 @@ impl Child {
             pid: process.dwProcessId,
         });
         let thread = unsafe { OwnedHandle::from_raw_handle(process.hThread) };
-        let mut child = Self {
+        let child = Self {
             identity,
             thread: Some(thread),
             job: Some(job),
@@ -205,20 +228,13 @@ impl Child {
                 child.identity.process.as_raw_handle(),
             )
         };
-        last_error(assigned != 0, "Could not contain Xray in a Windows job")?;
+        last_error(
+            assigned != 0,
+            "Could not contain the process in a Windows job",
+        )?;
         drop(read_config);
         drop(write_logs);
-        activity.new_session();
-        let activity = activity.clone();
-        child.reader = Some(
-            thread::Builder::new()
-                .name("xray-logs".into())
-                .spawn(move || {
-                    let reader = BufReader::new(File::from(read_logs));
-                    let _ = read_output(reader, &activity, &secret);
-                })?,
-        );
-        Ok(child)
+        Ok((child, File::from(read_logs)))
     }
 
     pub(super) fn identity(&self) -> &Arc<Identity> {
@@ -227,7 +243,6 @@ impl Child {
 
     pub(super) fn start(&mut self, config: Vec<u8>) -> Result<()> {
         let mut input = self.input.take().context("Xray was already started")?;
-        let primary = self.thread.take().context("Xray has no suspended thread")?;
         // Write on a separate thread so a stalled child can be stopped by the
         // readiness deadline instead of holding the controller on a full pipe.
         thread::Builder::new()
@@ -235,9 +250,14 @@ impl Child {
             .spawn(move || {
                 let _ = input.write_all(&config);
             })?;
+        self.resume()
+    }
+
+    fn resume(&mut self) -> Result<()> {
+        let primary = self.thread.take().context("No suspended process thread")?;
         // SAFETY: the primary thread handle belongs to the newly launched child.
         let resumed = unsafe { ResumeThread(primary.as_raw_handle()) };
-        last_error(resumed != u32::MAX, "Could not resume the Xray process")
+        last_error(resumed != u32::MAX, "Could not resume the process")
     }
 
     pub(super) fn wait_socks(&self, port: u16, timeout: Duration) -> Result<()> {
@@ -283,6 +303,38 @@ impl Child {
     }
 }
 
+pub(in crate::xray) fn run_link_decoder(
+    binary: &Path,
+    sha256: &str,
+    command: &str,
+) -> Result<Vec<u8>> {
+    let (mut child, output) = Child::spawn_piped(binary, sha256, command, None)?;
+    drop(child.input.take());
+    let reader = thread::Builder::new()
+        .name("hpwnr-output".into())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            output.take(32 * 1024 + 1).read_to_end(&mut bytes)?;
+            Ok::<_, io::Error>(bytes)
+        })?;
+    child.resume()?;
+    // SAFETY: the owned process handle remains live throughout the bounded wait.
+    let wait = unsafe { WaitForSingleObject(child.identity.process.as_raw_handle(), 5000) };
+    ensure!(
+        wait == WAIT_OBJECT_0,
+        "hpwnr did not finish within five seconds"
+    );
+    ensure!(
+        child.identity.exit_code() == Some(0),
+        "hpwnr could not decrypt this link"
+    );
+    let bytes = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("Could not read hpwnr output"))??;
+    ensure!(bytes.len() <= 32 * 1024, "hpwnr returned too much data");
+    Ok(bytes)
+}
+
 impl Drop for Child {
     fn drop(&mut self) {
         self.stop();
@@ -301,16 +353,17 @@ fn wide(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain([0]).collect()
 }
 
-fn environment(geo_directory: &Path) -> Vec<u16> {
-    let mut asset = OsString::from("XRAY_LOCATION_ASSET=");
-    asset.push(geo_directory);
+fn environment(geo_directory: Option<&Path>) -> Vec<u16> {
     let mut root = OsString::from("SystemRoot=");
     root.push(std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows")));
-    root.encode_wide()
-        .chain([0])
-        .chain(asset.encode_wide())
-        .chain([0, 0])
-        .collect()
+    let mut env = wide(&root);
+    if let Some(geo_directory) = geo_directory {
+        let mut asset = OsString::from("XRAY_LOCATION_ASSET=");
+        asset.push(geo_directory);
+        env.extend(wide(&asset));
+    }
+    env.push(0);
+    env
 }
 
 fn make_job() -> Result<OwnedHandle> {

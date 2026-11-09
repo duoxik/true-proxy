@@ -262,15 +262,19 @@ True Proxy восстанавливает состояния Xray и маршр�
 
 Profiles принимает ссылки `vless://`, HTTPS-подписки со списком таких ссылок
 в тексте или Base64 и ссылки `v2raytun://import/`, которые содержат VLESS или HTTPS URL.
-Для зашифрованной ссылки `v2raytun://crypt/` нужен исходный HTTPS URL или VLESS.
+При первом импорте `v2raytun://crypt/` True Proxy скачивает
+[hpwnr v1.0.3](https://github.com/Omegaplexx/hpwnr/releases/tag/v1.0.3) для Windows x64
+из официального релиза. Приложение проверяет SHA-256 и запускает помощника без
+прав администратора. Расшифровка ссылки локальная: полученный HTTPS URL или VLESS
+передаётся в обычный импорт. Для загрузки самой HTTPS-подписки нужен доступ к её серверу.
 Ручные профили показаны отдельно. Каждая подписка
-обновляется своей кнопкой Refresh. Поддерживается VLESS RAW/TCP с TLS,
+обновляется своей кнопкой Refresh. Поддерживается VLESS RAW/TCP с TLS или REALITY,
 включая Vision.
 Учётные данные и URL подписок защищаются DPAPI в отдельном профиле модуля.
 При изменении профилей или подписок True Proxy разрешает имена VLESS-серверов
 через Windows DNS. Таблица VPN server hosts показывает сохранённые адреса.
 Refresh повторяет разрешение имён. Xray подключается по сохранённому IP с
-исходным TLS-именем. В Tunnel DNS можно указать IP резолвера, адрес DNS-over-TCP
+исходным именем сервера (SNI). В Tunnel DNS можно указать IP резолвера, адрес DNS-over-TCP
 в формате `tcp://host:port` или DoH URL для разрешения доменов внутри туннеля.
 
 Fallbacks использует [XTLS GeoIP Lite и GeoSite Standard](https://github.com/XTLS/Xray-rules-dat)

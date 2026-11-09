@@ -318,10 +318,10 @@ component XrayProfiles inherits VerticalLayout {
     spacing: 12px;
     XrayCard {
         title: "Import profile";
-        caption: "Paste a VLESS link, an HTTPS subscription, or a v2raytun://import/ link.";
+        caption: "Paste a VLESS link, an HTTPS subscription, or a v2RayTun link. The first encrypted import downloads hpwnr.";
         HorizontalLayout {
             spacing: 8px;
-            Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun import link"; secret: true; field-height: 38px; }
+            Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun link"; secret: true; field-height: 38px; }
             ActionButton {
                 label: "Import";
                 icon: "plus";
@@ -397,7 +397,7 @@ component XrayDns inherits VerticalLayout {
     }
     XrayCard {
         title: "VPN server hosts";
-        caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original TLS server name.";
+        caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original server name (SNI).";
         HorizontalLayout {
             alignment: start;
             ActionButton {

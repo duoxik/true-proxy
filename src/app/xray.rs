@@ -274,8 +274,9 @@ impl Controller {
                 self.set_running(true)?;
             }
             Command::Import(input) => {
+                let directory = self.directory.clone();
                 self.change(false, |settings| {
-                    let domains = settings.import(&input)?;
+                    let domains = settings.import_with_assets(&input, &directory)?;
                     settings.resolve_hosts(domains);
                     Ok(())
                 })?;

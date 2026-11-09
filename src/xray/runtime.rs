@@ -3,6 +3,7 @@
 use crate::{config::Protocol, dns::DomainCache};
 use serde_json::{Value, json};
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     io::{self, BufRead},
     net::{IpAddr, SocketAddr},
@@ -20,6 +21,8 @@ use anyhow::{Context, Result, ensure};
 mod windows;
 #[cfg(windows)]
 use self::windows::Child;
+#[cfg(windows)]
+pub(super) use self::windows::run_link_decoder;
 
 const ROW_LIMIT: usize = 256;
 const LINE_LIMIT: usize = 2048;
@@ -259,27 +262,38 @@ fn access_event(time: &str, message: &str) -> Option<ConnectionEvent> {
     })
 }
 
-fn read_output(mut reader: impl BufRead, activity: &Activity, secret: &str) -> io::Result<()> {
+fn read_output(
+    mut reader: impl BufRead,
+    activity: &Activity,
+    secrets: &[impl AsRef<str>],
+) -> io::Result<()> {
     // Read far enough past the display limit to redact credentials crossing it.
-    let limit = LINE_LIMIT + secret.len();
+    let secrets = || {
+        secrets
+            .iter()
+            .map(AsRef::as_ref)
+            .filter(|secret| !secret.is_empty())
+    };
+    let limit = LINE_LIMIT + secrets().map(str::len).max().unwrap_or(0);
     let mut line = Vec::with_capacity(limit);
     let receive = |line: &[u8]| {
         let text = String::from_utf8_lossy(line);
         let mut end = text.floor_char_boundary(LINE_LIMIT);
-        if !secret.is_empty()
-            && let Some((start, _)) = text
+        for secret in secrets() {
+            if let Some((start, _)) = text
                 .match_indices(secret)
                 .find(|(start, _)| *start < end && *start + secret.len() > end)
-        {
-            end = start;
+            {
+                end = start;
+            }
         }
-        let text = &text[..end];
-        if !secret.is_empty() && text.contains(secret) {
-            let redacted = text.replace(secret, "[redacted]");
-            activity.receive(redacted[..redacted.floor_char_boundary(LINE_LIMIT)].trim_end());
-        } else {
-            activity.receive(text.trim_end());
+        let mut redacted = Cow::Borrowed(&text[..end]);
+        for secret in secrets() {
+            if redacted.contains(secret) {
+                redacted = Cow::Owned(redacted.replace(secret, "[redacted]"));
+            }
         }
+        activity.receive(redacted[..redacted.floor_char_boundary(LINE_LIMIT)].trim_end());
     };
     loop {
         let bytes = reader.fill_buf()?;
@@ -318,20 +332,20 @@ fn upstream(settings: &Settings<'_>) -> Result<SocketAddr> {
     Ok(SocketAddr::new(ip, settings.upstream_port))
 }
 
-fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value, String)> {
+fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value, Vec<String>)> {
     let input = settings.outbound;
     let source = &input["settings"];
     let transport = &input["streamSettings"];
-    let tls = &transport["tlsSettings"];
+    let security = transport["security"].as_str();
     ensure!(
         input["protocol"] == "vless"
             && matches!(transport["network"].as_str(), Some("raw" | "tcp"))
-            && transport["security"] == "tls",
-        "This version supports VLESS over RAW/TCP + TLS"
+            && matches!(security, Some("tls" | "reality")),
+        "This version supports VLESS over RAW/TCP with TLS or REALITY"
     );
     ensure!(
         source["encryption"] == "none",
-        "This version supports VLESS encryption set to none with TLS"
+        "This version supports VLESS encryption set to none"
     );
     let id = source["id"]
         .as_str()
@@ -342,22 +356,34 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
         matches!(flow, "" | "xtls-rprx-vision" | "xtls-rprx-vision-udp443"),
         "Unsupported VLESS flow"
     );
-    let name = tls["serverName"].as_str().unwrap_or(settings.upstream);
-    ensure!(!name.is_empty(), "The VLESS profile has no TLS server name");
-    let mut tls_settings = json!({ "serverName": name });
-    if let Some(fingerprint) = tls["fingerprint"].as_str() {
-        tls_settings["fingerprint"] = json!(fingerprint);
-    }
-    if let Some(alpn) = tls["alpn"].as_array() {
-        ensure!(
-            alpn.len() <= 8
-                && alpn
-                    .iter()
-                    .all(|value| value.as_str().is_some_and(|p| p.len() <= 64)),
-            "Invalid TLS ALPN list"
-        );
-        tls_settings["alpn"] = json!(alpn);
-    }
+    let mut secrets = vec![id.to_owned()];
+    let stream = if security == Some("reality") {
+        let reality: super::profile::RealitySettings =
+            serde_json::from_value(transport["realitySettings"].clone())
+                .map_err(|_| anyhow::anyhow!("Invalid saved REALITY settings"))?;
+        reality.validate()?;
+        secrets.extend([reality.password.clone(), reality.mldsa65_verify.clone()]);
+        json!({ "network": "raw", "security": "reality", "realitySettings": reality })
+    } else {
+        let tls = &transport["tlsSettings"];
+        let name = tls["serverName"].as_str().unwrap_or(settings.upstream);
+        ensure!(!name.is_empty(), "The VLESS profile has no TLS server name");
+        let mut tls_settings = json!({ "serverName": name });
+        if let Some(fingerprint) = tls["fingerprint"].as_str() {
+            tls_settings["fingerprint"] = json!(fingerprint);
+        }
+        if let Some(alpn) = tls["alpn"].as_array() {
+            ensure!(
+                alpn.len() <= 8
+                    && alpn
+                        .iter()
+                        .all(|value| value.as_str().is_some_and(|p| p.len() <= 64)),
+                "Invalid TLS ALPN list"
+            );
+            tls_settings["alpn"] = json!(alpn);
+        }
+        json!({ "network": "raw", "security": "tls", "tlsSettings": tls_settings })
+    };
     let custom_dns = !settings.dns_servers.is_empty();
     super::profile::validate_dns_servers(settings.dns_servers)?;
     ensure!(
@@ -392,9 +418,7 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
             "address": address.ip(), "port": address.port(), "id": id,
             "encryption": "none", "flow": flow,
         },
-        "streamSettings": {
-            "network": "raw", "security": "tls", "tlsSettings": tls_settings,
-        },
+        "streamSettings": stream,
         "mux": { "enabled": false },
     });
     let mut outbounds = vec![vless.clone()];
@@ -436,7 +460,7 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
     if custom_dns {
         config["dns"] = json!({ "tag": DNS_INBOUND, "servers": settings.dns_servers });
     }
-    Ok((config, id.to_owned()))
+    Ok((config, secrets))
 }
 
 fn geo_tag(tag: &str, kind: &str) -> bool {
@@ -570,8 +594,8 @@ impl Runtime {
         {
             windows::check_socks_port(settings.socks_port)?;
             let address = upstream(&settings)?;
-            let (config, secret) = configuration(&settings, address)?;
-            let child = Child::spawn(installed, settings.geo_directory, &activity, secret)?;
+            let (config, secrets) = configuration(&settings, address)?;
+            let child = Child::spawn(installed, settings.geo_directory, &activity, secrets)?;
             bypass.activate(
                 child.identity().clone(),
                 address,
@@ -644,6 +668,43 @@ impl Drop for Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imported_reality_profile_reaches_the_tunnel_and_dns_outbounds() {
+        let link = "vless://00000000-0000-4000-8000-000000000001@vpn.example.test:443?type=tcp&security=reality&sni=cover.example.test&fp=firefox&pbk=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI&flow=xtls-rprx-vision#Reality";
+        let mut profiles = super::super::profile::Settings::default();
+        profiles.import(link).unwrap();
+        let profile = profiles.selected().unwrap();
+        let outbound = profile.outbound().unwrap();
+        let address: SocketAddr = "192.0.2.1:443".parse().unwrap();
+        let settings = Settings {
+            socks_port: 2081,
+            upstream: &profile.host,
+            upstream_port: profile.port,
+            upstream_ip: Some(address.ip()),
+            outbound: &outbound,
+            dns_servers: &["tcp://192.0.2.53:53".into()],
+            direct_domains: &[],
+            direct_ips: &[],
+            geo_directory: Path::new("."),
+        };
+        let (config, secrets) = configuration(&settings, address).unwrap();
+        for index in [0, 1] {
+            let node = &config["outbounds"][index];
+            let stream = &node["streamSettings"];
+            assert_eq!(node["settings"]["address"], "192.0.2.1");
+            assert_eq!(node["settings"]["flow"], "xtls-rprx-vision");
+            assert_eq!(stream["security"], "reality");
+            assert_eq!(
+                stream["realitySettings"]["serverName"],
+                "cover.example.test"
+            );
+            assert_eq!(stream["realitySettings"]["fingerprint"], "firefox");
+            assert_eq!(stream["realitySettings"]["password"], secrets[1]);
+            assert_eq!(stream["realitySettings"]["shortId"], "");
+            assert!(stream.get("tlsSettings").is_none());
+        }
+    }
 
     #[test]
     fn config_pins_server_and_routes_internal_dns_before_geo_rules() {
@@ -769,12 +830,14 @@ mod tests {
     fn startup_failure_is_redacted_and_kept_without_recording_logs() {
         let activity = Activity::default();
         let secret = "f0594cf1-14b5-4dcc-8123-4df23c516f10";
+        let password = "test-reality-password";
+        let secrets = [secret, password];
         activity.new_session();
-        let output = format!("Xray fixture\nFailed to start: could not listen ({secret})");
-        read_output(output.as_bytes(), &activity, secret).unwrap();
+        let output = format!("Xray fixture\nFailed to start: rejected ({secret}, {password})");
+        read_output(output.as_bytes(), &activity, &secrets).unwrap();
         assert_eq!(
             activity.finish_startup().as_deref(),
-            Some("Failed to start: could not listen ([redacted])"),
+            Some("Failed to start: rejected ([redacted], [redacted])"),
         );
         assert!(activity.logs().is_empty());
 
@@ -782,14 +845,14 @@ mod tests {
         let prefix = "Failed to start: ";
         let padding = "x".repeat(LINE_LIMIT - prefix.len() - 8);
         let output = format!("{prefix}{padding}{secret}");
-        read_output(output.as_bytes(), &activity, secret).unwrap();
+        read_output(output.as_bytes(), &activity, &secrets).unwrap();
         assert_eq!(
             activity.finish_startup().unwrap(),
             format!("{prefix}{padding}")
         );
 
         activity.new_session();
-        read_output("Xray fixture\n".as_bytes(), &activity, secret).unwrap();
+        read_output("Xray fixture\n".as_bytes(), &activity, &secrets).unwrap();
         assert!(activity.finish_startup().is_none());
     }
 

@@ -183,6 +183,10 @@ impl Settings {
             .context("Select a VLESS profile first")
     }
 
+    pub fn import_with_assets(&mut self, input: &str, root: &Path) -> Result<BTreeSet<String>> {
+        self.import(&super::hpwnr::resolve(root, input)?)
+    }
+
     pub fn import(&mut self, input: &str) -> Result<BTreeSet<String>> {
         let input = input.trim();
         ensure!(input.len() <= 256 * 1024, "Xray import exceeds 256 KiB");
@@ -544,6 +548,80 @@ struct Node {
     outbound: Value,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RealitySettings {
+    server_name: String,
+    fingerprint: String,
+    pub(super) password: String,
+    short_id: String,
+    spider_x: String,
+    pub(super) mldsa65_verify: String,
+}
+
+impl RealitySettings {
+    pub(super) fn validate(&self) -> Result<()> {
+        let key_length = |value: &str, size| {
+            general_purpose::URL_SAFE_NO_PAD
+                .decode(value)
+                .is_ok_and(|bytes| bytes.len() == size)
+        };
+        ensure!(
+            valid_server_name(&self.server_name),
+            "Invalid REALITY server name"
+        );
+        ensure!(
+            valid_fingerprint(&self.fingerprint)
+                && !matches!(
+                    self.fingerprint.to_ascii_lowercase().as_str(),
+                    "unsafe" | "hellogolang"
+                ),
+            "Invalid REALITY fingerprint"
+        );
+        ensure!(
+            key_length(&self.password, 32),
+            "Invalid REALITY public key (pbk)"
+        );
+        ensure!(
+            self.short_id.len() <= 16
+                && self.short_id.len().is_multiple_of(2)
+                && self.short_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "Invalid REALITY short ID (sid)"
+        );
+        let path = self.spider_x.as_bytes();
+        ensure!(
+            path.is_empty()
+                || (path.starts_with(b"/")
+                    && !path.starts_with(b"//")
+                    && !self.spider_x.chars().any(char::is_control)
+                    && path.iter().enumerate().all(|(i, &byte)| byte != b'%'
+                        || path
+                            .get(i + 1..i + 3)
+                            .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit)))),
+            "Invalid REALITY spider path (spx)"
+        );
+        ensure!(
+            self.mldsa65_verify.is_empty() || key_length(&self.mldsa65_verify, 1952),
+            "Invalid REALITY verification key (pqv)"
+        );
+        Ok(())
+    }
+}
+
+fn valid_server_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 253
+        && !name.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+fn valid_fingerprint(fingerprint: &str) -> bool {
+    !fingerprint.is_empty()
+        && fingerprint.len() <= 32
+        && fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 fn parse_nodes(bytes: &[u8]) -> Result<Vec<Node>> {
     ensure!(
         bytes.len() <= 256 * 1024,
@@ -583,7 +661,7 @@ fn parse_nodes(bytes: &[u8]) -> Result<Vec<Node>> {
     }
     ensure!(
         !nodes.is_empty(),
-        "No supported VLESS RAW/TCP + TLS profiles were found"
+        "No supported VLESS RAW/TCP profiles with TLS or REALITY were found"
     );
     Ok(nodes)
 }
@@ -618,12 +696,13 @@ fn parse_node(line: &str) -> Result<Node> {
     );
     let query: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
     let field = |key, default| query.get(key).map_or(default, String::as_str);
+    let security = field("security", "");
     ensure!(
         matches!(field("type", "tcp"), "tcp" | "raw")
-            && field("security", "") == "tls"
+            && matches!(security, "tls" | "reality")
             && field("headerType", "none") == "none"
             && field("encryption", "none") == "none",
-        "Only VLESS RAW/TCP + TLS is supported"
+        "Only VLESS RAW/TCP with TLS or REALITY is supported"
     );
     let flow = field("flow", "");
     ensure!(
@@ -636,35 +715,38 @@ fn parse_node(line: &str) -> Result<Node> {
         "TLS verification is required"
     );
     let sni = field("sni", &host);
-    ensure!(
-        !sni.is_empty()
-            && sni.len() <= 253
-            && !sni.chars().any(|c| c.is_control() || c.is_whitespace()),
-        "Invalid TLS server name"
-    );
-    let mut tls = json!({"serverName": sni});
-    let fingerprint = field("fp", "");
-    if !fingerprint.is_empty() {
-        ensure!(
-            fingerprint.len() <= 32
-                && fingerprint
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
-            "Invalid TLS fingerprint"
-        );
-        tls["fingerprint"] = json!(fingerprint);
-    }
-    let alpn = split_list(field("alpn", ""));
-    if !alpn.is_empty() {
-        ensure!(
-            alpn.len() <= 8
-                && alpn
-                    .iter()
-                    .all(|value| value.len() <= 32 && !value.chars().any(char::is_control)),
-            "Invalid TLS ALPN"
-        );
-        tls["alpn"] = json!(alpn);
-    }
+    let stream = if security == "reality" {
+        let reality = RealitySettings {
+            server_name: sni.to_owned(),
+            fingerprint: field("fp", "chrome").to_owned(),
+            password: field("pbk", "").to_owned(),
+            short_id: field("sid", "").to_owned(),
+            spider_x: field("spx", "").to_owned(),
+            mldsa65_verify: field("pqv", "").to_owned(),
+        };
+        reality.validate()?;
+        json!({"network": "raw", "security": "reality", "realitySettings": reality})
+    } else {
+        ensure!(valid_server_name(sni), "Invalid TLS server name");
+        let mut tls = json!({"serverName": sni});
+        let fingerprint = field("fp", "");
+        if !fingerprint.is_empty() {
+            ensure!(valid_fingerprint(fingerprint), "Invalid TLS fingerprint");
+            tls["fingerprint"] = json!(fingerprint);
+        }
+        let alpn = split_list(field("alpn", ""));
+        if !alpn.is_empty() {
+            ensure!(
+                alpn.len() <= 8
+                    && alpn
+                        .iter()
+                        .all(|value| value.len() <= 32 && !value.chars().any(char::is_control)),
+                "Invalid TLS ALPN"
+            );
+            tls["alpn"] = json!(alpn);
+        }
+        json!({"network": "raw", "security": "tls", "tlsSettings": tls})
+    };
     let name = url
         .fragment()
         .and_then(|fragment| {
@@ -687,7 +769,7 @@ fn parse_node(line: &str) -> Result<Node> {
         outbound: json!({
             "protocol": "vless",
             "settings": { "address": host, "port": port, "id": id.to_ascii_lowercase(), "encryption": "none", "flow": flow },
-            "streamSettings": { "network": "raw", "security": "tls", "tlsSettings": tls }
+            "streamSettings": stream
         }),
     })
 }

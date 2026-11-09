@@ -19,6 +19,12 @@ const MAX_METADATA: u64 = 512 * 1024;
 const CORE_ASSET: &str = "Xray-windows-64.zip";
 const CORE_REPOSITORY: &str = "XTLS/Xray-core";
 const GEO_REPOSITORY: &str = "XTLS/Xray-rules-dat";
+pub(super) const HPWNR_FILE: &str = "hpwnr-v1.0.3.exe";
+pub(super) const HPWNR_SHA256: &str =
+    "ee7a63670cf7a6fb84b24712c40746d2181dcb02df1b5b59914f4651db301094";
+const HPWNR_SIZE: u64 = 2_036_736;
+const HPWNR_URL: &str =
+    "https://github.com/Omegaplexx/hpwnr/releases/download/v1.0.3/hpwnr-windows-x64.exe";
 pub const GEO_SOURCE: &str = "https://github.com/XTLS/Xray-rules-dat";
 pub const DEFAULT_GEOIP_URL: &str =
     "https://github.com/XTLS/Xray-rules-dat/releases/latest/download/geoip-lite.dat";
@@ -110,6 +116,31 @@ pub fn latest() -> Result<Release> {
         version,
         asset: release.asset(CORE_ASSET, MAX_ARCHIVE)?,
     })
+}
+
+pub(super) fn hpwnr(root: &Path) -> Result<PathBuf> {
+    let target = root.join(HPWNR_FILE);
+    match fs::symlink_metadata(&target) {
+        Ok(_) => {
+            plain_directory(root)?;
+            plain_file(&target)?;
+            ensure!(
+                fs::metadata(&target)?.len() == HPWNR_SIZE,
+                "Invalid hpwnr size"
+            );
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let stage = Stage::new(root, "decoder")?;
+            let binary = stage.path.join(HPWNR_FILE);
+            let size = download_file(HPWNR_URL, Some(true), HPWNR_SIZE, &binary)?;
+            ensure!(size == HPWNR_SIZE, "Invalid hpwnr download size");
+            verify_file(&binary, HPWNR_SHA256)?;
+            crate::updates::validate_pe(&binary)?;
+            fs::rename(binary, &target)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    Ok(target)
 }
 
 pub fn installed(root: &Path) -> Result<Option<Installed>> {
@@ -541,10 +572,55 @@ impl Drop for Stage {
                     "geoip.dat",
                     "geosite.dat",
                     "LICENSE",
+                    HPWNR_FILE,
                 ],
             );
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "downloads the pinned hpwnr executable from GitHub into a temporary directory"]
+fn imports_encrypted_v2raytun_with_upstream_hpwnr() -> Result<()> {
+    use super::{hpwnr::resolve, profile::Settings, runtime::run_link_decoder};
+
+    let stage = Stage::new(&std::env::temp_dir(), "true-proxy-hpwnr-test")?;
+    let binary = hpwnr(&stage.path)?;
+    let encrypt = |link: &str, key: &str| -> Result<String> {
+        let output = run_link_decoder(
+            &binary,
+            HPWNR_SHA256,
+            &format!("hpwnr.exe {link} v2r {key}"),
+        )?;
+        let encrypted = String::from_utf8(output)?;
+        ensure!(encrypted.starts_with("v2raytun://crypt/"));
+        Ok(encrypted)
+    };
+
+    let subscription = "https://example.test/list?token=a+b%2Fc";
+    for key in ["crypt3", "crypt4", "key3"] {
+        assert_eq!(
+            resolve(&stage.path, &encrypt(subscription, key)?)?,
+            subscription
+        );
+    }
+    let node = "vless://00000000-0000-4000-8000-000000000001@vpn.example.test:443?type=tcp&security=tls#Test";
+    let mut settings = Settings::default();
+    settings.import_with_assets(&encrypt(node, "crypt3")?, &stage.path)?;
+    assert_eq!(settings.selected()?.name, "Test");
+
+    // A size-matched replacement must be rejected before it can be launched.
+    let mut damaged = fs::read(&binary)?;
+    damaged[0] ^= 1;
+    let encrypted = encrypt(node, "crypt3")?;
+    fs::write(&binary, damaged)?;
+    let error = settings
+        .import_with_assets(&encrypted, &stage.path)
+        .unwrap_err();
+    assert!(error.to_string().contains("SHA-256"));
+    assert_eq!(settings.profiles.len(), 1);
+    Ok(())
 }
 
 fn remove_known_files(path: &Path, names: &[&str]) {
