@@ -15,6 +15,7 @@ component NavItem inherits Rectangle {
     in property <string> label;
     in property <string> icon;
     in property <bool> selected;
+    private property <bool> pointer-focused;
     callback clicked;
     height: 35px;
     border-radius: Theme.radius-small;
@@ -35,10 +36,18 @@ component NavItem inherits Rectangle {
             accessible-role: none;
         }
     }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
-    focus := FocusScope { width: 0px; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.pointer-focused = true; focus.focus(); root.clicked(); }
+    }
+    focus := FocusScope {
+        width: 0px;
+        changed has-focus => { if !self.has-focus { root.pointer-focused = false; } }
+        key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; }
+    }
     forward-focus: focus;
-    border-width: 1px; border-color: focus.has-focus ? Theme.accent : transparent;
+    border-width: 1px;
+    border-color: focus.has-focus && !root.pointer-focused ? Theme.accent : transparent;
     accessible-role: button; accessible-label: root.label; accessible-action-default => { root.clicked(); }
 }
 
@@ -353,104 +362,123 @@ component RuleLine inherits Rectangle {
     in property <bool> busy;
     in property <bool> last;
     in property <bool> draggable;
+    in property <bool> floating;
+    in property <bool> hidden-for-drag;
+    in property <length> slide;
     callback toggled;
-    callback moved(int);
+    callback drag-started(length);
+    callback drag-moved(length);
+    callback drag-ended(length, bool);
     height: 58px;
-    background: drag.pressed ? Theme.surface-hover : transparent;
 
-    HorizontalLayout {
-        padding-left: 19px;
-        padding-right: 15px;
-        spacing: 16px;
-        Rectangle {
-            width: 35px;
-            UiIcon {
-                name: "grip";
-                ink: root.draggable && !root.busy && drag.has-hover ? Theme.text : Theme.muted;
-                opacity: root.locked ? 0.5 : 1;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
+    Rectangle {
+        y: root.slide;
+        width: parent.width;
+        height: root.height;
+        visible: !root.hidden-for-drag;
+        background: root.floating ? Theme.surface-hover : transparent;
+        HorizontalLayout {
+            padding-left: 19px;
+            padding-right: 15px;
+            spacing: 16px;
+            grip := Rectangle {
+                width: 35px;
+                UiIcon {
+                    name: "grip";
+                    ink: root.floating || drag.has-hover ? Theme.text : Theme.muted;
+                    opacity: root.locked ? 0.5 : 1;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
             }
-            drag := TouchArea {
-                enabled: root.draggable && !root.busy;
-                mouse-cursor: grab;
-                pointer-event(event) => {
-                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
-                        let offset = round((self.mouse-y - self.pressed-y) / root.height);
-                        if offset != 0 { root.moved(offset); }
+            Rectangle {
+                width: 50px;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: 40px;
+                    height: 28px;
+                    border-radius: 8px;
+                    background: Theme.neutral-badge;
+                    Text {
+                        text: (root.priority < 10 ? "0" : "") + root.priority;
+                        color: Theme.text;
+                        font-size: 13px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
                     }
                 }
             }
-        }
-        Rectangle {
-            width: 50px;
-            Rectangle {
-                y: (parent.height - self.height) / 2;
-                width: 40px;
-                height: 28px;
-                border-radius: 8px;
-                background: Theme.neutral-badge;
+            HorizontalLayout {
+                min-width: 0px;
+                horizontal-stretch: 1;
+                spacing: 8px;
+                alignment: start;
                 Text {
-                    text: (root.priority < 10 ? "0" : "") + root.priority;
-                    color: Theme.text;
-                    font-size: 13px;
+                    text: root.name;
+                    accessible-label: root.priority + ". " + root.name;
+                    color: root.checked ? Theme.text : Theme.muted;
+                    font-size: 15px;
                     font-weight: 600;
-                    horizontal-alignment: center;
+                    overflow: elide;
+                    min-width: 0px;
                     vertical-alignment: center;
+                }
+                if root.locked: Rectangle {
+                    width: 17px;
+                    UiIcon { name: "lock"; ink: Theme.muted; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
+                }
+            }
+            Rectangle {
+                width: 176px;
+                RouteBadge {
+                    value: root.route;
+                    icon: root.route == "Direct" ? "direct" : root.route == "Block" ? "block" : "server";
+                    neutral: true;
+                    width: 140px;
+                    height: 30px;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+            RuleSwitch {
+                label: "Rule " + root.name;
+                width: 54px;
+                height: root.height;
+                track-width: 50px;
+                checked: root.checked;
+                fixed: root.locked;
+                enabled: !root.locked && !root.busy;
+                toggled => { root.toggled(); }
+            }
+            Rectangle {
+                width: 36px;
+                height: root.height;
+                VerticalLayout {
+                    alignment: center;
+                    @children
                 }
             }
         }
-        HorizontalLayout {
-            min-width: 0px;
-            horizontal-stretch: 1;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: root.name;
-                accessible-label: root.priority + ". " + root.name;
-                color: root.checked ? Theme.text : Theme.muted;
-                font-size: 15px;
-                font-weight: 600;
-                overflow: elide;
-                min-width: 0px;
-                vertical-alignment: center;
-            }
-            if root.locked: Rectangle {
-                width: 17px;
-                UiIcon { name: "lock"; ink: Theme.muted; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
-            }
+        if !root.last: Rectangle { height: 1px; y: parent.height - self.height; background: Theme.border; }
+    }
+    drag := TouchArea {
+        x: grip.x;
+        width: grip.width;
+        enabled: root.draggable && !root.busy;
+        mouse-cursor: self.pressed ? grabbing : grab;
+        moved => {
+            if self.pressed { root.drag-moved(self.absolute-position.y + self.mouse-y); }
         }
-        Rectangle {
-            width: 176px;
-            RouteBadge {
-                value: root.route;
-                icon: root.route == "Direct" ? "direct" : root.route == "Block" ? "block" : "server";
-                neutral: true;
-                width: 140px;
-                height: 30px;
-                y: (parent.height - self.height) / 2;
-            }
-        }
-        RuleSwitch {
-            label: "Rule " + root.name;
-            width: 54px;
-            height: root.height;
-            track-width: 50px;
-            checked: root.checked;
-            fixed: root.locked;
-            enabled: !root.locked && !root.busy;
-            toggled => { root.toggled(); }
-        }
-        Rectangle {
-            width: 36px;
-            height: root.height;
-            VerticalLayout {
-                alignment: center;
-                @children
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.cancel {
+                root.drag-ended(0px, false);
+            } else if event.button == PointerEventButton.left {
+                let pointer-y = self.absolute-position.y + self.mouse-y;
+                if event.kind == PointerEventKind.down { root.drag-started(pointer-y); }
+                if event.kind == PointerEventKind.up { root.drag-ended(pointer-y, true); }
             }
         }
     }
-    if !root.last: Rectangle { height: 1px; y: parent.height - self.height; background: Theme.border; }
 }
 
 component RuleActions inherits ActionButton {
@@ -831,6 +859,7 @@ export component MainWindow inherits Window {
     preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
     in-out property <bool> dark-theme <=> Theme.dark;
+    out property <color> caption-color: Theme.sidebar;
     init => { Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light; }
     changed dark-theme => {
         Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light;
@@ -1060,32 +1089,22 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 padding: 26px;
                 spacing: 16px;
-                if root.page == 1: VerticalLayout {
-                    spacing: 10px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: start;
-                        Text { text: "Proxy"; color: Theme.muted; font-size: 12px; }
-                        Text { text: "/"; color: Theme.muted; font-size: 12px; }
-                        Text { text: "Rules"; color: Theme.text; font-size: 12px; font-weight: 600; accessible-role: none; }
+                if root.page == 1: HorizontalLayout {
+                    spacing: 14px;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Routing Rules"; color: Theme.text; font-size: 30px; font-weight: 700; }
+                        Text { text: "Define how traffic is routed: directly or through a proxy."; color: Theme.secondary; font-size: 13px; }
                     }
-                    HorizontalLayout {
-                        spacing: 14px;
-                        VerticalLayout {
-                            spacing: 4px;
-                            Text { text: "Routing Rules"; color: Theme.text; font-size: 30px; font-weight: 700; }
-                            Text { text: "Define how traffic is routed: directly or through a proxy."; color: Theme.secondary; font-size: 13px; }
-                        }
-                        ActionButton {
-                            label: "Add Rule";
-                            accessible-label: "Add Routing Rule";
-                            icon: "plus";
-                            icon-ink: Theme.accent;
-                            outline: Theme.dark ? Theme.switch-off : Theme.border;
-                            min-width: 122px;
-                            height: 43px;
-                            clicked => { root.add-rule(); }
-                        }
+                    ActionButton {
+                        label: "Add Rule";
+                        accessible-label: "Add Routing Rule";
+                        icon: "plus";
+                        icon-ink: Theme.accent;
+                        outline: Theme.dark ? Theme.switch-off : Theme.border;
+                        min-width: 122px;
+                        height: 43px;
+                        clicked => { root.add-rule(); }
                     }
                 }
                 if root.page != 1 && root.page != 3 && root.page != 6: HorizontalLayout {
@@ -1304,6 +1323,25 @@ export component MainWindow inherits Window {
                             border-color: Theme.border;
                             clip: true;
                             rule-list := ScrollView {
+                                property <bool> can-reorder: !root.busy && root.rule-query == "" && root.rules.length > 1;
+                                property <bool> dragging;
+                                property <RuleRow> dragged;
+                                property <length> row-height;
+                                property <length> origin-y;
+                                property <length> grab-y;
+                                property <length> pointer-y;
+                                property <length> floating-y: self.pointer-y - rules-content.absolute-position.y - self.grab-y;
+                                property <int> drop-priority: self.dragging ? max(2, min(root.rules.length + 1, self.dragged.priority
+                                    + round((self.floating-y - self.origin-y) / self.row-height))) : 0;
+                                changed can-reorder => { if !self.can-reorder { self.dragging = false; } }
+
+                                pure function slide-for(priority: int) -> length {
+                                    if !self.dragging { return 0px; }
+                                    if self.dragged.priority < priority && priority <= self.drop-priority { return -self.row-height; }
+                                    if self.drop-priority <= priority && priority < self.dragged.priority { return self.row-height; }
+                                    return 0px;
+                                }
+
                                 x: 1px;
                                 y: 1px;
                                 width: parent.width - 2px;
@@ -1342,11 +1380,26 @@ export component MainWindow inherits Window {
                                         route: rule.route;
                                         checked: rule.enabled;
                                         busy: root.busy;
-                                        draggable: root.rule-query == "" && root.rules.length > 1;
+                                        draggable: rule-list.can-reorder;
+                                        hidden-for-drag: rule-list.dragging && rule-list.dragged.id == rule.id;
+                                        slide: rule-list.slide-for(rule.priority);
                                         toggled => { root.toggle-rule(rule.id); }
-                                        moved(offset) => {
-                                            let bounded = max(2 - rule.priority, min(root.rules.length + 1 - rule.priority, offset));
-                                            if bounded != 0 { root.move-rule(rule.id, bounded); }
+                                        drag-started(pointer-y) => {
+                                            rule-list.dragged = rule;
+                                            rule-list.row-height = self.height;
+                                            rule-list.origin-y = self.y;
+                                            rule-list.grab-y = pointer-y - self.absolute-position.y;
+                                            rule-list.pointer-y = pointer-y;
+                                            rule-list.dragging = true;
+                                        }
+                                        drag-moved(pointer-y) => { if self.hidden-for-drag { rule-list.pointer-y = pointer-y; } }
+                                        drag-ended(pointer-y, dropped) => {
+                                            if self.hidden-for-drag {
+                                                if dropped { rule-list.pointer-y = pointer-y; }
+                                                let offset = rule-list.drop-priority - rule.priority;
+                                                rule-list.dragging = false;
+                                                if dropped && offset != 0 { root.move-rule(rule.id, offset); }
+                                            }
                                         }
                                         RuleActions {
                                             rule-name: rule.name;
@@ -1369,6 +1422,27 @@ export component MainWindow inherits Window {
                                             proxies: root.proxies;
                                             enabled: !root.busy;
                                             selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); }
+                                        }
+                                    }
+                                }
+                                if rule-list.dragging: floating-rule := RuleLine {
+                                    x: 0px;
+                                    y: rule-list.floating-y;
+                                    width: rule-list.visible-width;
+                                    priority: rule-list.drop-priority;
+                                    name: rule-list.dragged.name;
+                                    route: rule-list.dragged.route;
+                                    checked: rule-list.dragged.enabled;
+                                    floating: true;
+                                    Rectangle {
+                                        height: 38px;
+                                        UiIcon {
+                                            name: "more";
+                                            width: 16px;
+                                            height: 16px;
+                                            ink: Theme.text;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }

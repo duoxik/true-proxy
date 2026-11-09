@@ -57,7 +57,29 @@ enum Command {
     Autostart(Option<bool>),
     Quit,
 }
-type State = Rc<RefCell<Config>>;
+type State = Rc<ProfileState>;
+
+struct ProfileState {
+    saved: RefCell<Config>,
+    applied: RefCell<Option<Config>>,
+}
+
+impl ProfileState {
+    fn new(config: Config) -> State {
+        Rc::new(Self {
+            saved: RefCell::new(config),
+            applied: RefCell::new(None),
+        })
+    }
+
+    fn borrow(&self) -> std::cell::Ref<'_, Config> {
+        self.saved.borrow()
+    }
+
+    fn borrow_mut(&self) -> std::cell::RefMut<'_, Config> {
+        self.saved.borrow_mut()
+    }
+}
 
 fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
     Rc::new(VecModel::from(rows)).into()
@@ -186,6 +208,9 @@ fn focus_window(ui: &impl ComponentHandle) {
 fn show_main_window(ui: &MainWindow) -> Result<()> {
     ui.window().set_minimized(false);
     ui.show()?;
+    #[cfg(windows)]
+    ui.window()
+        .with_winit_window(|window| window.set_content_protected(false));
     appearance::apply_native_theme(ui);
     focus_window(ui);
     appearance::refresh(ui);
@@ -345,7 +370,6 @@ fn update_status(
             ui.set_active(active);
             ui.set_busy(busy);
             ui.set_status(message.clone().into());
-            pending::on_status(&ui, busy);
             ui.invoke_sync_tray(active, message.clone().into());
             if error {
                 ui.set_notice(message.clone().into());
@@ -649,7 +673,7 @@ pub fn run() -> Result<()> {
     let paused = arguments.iter().any(|a| a == "--paused");
     let auto_start = preview.is_none()
         && should_start(&config, paused, arguments.iter().any(|a| a == "--enable"));
-    let state = Rc::new(RefCell::new(config));
+    let state = ProfileState::new(config);
     if preview.is_none() && paused {
         remember_routing(&state, &path, false)?;
     }
@@ -760,6 +784,7 @@ pub fn run() -> Result<()> {
         let path = path.clone();
         ui.on_remember_routing(move |enabled| {
             if let Some(ui) = weak.upgrade() {
+                pending::acknowledge(&ui, &state, enabled);
                 report(&ui, remember_routing(&state, &path, enabled));
             }
         });
@@ -1369,6 +1394,7 @@ fn smoke_ui(
                     // Explicit preview fixture: no backend is running in this mode.
                     ui.set_notice("UI preview: interception disabled".into());
                     ui.set_active(true);
+                    ui.invoke_remember_routing(true);
                     ui.invoke_edit_rule(ui.get_rules().row_data(0).unwrap().id);
                     ui.set_form_name("Browser via VPN · edited".into());
                     ui.invoke_save_rule();
@@ -1376,7 +1402,7 @@ fn smoke_ui(
                     ui.set_notice("UI preview: interception disabled".into());
                     snapshot(&ui, &dir.join("05b-pending-rules.png"))?;
                     ui.set_active(false);
-                    pending::on_status(&ui, false);
+                    ui.invoke_remember_routing(false);
                     ui.set_notice("".into());
                     ui.set_page(4);
                 }
@@ -1577,7 +1603,7 @@ mod tests {
             username: String::new(),
             protected_password: None,
         });
-        let state = Rc::new(RefCell::new(config));
+        let state = ProfileState::new(config);
         remember_routing(&state, &path, false).unwrap();
         let paused = Config::load(&path).unwrap();
         assert!(!should_start(&paused, false, false));

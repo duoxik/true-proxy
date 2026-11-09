@@ -97,7 +97,6 @@ mod tests {
     use super::*;
     use i_slint_backend_testing::ElementHandle;
     use slint::platform::{PointerEventButton, WindowEvent};
-    use std::{cell::RefCell, rc::Rc};
 
     #[test]
     fn rule_search_preserves_priority_and_cidrs_save_with_deferred_apply() {
@@ -120,7 +119,7 @@ mod tests {
                 .collect(),
             ..Config::default()
         };
-        let state = Rc::new(RefCell::new(config.clone()));
+        let state = super::super::ProfileState::new(config.clone());
         let directory =
             std::env::temp_dir().join(format!("true-proxy-local-editor-{}", super::super::id()));
         let path = directory.join("config.json");
@@ -159,6 +158,7 @@ mod tests {
         assert!(!path.exists());
 
         ui.set_active(true);
+        pending::acknowledge(&ui, &state, true);
         ui.set_local_network_draft("192.0.2.15/24\n192.0.2.0/24, fd00::/8".into());
         click("Save local network");
         assert_eq!(ui.get_dialog(), 0);

@@ -749,20 +749,32 @@ mod ui_tests {
             game.absolute_position().y + game.size().height / 2.,
         );
         let end = slint::LogicalPosition::new(start.x, start.y + card.size().height * 2.);
-        for event in [
-            slint::platform::WindowEvent::PointerPressed {
-                position: start,
-                button: PointerEventButton::Left,
-            },
-            slint::platform::WindowEvent::PointerMoved { position: end },
-            slint::platform::WindowEvent::PointerReleased {
-                position: end,
-                button: PointerEventButton::Left,
-            },
-        ] {
-            ui.window().dispatch_event(event);
-        }
+        use slint::platform::WindowEvent;
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position: start,
+            button: PointerEventButton::Left,
+        });
+        let floating = ElementHandle::find_by_element_id(&ui, "MainWindow::floating-rule")
+            .next()
+            .expect("The rule is lifted as soon as the grip is pressed");
+        let initial_y = floating.absolute_position().y;
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(start.x, start.y + 19.),
+        });
+        assert_eq!(floating.absolute_position().y, initial_y + 19.);
+        assert_eq!(moved.get(), 1, "Dragging must not save until drop");
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position: end });
+        assert_eq!(floating.absolute_position().y, initial_y + end.y - start.y);
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: end,
+            button: PointerEventButton::Left,
+        });
         assert_eq!(moved.get(), 2, "Dragging moves across multiple positions");
+        assert_eq!(
+            ElementHandle::find_by_element_id(&ui, "MainWindow::floating-rule").count(),
+            0
+        );
         ui.set_busy(true);
         assert!(
             ElementHandle::find_by_element_id(&ui, "MainWindow::local-network-card")

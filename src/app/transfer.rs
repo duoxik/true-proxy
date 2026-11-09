@@ -280,7 +280,7 @@ mod tests {
         let output = copied.clone();
         wire_copy(
             &ui,
-            Rc::new(RefCell::new(Config::default())),
+            super::super::ProfileState::new(Config::default()),
             PathBuf::new(),
             Arc::default(),
             Rc::new(move |_, text| {
@@ -296,7 +296,7 @@ mod tests {
         assert!(ui.get_toast().is_empty());
         wire_copy(
             &ui,
-            Rc::new(RefCell::new(Config::default())),
+            super::super::ProfileState::new(Config::default()),
             PathBuf::new(),
             Arc::default(),
             Rc::new(|_, _| anyhow::bail!("Clipboard busy")),
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn import_validates_edits_rechecks_on_commit_and_defers_the_whole_profile() {
         let ui = window();
-        let state = Rc::new(RefCell::new(Config::default()));
+        let state = super::super::ProfileState::new(Config::default());
         let folder = std::env::temp_dir().join(format!("true-proxy-import-{}", std::process::id()));
         let path = folder.join("config.json");
         state.borrow().save(&path).unwrap();
@@ -375,6 +375,7 @@ mod tests {
         assert!(ui.get_import_error().contains("line"));
         validate_now(&ui, valid);
         ui.set_active(true);
+        pending::acknowledge(&ui, &state, true);
         click(&ui, "Save");
         assert_eq!(ui.get_dialog(), 0);
         assert!(ui.get_routing_pending() && ui.get_active());
@@ -394,7 +395,7 @@ mod tests {
         let ui = window();
         wire_copy(
             &ui,
-            Rc::new(RefCell::new(Config::default())),
+            super::super::ProfileState::new(Config::default()),
             PathBuf::new(),
             Arc::default(),
             Rc::new(|_, _| Ok(())),

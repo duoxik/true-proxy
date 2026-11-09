@@ -6,6 +6,13 @@ use slint::ComponentHandle;
 use std::{path::Path, sync::mpsc::SyncSender};
 use true_proxy::config::Config;
 
+fn same_routes(first: &Config, second: &Config) -> bool {
+    first.rules == second.rules
+        && first.local_networks == second.local_networks
+        && first.proxies == second.proxies
+        && first.default_action == second.default_action
+}
+
 pub fn persist(
     ui: &MainWindow,
     state: &State,
@@ -20,14 +27,7 @@ pub fn persist(
     let mut next = state.borrow().clone();
     mutate(&mut next)?;
     next.validate()?;
-    let changed = {
-        let previous = state.borrow();
-        previous.rules != next.rules
-            || previous.local_networks != next.local_networks
-            || previous.proxies != next.proxies
-            || previous.default_action != next.default_action
-    };
-    if !changed {
+    if same_routes(&state.borrow(), &next) {
         ui.set_notice("".into());
         return Ok(());
     }
@@ -35,15 +35,20 @@ pub fn persist(
     *state.borrow_mut() = next.clone();
     refresh(ui, &next, statuses);
     ui.set_notice("".into());
-    ui.set_routing_pending(ui.get_active());
+    ui.set_routing_pending(
+        state
+            .applied
+            .borrow()
+            .as_ref()
+            .is_some_and(|applied| !same_routes(applied, &next)),
+    );
     Ok(())
 }
 
-/// Only a completed lifecycle acknowledgement clears the pending changes.
-pub fn on_status(ui: &MainWindow, busy: bool) {
-    if !busy {
-        ui.set_routing_pending(false);
-    }
+/// Routing edits are blocked from command submission until its acknowledgement.
+pub fn acknowledge(ui: &MainWindow, state: &State, active: bool) {
+    *state.applied.borrow_mut() = active.then(|| state.borrow().clone());
+    ui.set_routing_pending(false);
 }
 
 pub fn wire(ui: &MainWindow, state: State, sender: SyncSender<Command>) {
@@ -72,7 +77,7 @@ pub fn wire(ui: &MainWindow, state: State, sender: SyncSender<Command>) {
 mod tests {
     use super::*;
     use i_slint_backend_testing::ElementHandle;
-    use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::mpsc};
+    use std::{path::PathBuf, sync::mpsc};
     use true_proxy::{
         config::{Action, Rule},
         rules::{self, Flow},
@@ -90,7 +95,7 @@ mod tests {
                 std::thread::current().id()
             ));
             let path = folder.join("config.json");
-            let state = Rc::new(RefCell::new(Config::default()));
+            let state = super::super::ProfileState::new(Config::default());
             state.borrow().save(&path).unwrap();
             Self { state, path }
         }
@@ -142,6 +147,7 @@ mod tests {
     fn restart_banner_keeps_running_routes_until_explicit_restart_with_latest_profile() {
         let ui = window();
         let profile = Profile::new();
+        acknowledge(&ui, &profile.state, true);
         let running = profile.state.borrow().clone();
         let (sender, commands) = mpsc::sync_channel(1);
         wire(&ui, profile.state.clone(), sender);
@@ -212,15 +218,49 @@ mod tests {
         );
         click(&ui, "Restart");
         assert!(commands.try_recv().is_err());
-        on_status(&ui, true);
         assert!(ui.get_routing_pending());
         ui.set_busy(false);
-        on_status(&ui, false);
+        acknowledge(&ui, &profile.state, true);
         assert!(!ui.get_routing_pending());
         assert_eq!(
             ElementHandle::find_by_accessible_label(&ui, "Restart").count(),
             0
         );
+    }
+
+    #[test]
+    fn reverting_rule_order_hides_restart_only_when_all_saved_routes_match() {
+        let ui = window();
+        let profile = Profile::new();
+        let mut other = blocked_rule();
+        other.id = "apps".into();
+        profile
+            .save(&ui, |config| {
+                config.rules = vec![blocked_rule(), other];
+                Ok(())
+            })
+            .unwrap();
+        acknowledge(&ui, &profile.state, true);
+
+        let swap = |config: &mut Config| {
+            config.rules.swap(0, 1);
+            Ok(())
+        };
+        profile.save(&ui, swap).unwrap();
+        assert!(ui.get_routing_pending());
+        profile.save(&ui, swap).unwrap();
+        assert!(!ui.get_routing_pending());
+        assert_eq!(Config::load(&profile.path).unwrap().rules[0].id, "game");
+
+        profile
+            .save(&ui, |config| {
+                config.default_action = Action::Block;
+                Ok(())
+            })
+            .unwrap();
+        profile.save(&ui, swap).unwrap();
+        profile.save(&ui, swap).unwrap();
+        assert!(ui.get_routing_pending());
     }
 
     #[test]
@@ -276,6 +316,7 @@ mod tests {
         let ui = window();
         let profile = Profile::new();
         let (sender, commands) = mpsc::sync_channel(1);
+        acknowledge(&ui, &profile.state, true);
         sender.send(Command::Stop).unwrap();
         wire(&ui, profile.state.clone(), sender);
         profile

@@ -70,6 +70,28 @@ pub(super) fn apply_native_theme(ui: &MainWindow) {
     };
     ui.window()
         .with_winit_window(|window| window.set_theme(Some(theme)));
+    #[cfg(windows)]
+    if let Ok(hwnd) = native_handle(ui) {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DwmSetWindowAttribute,
+        };
+        let color = if ui.get_dark_theme() {
+            let sidebar = ui.get_caption_color();
+            u32::from_le_bytes([sidebar.red(), sidebar.green(), sidebar.blue(), 0])
+        } else {
+            DWMWA_COLOR_DEFAULT
+        };
+        // SAFETY: hwnd belongs to this window, and the attribute expects a COLORREF.
+        // Older Windows versions keep their system caption color.
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CAPTION_COLOR as u32,
+                std::ptr::from_ref(&color).cast(),
+                std::mem::size_of_val(&color) as u32,
+            );
+        }
+    }
 }
 
 fn wire_theme(ui: &MainWindow, path: Option<PathBuf>) {

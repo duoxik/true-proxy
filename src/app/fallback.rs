@@ -39,7 +39,6 @@ pub fn wire(ui: &MainWindow, state: State, path: PathBuf, statuses: Arc<Mutex<pr
 mod tests {
     use super::*;
     use i_slint_backend_testing::{AccessibleRole, ElementHandle};
-    use std::{cell::RefCell, rc::Rc};
     use true_proxy::config::Proxy;
 
     struct Fixture {
@@ -71,7 +70,7 @@ mod tests {
             let path = folder.join("config.json");
             config.save(&path).unwrap();
             Self {
-                state: Rc::new(RefCell::new(config)),
+                state: super::super::ProfileState::new(config),
                 path,
                 folder,
             }
@@ -130,6 +129,7 @@ mod tests {
 
         let running_snapshot = fixture.state.borrow().clone();
         ui.set_active(true);
+        pending::acknowledge(&ui, &fixture.state, true);
         click(&ui, "Edit fallback route");
         let proxy = button(&ui, "Route: Proxy");
         let position = proxy.absolute_position();
