@@ -1157,15 +1157,19 @@ pub fn run() -> Result<()> {
         let state = state.clone();
         let path = path.clone();
         let statuses = statuses.clone();
-        ui.on_move_rule(move |id, direction| {
+        ui.on_move_rule(move |id, offset| {
             if let Some(ui) = weak.upgrade() {
                 report(
                     &ui,
                     pending::persist(&ui, &state, &path, &statuses.lock().unwrap(), |c| {
-                        if let Some(index) = c.rules.iter().position(|r| id == r.id) {
-                            let other = index as i32 + direction;
-                            if other >= 0 && (other as usize) < c.rules.len() {
-                                c.rules.swap(index, other as usize);
+                        if let Some(index) = c.rules.iter().position(|r| id == r.id)
+                            && let Some(destination) = index.checked_add_signed(offset as isize)
+                            && destination < c.rules.len()
+                        {
+                            if destination < index {
+                                c.rules[destination..=index].rotate_right(1);
+                            } else if destination > index {
+                                c.rules[index..=destination].rotate_left(1);
                             }
                         }
                         Ok(())

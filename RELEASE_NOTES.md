@@ -1,10 +1,9 @@
-True Proxy 0.12.0
+True Proxy 0.12.1
 
-- Settings → General → Appearance switches between Light and Dark and remembers the selection. Dark uses charcoal surfaces, lime accents, and a matching palette for the JSON editor.
-- X-RAY Dashboard lists manual and subscription profiles, lets you select a profile, and links to Profiles.
-- Proxy now includes Connections and Logs. The X-RAY group follows Proxy, with System below it.
-- Removed page subtitles and the Xray Connections footer and listening banner.
+- Routing Rules now uses one table with numbered priorities, route badges, and aligned switches and row menus.
+- Drag custom rules to change their priority, or use the move commands in the row menu. Local and Fallback stay in place and remain editable.
+- The dark theme uses the updated charcoal and lime palette. Add Rule has an outlined button with a lime plus.
 
 Windows x64. WinDivert is bundled in the executable. The interception backend is experimental.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.0/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.1/docs/branding/slint-badge.png)](https://slint.dev)

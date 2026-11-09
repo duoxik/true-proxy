@@ -674,28 +674,30 @@ mod ui_tests {
             ["Edit local network"],
             "The local route must only expose CIDR editing"
         );
-        for label in ["Rule Local", "Delete local rule"] {
-            let control = labels
-                .iter()
-                .find(|element| element.accessible_label().as_deref() == Some(label))
-                .unwrap();
-            assert_eq!(control.accessible_enabled(), Some(false));
-        }
+        let local_switch = labels
+            .iter()
+            .find(|element| element.accessible_label().as_deref() == Some("Rule Local"))
+            .unwrap();
+        assert_eq!(local_switch.accessible_enabled(), Some(false));
         assert!(!labels.iter().any(|element| {
             element
                 .accessible_label()
                 .is_some_and(|label| label.starts_with("Move local rule"))
         }));
 
-        ui.set_rules(slint::ModelRc::new(slint::VecModel::from(vec![
-            crate::RuleRow {
-                id: "game".into(),
-                name: "Game".into(),
-                route: "Direct".into(),
-                enabled: true,
-                priority: 2,
-            },
-        ])));
+        ui.set_rules(slint::ModelRc::new(slint::VecModel::from(
+            ["Game", "Apps", "Other"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| crate::RuleRow {
+                    id: name.into(),
+                    name: name.into(),
+                    route: "Direct".into(),
+                    enabled: true,
+                    priority: index as i32 + 2,
+                })
+                .collect::<Vec<_>>(),
+        )));
         let game = ElementHandle::find_by_accessible_label(&ui, "2. Game")
             .next()
             .unwrap();
@@ -704,6 +706,33 @@ mod ui_tests {
             .unwrap();
         assert!(card.absolute_position().y + card.size().height <= game.absolute_position().y);
         assert!(game.absolute_position().y < fallback.absolute_position().y);
+        let center = |label: &str| {
+            let control = ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap();
+            let position = control.absolute_position();
+            let size = control.size();
+            (position.x + size.width / 2., position.y + size.height / 2.)
+        };
+        let (switch_x, _) = center("Rule Local");
+        let (actions_x, _) = center("Edit local network");
+        for (switch, actions) in [
+            ("Rule Local", "Edit local network"),
+            ("Rule Game", "Actions for rule Game"),
+            ("Rule Fallback", "Edit fallback route"),
+        ] {
+            let (x, y) = center(switch);
+            assert_eq!((x, y), (switch_x, center(actions).1));
+            assert_eq!(center(actions).0, actions_x);
+        }
+
+        let moved = Rc::new(Cell::new(0));
+        let offset = moved.clone();
+        ui.on_move_rule(move |id, direction| {
+            assert_eq!(id, "Game");
+            offset.set(direction);
+        });
+        click(&ui, "Actions for rule Game");
         let first_up = ElementHandle::find_by_accessible_label(&ui, "Move rule up")
             .next()
             .unwrap();
@@ -712,6 +741,28 @@ mod ui_tests {
             Some(false),
             "An ordinary rule cannot move above the fixed route"
         );
+        click(&ui, "Move rule down");
+        assert_eq!(moved.get(), 1, "The menu moves the rule one position");
+
+        let start = slint::LogicalPosition::new(
+            card.absolute_position().x + 28.,
+            game.absolute_position().y + game.size().height / 2.,
+        );
+        let end = slint::LogicalPosition::new(start.x, start.y + card.size().height * 2.);
+        for event in [
+            slint::platform::WindowEvent::PointerPressed {
+                position: start,
+                button: PointerEventButton::Left,
+            },
+            slint::platform::WindowEvent::PointerMoved { position: end },
+            slint::platform::WindowEvent::PointerReleased {
+                position: end,
+                button: PointerEventButton::Left,
+            },
+        ] {
+            ui.window().dispatch_event(event);
+        }
+        assert_eq!(moved.get(), 2, "Dragging moves across multiple positions");
         ui.set_busy(true);
         assert!(
             ElementHandle::find_by_element_id(&ui, "MainWindow::local-network-card")
@@ -765,7 +816,10 @@ mod ui_tests {
         click(&ui, "Rule Game");
         assert_eq!(toggles.get(), 3, "The Dashboard switch edits the same rule");
         click(&ui, "Rules");
-        ui.set_dialog(2);
+        let weak = ui.as_weak();
+        ui.on_add_rule(move || weak.unwrap().set_dialog(2));
+        click(&ui, "Add Routing Rule");
+        assert_eq!(ui.get_dialog(), 2);
         let protocol = ElementHandle::find_by_element_id(&ui, "ThemedComboBox::control")
             .find(|control| control.accessible_value().as_deref() == Some("TCP + UDP"))
             .expect("Protocol selector");

@@ -108,9 +108,10 @@ mod tests {
     fn first_click_and_proxy_hover_save_one_atomic_selection_with_deferred_application() {
         let fixture = Fixture::new(true);
         let ui = fixture.window();
-        assert_eq!(
-            button(&ui, "Delete fallback rule").accessible_enabled(),
-            Some(false)
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Delete fallback rule")
+                .next()
+                .is_none()
         );
         click(&ui, "Edit fallback route");
         click(&ui, "Route: Block");

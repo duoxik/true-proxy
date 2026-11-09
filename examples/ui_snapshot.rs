@@ -347,6 +347,8 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     xray_previews(&ui, &main_adapter, &destination)?;
     ui.set_dark_theme(true);
+    ui.set_page(1);
+    save(&main_adapter, &destination.join("routes-dark.png"))?;
     ui.set_page(0);
     save(&main_adapter, &destination.join("dashboard-dark.png"))?;
     ui.set_page(3);

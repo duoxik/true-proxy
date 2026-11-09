@@ -276,8 +276,13 @@ mod tests {
     fn session_uptime_uses_start_instant_and_resets_at_stop() {
         let stats = Statistics::default();
         assert_eq!(stats.uptime(), Duration::ZERO);
-        *stats.routing_started.lock().unwrap() = Some(Instant::now() - Duration::from_secs(3723));
-        assert_eq!(stats.uptime().as_secs(), 3723);
+        let start = Instant::now()
+            .checked_sub(Duration::from_millis(100))
+            .unwrap_or_else(Instant::now);
+        *stats.routing_started.lock().unwrap() = Some(start);
+        let min_elapsed = start.elapsed();
+        let elapsed = stats.uptime();
+        assert!((min_elapsed..=start.elapsed()).contains(&elapsed));
         stats.routing_active(false);
         assert_eq!(stats.uptime(), Duration::ZERO);
         stats.routing_active(true);

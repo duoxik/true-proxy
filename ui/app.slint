@@ -16,7 +16,7 @@ component NavItem inherits Rectangle {
     in property <string> icon;
     in property <bool> selected;
     callback clicked;
-    height: 40px;
+    height: 35px;
     border-radius: Theme.radius-small;
     background: root.selected ? Theme.accent-soft : touch.has-hover ? Theme.surface-hover : transparent;
     HorizontalLayout {
@@ -30,7 +30,7 @@ component NavItem inherits Rectangle {
             text: root.label;
             font-size: 13px;
             font-weight: root.selected ? 600 : 400;
-            color: root.selected ? Theme.accent : Theme.secondary;
+            color: root.selected ? Theme.accent : Theme.text;
             vertical-alignment: center;
             accessible-role: none;
         }
@@ -163,13 +163,13 @@ component FallbackSelector inherits ActionButton {
     property <bool> proxy-open: false;
     callback selected(int, string);
     label: "Edit fallback route";
-    icon: "edit";
+    icon: "more";
     icon-only: true;
-    height: 36px;
+    quiet: true;
     accessible-expanded: menu.is-open;
     clicked => { root.proxy-open = false; menu.show(); }
     function choose-route(kind: int, proxy-id: string) { if root.enabled { root.selected(kind, proxy-id); } menu.close(); }
-    menu := PopupWindow { x: root.width - self.width; y: -self.height - 6px; width: 260px; height: max(126px, min(root.proxies.length, 7) * 38px + 12px);
+    menu := PopupWindow { x: root.width - self.width; y: root.absolute-position.y >= self.height + 6px ? -self.height - 6px : root.height + 6px; width: 260px; height: max(126px, min(root.proxies.length, 7) * 38px + 12px);
         close-policy: close-on-click-outside;
         forward-focus: menu-focus;
         menu-focus := FocusScope {
@@ -322,68 +322,179 @@ component RouteBadge inherits Rectangle {
     in property <string> value;
     in property <string> icon;
     in property <bool> compact;
-    private property <color> ink: root.value == "Direct" ? Theme.success : root.value == "Block" ? Theme.danger : Theme.accent;
+    in property <bool> neutral;
+    private property <color> ink: root.neutral ? Theme.text : root.value == "Direct" ? Theme.success : root.value == "Block" ? Theme.danger : Theme.accent;
     width: root.compact ? min(210px, badge-text.preferred-width + 16px) : 132px;
     height: 26px;
-    border-radius: Theme.radius-small;
-    background: root.value == "Direct" ? Theme.success-soft : root.value == "Block" ? Theme.danger-soft : Theme.accent-soft;
+    border-radius: root.neutral ? self.height / 2 : Theme.radius-small;
+    background: root.neutral ? Theme.neutral-badge : root.value == "Direct" ? Theme.success-soft : root.value == "Block" ? Theme.danger-soft : Theme.accent-soft;
     if root.icon != "": UiIcon {
-        name: root.icon; ink: root.ink; x: 7px; y: (parent.height - self.height) / 2;
+        name: root.icon; ink: root.ink; x: root.neutral ? 11px : 7px; y: (parent.height - self.height) / 2;
         width: 15px; height: 15px;
     }
     badge-text := Text {
-        x: root.icon == "" ? 8px : 24px; width: parent.width - self.x - 8px;
+        x: root.icon == "" ? 8px : root.neutral ? 34px : 24px; width: parent.width - self.x - 8px;
         text: root.value;
         color: root.ink;
-        font-size: 11px;
-        font-weight: 600;
+        font-size: root.neutral ? 12px : 11px;
+        font-weight: root.neutral ? 400 : 600;
         overflow: elide;
-        horizontal-alignment: center;
+        horizontal-alignment: root.neutral ? left : center;
         vertical-alignment: center;
     }
 }
 
-component RulePriority inherits Rectangle {
-    in property <int> number;
-    width: 35px;
-    height: 36px;
-    Rectangle {
-        y: (parent.height - self.height) / 2;
-        height: 30px;
-        border-radius: Theme.radius-small;
-        border-width: 1px;
-        border-color: Theme.selection;
-        background: Theme.accent-soft;
-        Text {
-            text: "#" + root.number; color: Theme.accent; font-size: 12px; font-weight: 700;
-            horizontal-alignment: center; vertical-alignment: center;
+component RuleLine inherits Rectangle {
+    in property <int> priority;
+    in property <string> name;
+    in property <string> route;
+    in property <bool> checked: true;
+    in property <bool> locked;
+    in property <bool> busy;
+    in property <bool> last;
+    in property <bool> draggable;
+    callback toggled;
+    callback moved(int);
+    height: 58px;
+    background: drag.pressed ? Theme.surface-hover : transparent;
+
+    HorizontalLayout {
+        padding-left: 19px;
+        padding-right: 15px;
+        spacing: 16px;
+        Rectangle {
+            width: 35px;
+            UiIcon {
+                name: "grip";
+                ink: root.draggable && !root.busy && drag.has-hover ? Theme.text : Theme.muted;
+                opacity: root.locked ? 0.5 : 1;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+            drag := TouchArea {
+                enabled: root.draggable && !root.busy;
+                mouse-cursor: grab;
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                        let offset = round((self.mouse-y - self.pressed-y) / root.height);
+                        if offset != 0 { root.moved(offset); }
+                    }
+                }
+            }
+        }
+        Rectangle {
+            width: 50px;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                width: 40px;
+                height: 28px;
+                border-radius: 8px;
+                background: Theme.neutral-badge;
+                Text {
+                    text: (root.priority < 10 ? "0" : "") + root.priority;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        HorizontalLayout {
+            min-width: 0px;
+            horizontal-stretch: 1;
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: root.name;
+                accessible-label: root.priority + ". " + root.name;
+                color: root.checked ? Theme.text : Theme.muted;
+                font-size: 15px;
+                font-weight: 600;
+                overflow: elide;
+                min-width: 0px;
+                vertical-alignment: center;
+            }
+            if root.locked: Rectangle {
+                width: 17px;
+                UiIcon { name: "lock"; ink: Theme.muted; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
+            }
+        }
+        Rectangle {
+            width: 176px;
+            RouteBadge {
+                value: root.route;
+                icon: root.route == "Direct" ? "direct" : root.route == "Block" ? "block" : "server";
+                neutral: true;
+                width: 140px;
+                height: 30px;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+        RuleSwitch {
+            label: "Rule " + root.name;
+            width: 54px;
+            height: root.height;
+            track-width: 50px;
+            checked: root.checked;
+            fixed: root.locked;
+            enabled: !root.locked && !root.busy;
+            toggled => { root.toggled(); }
+        }
+        Rectangle {
+            width: 36px;
+            height: root.height;
+            VerticalLayout {
+                alignment: center;
+                @children
+            }
         }
     }
+    if !root.last: Rectangle { height: 1px; y: parent.height - self.height; background: Theme.border; }
 }
 
-component FixedRuleLock inherits Rectangle {
-    width: 24px;
-    UiIcon {
-        name: "lock";
-        ink: Theme.muted;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-    }
-}
+component RuleActions inherits ActionButton {
+    in property <string> rule-name;
+    in property <bool> can-move-up;
+    in property <bool> can-move-down;
+    in property <length> window-height;
+    callback edit;
+    callback remove;
+    callback move(int);
 
-component RuleCard inherits Rectangle {
-    in property <bool> enabled: true;
-    height: content.preferred-height;
-    min-width: 0px;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: root.enabled ? Theme.surface : Theme.field;
-    content := VerticalLayout {
-        padding: 12px;
-        spacing: 9px;
-        alignment: start;
-        @children
+    label: "Actions for rule " + root.rule-name;
+    icon: "more";
+    icon-only: true;
+    quiet: true;
+    accessible-expanded: menu.is-open;
+    clicked => { menu.show(); }
+
+    menu := PopupWindow {
+        width: 156px;
+        height: 148px;
+        x: root.width - self.width;
+        y: root.absolute-position.y + root.height + self.height + 4px <= root.window-height ? root.height + 4px : -self.height - 4px;
+        close-policy: close-on-click-outside;
+        forward-focus: menu-focus;
+        menu-focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { menu.close(); return accept; }
+                return reject;
+            }
+            Rectangle {
+                background: Theme.surface;
+                border-radius: Theme.radius-small;
+                border-color: Theme.border;
+                border-width: 1px;
+                VerticalLayout {
+                    padding: 6px;
+                    RouteChoice { height: 34px; label: "Edit rule"; enabled: root.enabled; clicked => { menu.close(); root.edit(); } }
+                    RouteChoice { height: 34px; label: "Move rule up"; enabled: root.enabled && root.can-move-up; clicked => { menu.close(); root.move(-1); } }
+                    RouteChoice { height: 34px; label: "Move rule down"; enabled: root.enabled && root.can-move-down; clicked => { menu.close(); root.move(1); } }
+                    RouteChoice { height: 34px; label: "Delete rule"; enabled: root.enabled; clicked => { menu.close(); root.remove(); } }
+                }
+            }
+        }
     }
 }
 
@@ -873,35 +984,10 @@ export component MainWindow inherits Window {
         HorizontalLayout {
             spacing: 0px;
             Rectangle {
-                width: 190px;
+                width: 224px;
                 background: Theme.sidebar;
                 VerticalLayout {
                     spacing: 0px;
-                    Rectangle {
-                        height: 66px;
-                        HorizontalLayout {
-                            padding-left: 16px;
-                            padding-right: 12px;
-                            spacing: 8px;
-                            Rectangle {
-                                width: 32px;
-                                Image {
-                                    source: @image-url("../assets/icon.svg");
-                                    width: 32px;
-                                    height: 32px;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-                            Text {
-                                text: "TRUE PROXY";
-                                color: Theme.text;
-                                font-size: 17px;
-                                font-weight: 700;
-                                vertical-alignment: center;
-                            }
-                        }
-                    }
-                    Rectangle { height: 1px; background: Theme.border; }
                     navigation-scroll := ScrollView {
                         min-height: 0px;
                         vertical-stretch: 1;
@@ -909,8 +995,8 @@ export component MainWindow inherits Window {
                         content-width: self.visible-width;
                         content-height: max(self.visible-height, navigation.preferred-height);
                         navigation := VerticalLayout {
-                            padding: 10px;
-                            spacing: 8px;
+                            padding: 16px;
+                            spacing: 15px;
                             alignment: start;
                             SidebarGroup {
                                 title: "PROXY";
@@ -953,11 +1039,18 @@ export component MainWindow inherits Window {
                     }
                     Rectangle { height: 1px; background: Theme.border; }
                     VerticalLayout {
-                        padding: 14px;
-                        spacing: 5px;
+                        padding: 16px;
+                        spacing: 8px;
                         vertical-stretch: 0;
-                        Text { text: root.status; color: root.active ? Theme.success : Theme.secondary; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
-                        Text { text: "Version · v" + root.app-version; color: Theme.muted; font-size: 10px; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            if root.active: Rectangle {
+                                width: 10px;
+                                Rectangle { width: 10px; height: 10px; y: 3px; border-radius: 5px; background: Theme.accent; }
+                            }
+                            Text { text: root.status; color: Theme.text; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
+                        }
+                        Text { text: "v" + root.app-version; color: Theme.muted; font-size: 10px; }
                     }
                 }
             }
@@ -967,7 +1060,35 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 padding: 26px;
                 spacing: 16px;
-                if root.page != 3 && root.page != 6: HorizontalLayout {
+                if root.page == 1: VerticalLayout {
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+                        Text { text: "Proxy"; color: Theme.muted; font-size: 12px; }
+                        Text { text: "/"; color: Theme.muted; font-size: 12px; }
+                        Text { text: "Rules"; color: Theme.text; font-size: 12px; font-weight: 600; accessible-role: none; }
+                    }
+                    HorizontalLayout {
+                        spacing: 14px;
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: "Routing Rules"; color: Theme.text; font-size: 30px; font-weight: 700; }
+                            Text { text: "Define how traffic is routed: directly or through a proxy."; color: Theme.secondary; font-size: 13px; }
+                        }
+                        ActionButton {
+                            label: "Add Rule";
+                            accessible-label: "Add Routing Rule";
+                            icon: "plus";
+                            icon-ink: Theme.accent;
+                            outline: Theme.dark ? Theme.switch-off : Theme.border;
+                            min-width: 122px;
+                            height: 43px;
+                            clicked => { root.add-rule(); }
+                        }
+                    }
+                }
+                if root.page != 1 && root.page != 3 && root.page != 6: HorizontalLayout {
                     height: 44px;
                     spacing: 14px;
                     Text {
@@ -984,15 +1105,14 @@ export component MainWindow inherits Window {
                         width: page-action.min-width;
                         page-action := ActionButton {
                             y: (parent.height - self.height) / 2;
-                            label: root.page == 1 ? "Add Rule" : root.page == 2 ? "Add Proxy" : root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing";
-                            icon: root.page == 1 || root.page == 2 ? "plus" : root.active ? "stop" : "play";
-                            accessible-label: root.page == 1 ? "Add Routing Rule" : root.page == 2 ? "Add Proxy" : "Routing";
+                            label: root.page == 2 ? "Add Proxy" : root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing";
+                            icon: root.page == 2 ? "plus" : root.active ? "stop" : "play";
+                            accessible-label: root.page == 2 ? "Add Proxy" : "Routing";
                             visible: root.page != 4 && root.page != 5;
                             enabled: root.page != 0 || !root.busy;
                             primary: root.page != 0 || !root.active;
                             clicked => {
-                                if root.page == 1 { root.add-rule(); }
-                                else if root.page == 2 { root.add-proxy(); }
+                                if root.page == 2 { root.add-proxy(); }
                                 else { root.toggle(); }
                             }
                         }
@@ -1146,132 +1266,110 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if root.page == 1: Rectangle {
-                    background: Theme.surface;
-                    border-radius: Theme.radius-medium;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    clip: true;
-                    VerticalLayout {
-                        spacing: 0px;
-                        HorizontalLayout {
-                            height: 56px;
-                            padding-left: 14px;
-                            padding-right: 14px;
-                            spacing: 10px;
-                            Text { text: "All Rules"; color: Theme.text; font-size: 15px; font-weight: 600; horizontal-stretch: 0; vertical-alignment: center; }
-                            Rectangle {
-                                width: 36px;
-                                CountPill { value: root.visible-rules.length + 2; width: 36px; y: (parent.height - self.height) / 2; }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                            Rectangle {
-                                width: 206px;
-                                Field {
-                                    y: (parent.height - self.height) / 2;
-                                    height: 34px; field-height: 34px;
-                                    placeholder: "Search rules"; icon: "search"; value <=> root.rule-query;
-                                    edited => { rule-list.content-y = 0px; root.filter-rules(); }
-                                }
-                            }
+                if root.page == 1: VerticalLayout {
+                    spacing: 8px;
+                    padding-top: 26px;
+                    vertical-stretch: 1;
+                    HorizontalLayout {
+                        height: 34px;
+                        spacing: 12px;
+                        Text {
+                            text: (root.visible-rules.length + 2) + " rules";
+                            color: Theme.text;
+                            font-size: 15px;
+                            font-weight: 600;
+                            vertical-alignment: center;
                         }
-                        Rectangle { height: 1px; background: Theme.border; }
-                        rule-list := ScrollView {
-                            horizontal-scrollbar-policy: always-off;
-                            content-width: self.visible-width;
-                            content-height: max(self.visible-height, rules-content.preferred-height);
-                            rules-content := VerticalLayout {
-                                alignment: start;
-                                spacing: 10px;
-                                padding: 14px;
-                                local-network-card := RuleCard {
-                                    HorizontalLayout {
-                                        height: 36px;
-                                        spacing: 8px;
-                                        RulePriority { number: 1; }
-                                        Text { text: "Local"; accessible-label: "1. Local"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
-                                        Rectangle { width: 132px; RouteBadge { value: "Direct"; icon: "direct"; y: (parent.height - self.height) / 2; } }
-                                        RuleSwitch { checked: true; label: "Rule Local"; height: 36px; enabled: false; }
+                        Rectangle { horizontal-stretch: 1; }
+                        Field {
+                            width: 176px;
+                            field-height: 34px;
+                            placeholder: "Search rules";
+                            icon: "search";
+                            value <=> root.rule-query;
+                            edited => { rule-list.content-y = 0px; root.filter-rules(); }
+                        }
+                    }
+                    Rectangle {
+                        min-height: 0px;
+                        vertical-stretch: 1;
+                        Rectangle {
+                            x: 0px;
+                            y: 0px;
+                            width: parent.width;
+                            height: min(parent.height, rules-content.preferred-height + 2px);
+                            background: Theme.sidebar;
+                            border-radius: Theme.radius-medium;
+                            border-width: 1px;
+                            border-color: Theme.border;
+                            clip: true;
+                            rule-list := ScrollView {
+                                x: 1px;
+                                y: 1px;
+                                width: parent.width - 2px;
+                                height: parent.height - 2px;
+                                horizontal-scrollbar-policy: always-off;
+                                content-width: self.visible-width;
+                                content-height: rules-content.preferred-height;
+                                rules-content := VerticalLayout {
+                                    alignment: start;
+                                    spacing: 0px;
+                                    local-network-card := RuleLine {
+                                        priority: 1;
+                                        name: "Local";
+                                        route: "Direct";
+                                        locked: true;
                                         ActionButton {
-                                            label: "Edit local network"; icon: "edit"; icon-only: true;
-                                            height: 36px; enabled: !root.busy;
+                                            label: "Edit local network";
+                                            icon: "more";
+                                            icon-only: true;
+                                            quiet: true;
+                                            enabled: !root.busy;
                                             clicked => { root.edit-local-network(); }
                                         }
-                                        ActionButton { label: "Delete local rule"; icon: "trash"; icon-only: true; height: 36px; enabled: false; }
-                                        FixedRuleLock {}
                                     }
-                                }
-                                if root.rule-query != "" && root.visible-rules.length == 0: Text {
-                                    height: 26px; text: "No matching rules"; color: Theme.muted;
-                                    font-size: 12px; horizontal-alignment: center; vertical-alignment: center;
-                                }
-                                for rule in root.visible-rules: RuleCard {
-                                    enabled: rule.enabled;
-                                    HorizontalLayout {
-                                        height: 36px;
-                                        spacing: 8px;
-                                        RulePriority { number: rule.priority; }
-                                        Text {
-                                            text: rule.name;
-                                            accessible-label: rule.priority + ". " + rule.name;
-                                            color: rule.enabled ? Theme.text : Theme.muted;
-                                            font-weight: 600;
-                                            font-size: 14px;
-                                            vertical-alignment: center;
-                                            overflow: elide;
-                                            min-width: 0px;
-                                            horizontal-stretch: 1;
+                                    if root.rule-query != "" && root.visible-rules.length == 0: Text {
+                                        height: 38px;
+                                        text: "No matching rules";
+                                        color: Theme.muted;
+                                        font-size: 12px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    for rule in root.visible-rules: RuleLine {
+                                        priority: rule.priority;
+                                        name: rule.name;
+                                        route: rule.route;
+                                        checked: rule.enabled;
+                                        busy: root.busy;
+                                        draggable: root.rule-query == "" && root.rules.length > 1;
+                                        toggled => { root.toggle-rule(rule.id); }
+                                        moved(offset) => {
+                                            let bounded = max(2 - rule.priority, min(root.rules.length + 1 - rule.priority, offset));
+                                            if bounded != 0 { root.move-rule(rule.id, bounded); }
                                         }
-                                        Rectangle {
-                                            width: 132px;
-                                            RouteBadge {
-                                                value: rule.route;
-                                                icon: rule.route == "Direct" ? "direct" : rule.route == "Block" ? "block" : "server";
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-                                        RuleSwitch { checked: rule.enabled; label: "Rule " + rule.name; height: 36px; enabled: !root.busy; toggled => { root.toggle-rule(rule.id); } }
-                                        ActionButton { label: "Edit rule " + rule.name; icon: "edit"; icon-only: true; height: 36px; enabled: !root.busy; clicked => { root.edit-rule(rule.id); } }
-                                        ActionButton { label: "Delete rule " + rule.name; icon: "trash"; icon-only: true; height: 36px; enabled: !root.busy; clicked => { root.delete-rule(rule.id); } }
-                                        VerticalLayout {
-                                            spacing: 2px;
-                                            ActionButton {
-                                                label: "Move rule up"; icon: "chevron-up"; icon-only: true;
-                                                min-width: 24px; max-width: 24px; height: 17px;
-                                                enabled: !root.busy && rule.priority > 2;
-                                                clicked => { root.move-rule(rule.id, -1); }
-                                            }
-                                            ActionButton {
-                                                label: "Move rule down"; icon: "chevron-down"; icon-only: true;
-                                                min-width: 24px; max-width: 24px; height: 17px;
-                                                enabled: !root.busy && rule.priority < root.rules.length + 1;
-                                                clicked => { root.move-rule(rule.id, 1); }
-                                            }
+                                        RuleActions {
+                                            rule-name: rule.name;
+                                            enabled: !root.busy;
+                                            can-move-up: rule.priority > 2;
+                                            can-move-down: rule.priority < root.rules.length + 1;
+                                            window-height: root.height;
+                                            edit => { root.edit-rule(rule.id); }
+                                            remove => { root.delete-rule(rule.id); }
+                                            move(offset) => { root.move-rule(rule.id, offset); }
                                         }
                                     }
-                                }
-                                fallback-card := RuleCard {
-                                    HorizontalLayout {
-                                        height: 36px;
-                                        spacing: 8px;
-                                        RulePriority { number: root.rules.length + 2; }
-                                        Text { text: "Fallback"; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
-                                        Rectangle {
-                                            width: 132px;
-                                            RouteBadge {
-                                                value: root.fallback-label;
-                                                icon: root.fallback-label == "Direct" ? "direct" : root.fallback-label == "Block" ? "block" : "server";
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-                                        RuleSwitch { checked: true; label: "Rule Fallback"; height: 36px; enabled: false; }
+                                    fallback-card := RuleLine {
+                                        priority: root.rules.length + 2;
+                                        name: "Fallback";
+                                        route: root.fallback-label;
+                                        locked: true;
+                                        last: true;
                                         fallback-selector := FallbackSelector {
                                             proxies: root.proxies;
                                             enabled: !root.busy;
                                             selected(kind, proxy-id) => { root.select-fallback(kind, proxy-id); }
                                         }
-                                        ActionButton { label: "Delete fallback rule"; icon: "trash"; icon-only: true; height: 36px; enabled: false; }
-                                        FixedRuleLock {}
                                     }
                                 }
                             }
