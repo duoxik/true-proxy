@@ -4,7 +4,7 @@ mod fallback;
 mod json_highlight;
 mod logs;
 mod pending;
-mod preview;
+pub(crate) mod preview;
 mod proxies;
 mod routing;
 mod rules_list;
@@ -243,7 +243,7 @@ fn wire_window_statistics(
         let passive_sender = passive_source.as_ref().map(|(_, sender)| sender.clone());
         ui.on_suspend_connection_observation(move || {
             timer.stop();
-            dashboard_traffic.reset();
+            dashboard_traffic.suspend();
             if let Some(ui) = weak.upgrade() {
                 let was_tracking = statistics.activity.tracking();
                 activity::suspend_tracking(&ui, &statistics);
@@ -267,9 +267,7 @@ fn wire_window_statistics(
                 return;
             }
             let page = ui.get_page();
-            if page != 0 {
-                dashboard_traffic.reset();
-            }
+            let recording_traffic = dashboard_traffic.observe(&statistics, page == 0);
             if page != 3 && statistics.activity.tracking() {
                 activity::suspend_tracking(&ui, &statistics);
                 if let Some((_, sender)) = &passive_source {
@@ -279,7 +277,7 @@ fn wire_window_statistics(
             match page {
                 0 => {
                     ui.set_uptime(uptime(statistics.uptime()).into());
-                    dashboard_traffic.refresh(&ui, &statistics);
+                    dashboard_traffic.render(&ui, &statistics);
                     ui.set_connection_count(
                         statistics
                             .connections
@@ -318,8 +316,10 @@ fn wire_window_statistics(
                 5 => log_view.render(&ui, &statistics),
                 6 => ui.global::<XrayModule>().invoke_refresh_activity(),
                 _ => {
-                    timer.stop();
-                    return;
+                    if !recording_traffic {
+                        timer.stop();
+                        return;
+                    }
                 }
             }
             if !timer.running() {
@@ -594,6 +594,8 @@ pub fn run() -> Result<()> {
         Some("dashboard") => 0,
         Some("logs") => 5,
         Some("rules") => 1,
+        Some("xray") => 6,
+        Some("settings") => 4,
         _ => 2,
     };
     let diagnostic_preview = arguments
@@ -678,6 +680,7 @@ pub fn run() -> Result<()> {
         remember_routing(&state, &path, false)?;
     }
     let ui = MainWindow::new()?;
+    ui.set_local_build(cfg!(debug_assertions));
     if interactive_preview {
         ui.set_preview_ui(true);
         ui.set_page(preview_page);
@@ -1247,6 +1250,9 @@ pub fn run() -> Result<()> {
     let automatic_probes = preview
         .is_none()
         .then(|| proxies::wire_automatic(&ui, state.clone(), statuses));
+    if interactive_preview {
+        preview::populate_xray(&ui);
+    }
     if interactive_preview || !arguments.iter().any(|argument| argument == "--tray") {
         show_main_window(&ui)?;
     }
@@ -1257,6 +1263,19 @@ pub fn run() -> Result<()> {
         } else {
             smoke_ui(&ui, &tray, &preview_timer, dir, stats.clone());
         }
+    }
+    #[cfg(windows)]
+    if let Some(name) = arguments
+        .iter()
+        .position(|arg| arg == "--update-health")
+        .and_then(|index| arguments.get(index + 1))
+        .cloned()
+    {
+        // A successful spawn is insufficient: acknowledge only from the running
+        // UI event loop after normal initialization, not from main/diagnostics.
+        slint::Timer::single_shot(Duration::from_secs(1), move || {
+            let _ = platform::windows::update::confirm_health(&name);
+        });
     }
     let result = slint::run_event_loop_until_quit();
     drop(automatic_probes);
@@ -1574,7 +1593,10 @@ mod tests {
         main.set_page(2);
         i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(1));
         assert!(main.window().is_visible() && !statistics.activity.tracking());
-        assert!(!timer.running() && statistics.activity.snapshots().is_empty());
+        assert!(statistics.activity.snapshots().is_empty());
+        // Connection history stops immediately, while the recently opened
+        // Dashboard keeps sampling its bounded traffic graph for two minutes.
+        assert!(timer.running());
         assert_eq!(record.status(), true_proxy::connections::Status::Active);
         click_connections();
         assert!(statistics.activity.tracking());

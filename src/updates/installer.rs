@@ -28,8 +28,10 @@ fn copy_new(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Called only while routing is paused. The helper confirms preparation before
-/// the UI exits; a failed download/copy therefore leaves the old app running.
+/// Prepare while the current routing session continues. Only after the helper
+/// is ready does the UI exit and join its routing worker. The helper waits for
+/// that process to terminate before replacing the EXE; the saved routing state
+/// is preserved, so the new process restores enabled routing normally.
 pub fn prepare(staged: &Staged) -> Result<()> {
     verify_file(&staged.payload(), &staged.release.sha256)?;
     validate_pe(&staged.payload())?;
@@ -174,7 +176,19 @@ fn apply_inner(
         parent.wait()?;
         verify_file(&replacement, digest)?;
         replace_and_launch(&parent.image, &replacement, &backup, &old_hash, |target| {
-            update::spawn_hidden(target, &[])?;
+            let health = update::HealthEvent::create()?;
+            let mut child = update::spawn_hidden(
+                target,
+                &[OsString::from("--update-health"), health.name().into()],
+            )?;
+            if let Err(error) = health.wait(&mut child) {
+                // Stop only the process we just launched before restoring its EXE.
+                if child.try_wait()?.is_none() {
+                    child.kill()?;
+                }
+                child.wait()?;
+                return Err(error);
+            }
             Ok(())
         })
     })();

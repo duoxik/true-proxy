@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, ActionButton, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, SectionHeading, ActionButton, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
 
 export struct XrayProfileRow { id: string, name: string, summary: string, active: bool }
@@ -9,6 +9,9 @@ export struct XrayConnectionRow { time: string, protocol: string, destination: s
 
 export global XrayModule {
     in property <bool> installed;
+    in property <bool> hpwnr-installed;
+    in-out property <bool> hpwnr-required;
+    in property <string> hpwnr-error;
     in property <bool> busy;
     in property <bool> running;
     in property <bool> pending;
@@ -25,6 +28,7 @@ export global XrayModule {
     in property <string> upload: "0";
     in property <string> download: "0";
     in property <[XrayProfileRow]> profiles;
+    in property <XrayProfileRow> selected-profile;
     in property <[XraySubscriptionGroup]> subscriptions;
     in-out property <string> profile-input;
     in-out property <string> port: "2081";
@@ -60,6 +64,9 @@ export global XrayModule {
     callback toggle;
     callback restart;
     callback import-profile(string);
+    callback install-hpwnr;
+    callback confirm-hpwnr;
+    callback cancel-hpwnr;
     callback refresh-subscription(string);
     callback activate-profile(string);
     callback remove-profile(string);
@@ -86,25 +93,7 @@ component XrayNote inherits Text {
     height: self.preferred-height;
 }
 
-component XrayCard inherits Rectangle {
-    in property <string> title;
-    in property <string> caption;
-    min-width: 0px;
-    height: content.preferred-height;
-    vertical-stretch: 0;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.surface;
-    content := VerticalLayout {
-        padding: 16px;
-        spacing: 10px;
-        alignment: start;
-        if root.title != "": Text { text: root.title; font-size: 16px; font-weight: 600; color: Theme.text; }
-        if root.caption != "": XrayNote { text: root.caption; }
-        @children
-    }
-}
+component XrayCard inherits FormCard {}
 
 component XrayNotice inherits Rectangle {
     in property <string> message;
@@ -122,7 +111,7 @@ component XrayNotice inherits Rectangle {
 
 export component XrayModuleCard inherits XrayCard {
     callback open;
-    title: "Xray-core";
+    title: "Xray-core"; icon: "boxes";
     caption: "Adds a managed local SOCKS5 listener and VLESS profiles. The Xray-core executable is downloaded separately.";
     HorizontalLayout {
         spacing: 8px;
@@ -170,36 +159,28 @@ export component XrayModuleCard inherits XrayCard {
     if XrayModule.module-error != "": XrayNotice { message: XrayModule.module-error; error: true; }
 }
 
-component XrayMetric inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    in property <color> ink: Theme.accent;
-    min-width: 0px;
-    height: 76px;
-    horizontal-stretch: 1;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.surface;
-    Rectangle { x: 1px; y: 16px; width: 3px; height: parent.height - 32px; background: root.ink; border-radius: 2px; }
-    VerticalLayout {
-        padding: 12px;
-        padding-left: 15px;
-        alignment: center;
-        spacing: 4px;
-        Text { text: root.label; font-size: 10px; font-weight: 600; color: Theme.muted; overflow: elide; }
-        Text { text: root.value; font-size: 22px; font-weight: 600; color: Theme.text; overflow: elide; }
+export component HpwnrModuleCard inherits XrayCard {
+    title: "hpwnr"; icon: "lock";
+    caption: "Imports encrypted v2RayTun links. Decryption runs locally; the module is downloaded separately.";
+    HorizontalLayout { spacing: 12px; alignment: start;
+        if !XrayModule.hpwnr-installed: ActionButton {
+            label: "Install hpwnr"; icon: "download"; primary: true;
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.install-hpwnr(); }
+        }
+        Text { text: XrayModule.hpwnr-installed ? "Installed · v1.0.3" : "Not installed · v1.0.3"; color: XrayModule.hpwnr-installed ? Theme.success : Theme.secondary; font-size: 12px; vertical-alignment: center; }
     }
+    if XrayModule.hpwnr-error != "": XrayNotice { message: XrayModule.hpwnr-error; error: true; }
 }
 
 component XrayProfileItem inherits Rectangle {
     in property <XrayProfileRow> profile;
     in property <bool> compact;
-    height: root.compact ? 42px : 54px;
+    height: 54px;
     border-radius: Theme.radius-small;
     border-width: 1px;
     border-color: Theme.border;
-    background: root.profile.active ? Theme.accent-soft : Theme.field;
+    background: root.profile.active ? Theme.surface-hover : Theme.field;
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 8px;
@@ -243,70 +224,82 @@ component XrayProfileItem inherits Rectangle {
     }
 }
 
+component XrayDetail inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    height: 24px;
+    spacing: 12px;
+    Text { text: root.label; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+    Text { text: root.value; color: Theme.text; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-alignment: right; }
+}
+
 component XrayDashboard inherits VerticalLayout {
     callback open-profiles;
+    callback open-general;
     private property <bool> has-profiles: XrayModule.profiles.length > 0 || XrayModule.subscriptions.length > 0;
     alignment: start;
-    spacing: 12px;
+    spacing: 20px;
     HorizontalLayout {
-        height: 76px;
-        spacing: 10px;
-        XrayMetric { label: "ACCEPTED"; value: "" + XrayModule.connection-count; }
-        XrayMetric { label: "VLESS"; value: XrayModule.upload; ink: Theme.primary; }
-        XrayMetric { label: "DIRECT"; value: XrayModule.download; ink: Theme.success; }
-        XrayMetric { label: "UPTIME"; value: XrayModule.uptime; ink: Theme.blue; }
+        height: 70px; spacing: 20px;
+        SessionCard {
+            active: XrayModule.running;
+            error: XrayModule.error != "";
+            status: XrayModule.error != "" ? "Xray error" : XrayModule.running ? "Xray running" : XrayModule.busy ? "Working…" : "Xray stopped";
+            uptime: XrayModule.uptime;
+        }
+        MetricCard { value: XrayModule.connection-count; label: "Accepted events"; }
+        MetricCard { value: XrayModule.upload; label: "VLESS events"; }
+        MetricCard { value: XrayModule.download; label: "Direct events"; }
     }
-    XrayCard {
-        title: "Local SOCKS5";
-        caption: "Xray exposes a local SOCKS5 listener for the active profile.";
-        HorizontalLayout {
-            spacing: 10px;
-            alignment: start;
-            Text {
-                text: "127.0.0.1:" + XrayModule.listener-port;
-                font-family: "Consolas";
-                font-size: 14px;
-                color: Theme.text;
-                vertical-alignment: center;
+    HorizontalLayout {
+        spacing: 24px;
+        SurfaceCard {
+            preferred-width: 0px; horizontal-stretch: 1.2; height: 224px;
+            VerticalLayout { padding: 18px; spacing: 10px; alignment: start;
+                SectionHeading { title: "Selected profile"; action-label: "Change"; action-accessibility: "Change selected profile"; open => { root.open-profiles(); } }
+                HorizontalLayout { height: 66px; spacing: 16px;
+                    Rectangle { width: 48px;
+                        Rectangle { height: 48px; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.neutral-badge;
+                            UiIcon { name: "server"; ink: Theme.accent; x: 12px; y: 12px; width: 24px; height: 24px; }
+                        }
+                    }
+                    VerticalLayout { spacing: 4px; alignment: center; min-width: 0px;
+                        Text { text: XrayModule.selected-profile.id == "" ? "No profile selected" : XrayModule.selected-profile.name; color: Theme.text; font-size: 20px; font-weight: 600; min-width: 0px; overflow: elide; }
+                        Text { text: XrayModule.selected-profile.id == "" ? "Choose a profile to configure the tunnel." : XrayModule.selected-profile.summary; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.border; }
+                XrayDetail { label: "Xray-core"; value: XrayModule.version == "" ? "Not installed" : XrayModule.version; }
+                XrayDetail { label: "Configuration"; value: XrayModule.settings-error != "" ? "Review settings" : XrayModule.pending ? "Pending restart" : XrayModule.selected-profile.id == "" ? "Choose a profile" : XrayModule.running ? "Applied" : "Saved"; }
             }
-            Text {
-                text: XrayModule.running ? "Running" : "Stopped";
-                font-size: 12px;
-                color: XrayModule.running ? Theme.success : Theme.muted;
-                vertical-alignment: center;
+        }
+        SurfaceCard {
+            preferred-width: 0px; horizontal-stretch: 1; height: 224px;
+            VerticalLayout { padding: 18px; spacing: 10px; alignment: start;
+                SectionHeading { title: "Local SOCKS5"; action-label: "Settings"; action-accessibility: "Local SOCKS settings"; open => { root.open-general(); } }
+                VerticalLayout { height: 66px; alignment: center; spacing: 8px;
+                    Text { text: "127.0.0.1:" + XrayModule.listener-port; color: Theme.text; font-family: "Consolas"; font-size: 24px; font-weight: 600; height: 36px; vertical-alignment: center; min-width: 0px; overflow: elide; }
+                    Text { text: "Use this listener in your proxy routing rules."; color: Theme.secondary; font-size: 12px; height: 16px; min-width: 0px; overflow: elide; }
+                }
+                Rectangle { height: 1px; background: Theme.border; }
+                XrayDetail { label: "Listener"; value: XrayModule.running ? "Running" : "Stopped"; }
+                XrayDetail { label: "Tunnel DNS"; value: XrayModule.dns; }
             }
         }
     }
-    XrayCard {
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: "Available Profiles";
-                font-size: 16px;
-                font-weight: 600;
-                color: Theme.text;
-                min-width: 0px;
-                overflow: elide;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
+    SurfaceCard {
+        height: profile-list.preferred-height;
+        profile-list := VerticalLayout {
+            padding: 18px; spacing: 10px; alignment: start;
+            SectionHeading { title: "Profiles"; action-accessibility: "Open Profiles"; open => { root.open-profiles(); } }
+            if !root.has-profiles: XrayNote { text: "Import a VLESS profile or subscription to get started."; height: 48px; vertical-alignment: center; }
+            if XrayModule.profiles.length > 0: VerticalLayout { spacing: 6px; alignment: start;
+                Text { text: "Manual profiles"; color: Theme.secondary; font-size: 12px; height: 22px; vertical-alignment: center; }
+                for row in XrayModule.profiles: XrayProfileItem { profile: row; compact: true; }
             }
-            ActionButton {
-                label: "Open Profiles";
-                icon: "arrow-right";
-                height: 32px;
-                clicked => { root.open-profiles(); }
-            }
-        }
-        if !root.has-profiles: XrayNote {
-            text: "No profiles imported.";
-        }
-        if root.has-profiles: VerticalLayout {
-            spacing: 6px;
-            alignment: start;
-            for row in XrayModule.profiles: XrayProfileItem { profile: row; compact: true; }
             for group in XrayModule.subscriptions: VerticalLayout {
-                spacing: 6px;
-                alignment: start;
+                spacing: 6px; alignment: start;
+                Text { text: group.name; color: Theme.secondary; font-size: 12px; height: 22px; vertical-alignment: center; }
                 for row in group.profiles: XrayProfileItem { profile: row; compact: true; }
             }
         }
@@ -317,11 +310,11 @@ component XrayProfiles inherits VerticalLayout {
     alignment: start;
     spacing: 12px;
     XrayCard {
-        title: "Import profile";
-        caption: "Paste a VLESS link, an HTTPS subscription, or a v2RayTun link. The first encrypted import downloads hpwnr.";
+        title: "Import profile"; icon: "link";
+        caption: "Paste a VLESS link, an HTTPS subscription, or a v2RayTun link.";
         HorizontalLayout {
             spacing: 8px;
-            Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun link"; secret: true; field-height: 38px; }
+            Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun link"; secret: true; field-height: 40px; }
             ActionButton {
                 label: "Import";
                 icon: "plus";
@@ -330,14 +323,20 @@ component XrayProfiles inherits VerticalLayout {
                 clicked => { XrayModule.import-profile(XrayModule.profile-input); }
             }
         }
+        if XrayModule.hpwnr-required: XrayNotice { message: "This encrypted link requires hpwnr. Install the module and continue importing?"; }
+        if XrayModule.hpwnr-required: HorizontalLayout { spacing: 8px; alignment: start;
+            ActionButton { label: "Install and Import"; icon: "download"; primary: true; enabled: !XrayModule.busy; clicked => { XrayModule.confirm-hpwnr(); } }
+            ActionButton { label: "Cancel"; enabled: !XrayModule.busy; clicked => { XrayModule.cancel-hpwnr(); } }
+        }
+        if XrayModule.hpwnr-error != "": XrayNotice { message: XrayModule.hpwnr-error; error: true; }
     }
     XrayCard {
-        title: "Manual Profiles";
+        title: "Manual Profiles"; icon: "file";
         if XrayModule.profiles.length == 0: XrayNote { text: "No manually imported profiles."; }
         for row in XrayModule.profiles: XrayProfileItem { profile: row; }
     }
     if XrayModule.subscriptions.length == 0: XrayCard {
-        title: "Subscriptions";
+        title: "Subscriptions"; icon: "refresh";
         XrayNote { text: "No subscriptions imported."; }
     }
     for group in XrayModule.subscriptions: XrayCard {
@@ -368,7 +367,7 @@ component XrayProfiles inherits VerticalLayout {
 }
 
 component XrayGeneral inherits XrayCard {
-    title: "SOCKS5 listener";
+    title: "SOCKS5 listener"; icon: "network";
     caption: "The listener binds to 127.0.0.1. The default port is 2081.";
     HorizontalLayout {
         alignment: start;
@@ -376,7 +375,7 @@ component XrayGeneral inherits XrayCard {
             width: 144px;
             placeholder: "2081";
             value <=> XrayModule.port;
-            field-height: 38px;
+            field-height: 40px;
             edited => { XrayModule.settings-edited(); }
         }
     }
@@ -386,17 +385,17 @@ component XrayDns inherits VerticalLayout {
     alignment: start;
     spacing: 12px;
     XrayCard {
-        title: "Tunnel DNS";
+        title: "Tunnel DNS"; icon: "globe";
         caption: "Use Default for the VPN server’s usual resolution, or enter IP addresses, TCP DNS URLs, or DNS-over-HTTPS URLs separated by commas.";
         Field {
             value <=> XrayModule.dns;
             placeholder: "Default, tcp://1.1.1.1:53, or https://resolver.example/dns-query";
-            field-height: 38px;
+            field-height: 40px;
             edited => { XrayModule.settings-edited(); }
         }
     }
     XrayCard {
-        title: "VPN server hosts";
+        title: "VPN server hosts"; icon: "server";
         caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original server name (SNI).";
         HorizontalLayout {
             alignment: start;
@@ -547,7 +546,7 @@ component XrayGeoPicker inherits VerticalLayout {
 }
 
 component XrayFallbacks inherits XrayCard {
-    title: "Direct routes";
+    title: "Direct routes"; icon: "route";
     caption: "Xray sends matching traffic directly. Select an entry or press Enter to add a custom tag.";
     HorizontalLayout {
         spacing: 10px;
@@ -620,23 +619,15 @@ component XrayEventLine inherits Rectangle {
     }
 }
 
-component XrayConnections inherits Rectangle {
+component XrayConnections inherits SurfaceCard {
     min-width: 0px;
     min-height: 0px;
     vertical-stretch: 1;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.surface;
     clip: true;
     VerticalLayout {
         padding: 1px;
-        HorizontalLayout {
-            height: 54px;
-            spacing: 8px;
-            padding-left: 14px;
-            padding-right: 14px;
-            Text { text: "Connections"; color: Theme.text; font-weight: 600; font-size: 15px; vertical-alignment: center; }
+        PanelToolbar {
+            Text { text: "Connections"; color: Theme.text; font-weight: 600; font-size: 18px; vertical-alignment: center; }
             Text { text: "" + XrayModule.connections.length + " / " + XrayModule.connection-total; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
             Rectangle { horizontal-stretch: 1; }
             Rectangle {
@@ -664,9 +655,7 @@ component XrayConnections inherits Rectangle {
             }
         }
         Rectangle { height: 1px; background: Theme.border; }
-        Rectangle {
-            height: 32px;
-            background: Theme.field;
+        TableHeading {
             XrayEventLine { x: 0px; width: parent.width - Theme.scroll-gutter; heading: true; }
         }
         Rectangle { height: 1px; background: Theme.border; }
@@ -680,13 +669,9 @@ component XrayConnections inherits Rectangle {
                 padding-right: Theme.scroll-gutter;
                 padding-bottom: 8px;
                 alignment: start;
-                if XrayModule.connections.length == 0: Text {
-                    text: XrayModule.connection-total == 0 ? "No Xray connection events yet." : "No connections match the search.";
-                    height: 60px;
-                    font-size: 12px;
-                    color: Theme.muted;
-                    vertical-alignment: center;
-                    horizontal-alignment: center;
+                if XrayModule.connections.length == 0: EmptyState {
+                    icon: "activity";
+                    title: XrayModule.connection-total == 0 ? "No Xray connection events yet." : "No connections match the search.";
                 }
                 for event[index] in XrayModule.connections: XrayEventLine { entry: event; stripe: mod(index, 2) == 1; }
             }
@@ -695,12 +680,15 @@ component XrayConnections inherits Rectangle {
 }
 
 export component XrayView inherits VerticalLayout {
+    in property <bool> preview-ui;
     min-width: 0px;
     min-height: 0px;
     vertical-stretch: 1;
-    spacing: 12px;
+    spacing: 20px;
     PageHeader {
-        title: "X-RAY";
+        title: ["X-RAY Dashboard", "X-RAY Profiles", "X-RAY General", "X-RAY DNS", "X-RAY Fallbacks", "X-RAY Connections", "X-RAY Logs"][XrayModule.section];
+        subtitle: ["Manage your tunnel, local listener and connection profiles.", "Import profiles and manage your subscriptions.", "Configure the local SOCKS5 listener.", "Manage tunnel resolution and VPN server hosts.", "Choose traffic that bypasses the tunnel.", "Inspect connection events reported by Xray-core.", "Review and filter Xray-core diagnostics."][XrayModule.section];
+        badge: root.preview-ui ? "Sample data" : "";
         action-label: XrayModule.running ? "Stop Xray" : "Start Xray";
         action-icon: XrayModule.running ? "stop" : "play";
         action-enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.settings-saving && XrayModule.settings-error == ""));
@@ -735,6 +723,7 @@ export component XrayView inherits VerticalLayout {
             alignment: start;
             padding-bottom: 12px;
             if XrayModule.section == 0: XrayDashboard {
+                open-general => { settings-scroll.content-y = 0px; XrayModule.section = 2; XrayModule.refresh-activity(); }
                 open-profiles => {
                     settings-scroll.content-y = 0px;
                     XrayModule.section = 1;

@@ -1,34 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+import { PageHeader, SurfaceCard, EmptyState, PanelToolbar, TableHeading, MetricCard, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
 
-component TrafficMetric inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    in property <color> ink;
-    height: 68px;
-    min-width: 0px;
-    preferred-width: 0px;
-    horizontal-stretch: 1;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.surface;
 
-    Rectangle {
-        x: 0px; y: 13px;
-        width: 4px; height: parent.height - 26px;
-        border-radius: 2px;
-        background: root.ink;
-    }
-    VerticalLayout {
-        padding-left: 16px;
-        padding-right: 12px;
-        spacing: 3px;
-        alignment: center;
-        Text { text: root.label; color: Theme.secondary; font-size: 10px; font-weight: 700; min-width: 0px; overflow: elide; }
-        Text { text: root.value; color: Theme.text; font-size: 23px; font-weight: 700; min-width: 0px; overflow: elide; }
-    }
-}
 
 component ConnectionFilterMenu inherits Rectangle {
     in property <string> title;
@@ -333,34 +306,26 @@ export global ConnectionMonitor {
 export component ConnectionsView inherits VerticalLayout {
     in property <bool> preview-ui;
     min-width: 0px;
-    spacing: 10px;
-    PageHeader { title: "Traffic Monitor"; badge: root.preview-ui ? "Sample data" : ""; }
+    spacing: 20px;
+    PageHeader { title: "Traffic Monitor"; subtitle: "Inspect application traffic and routing decisions."; badge: root.preview-ui ? "Sample data" : ""; }
     HorizontalLayout {
-        height: 68px;
-        spacing: 10px;
+        height: 70px;
+        spacing: 16px;
         vertical-stretch: 0;
-        TrafficMetric { label: "ACTIVE CONNECTIONS"; value: ConnectionMonitor.active-connection-count; ink: Theme.accent; }
-        TrafficMetric { label: "TOTAL SENT"; value: ConnectionMonitor.total-sent; ink: Theme.success; }
-        TrafficMetric { label: "TOTAL RECEIVED"; value: ConnectionMonitor.total-received; ink: Theme.blue; }
-        TrafficMetric { label: "TOTAL TRAFFIC"; value: ConnectionMonitor.total-traffic; ink: Theme.primary; }
+        MetricCard { label: "Active connections"; value: ConnectionMonitor.active-connection-count; }
+        MetricCard { label: "Total sent"; value: ConnectionMonitor.total-sent; }
+        MetricCard { label: "Total received"; value: ConnectionMonitor.total-received; }
+        MetricCard { label: "Total traffic"; value: ConnectionMonitor.total-traffic; }
     }
-    Rectangle {
+    SurfaceCard {
         vertical-stretch: 1;
-        border-radius: Theme.radius-medium;
-        border-width: 1px;
-        border-color: Theme.border;
-        background: Theme.surface;
         clip: true;
 
         VerticalLayout {
             padding: 1px;
-            HorizontalLayout {
-                height: 54px;
-                padding-left: 14px;
-                padding-right: 14px;
-                spacing: 8px;
+            PanelToolbar {
 
-                Text { text: "Connections"; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
+                Text { text: "Connections"; color: Theme.text; font-size: 18px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
                 Rectangle {
                     width: max(25px, count-label.preferred-width + 12px);
                     Rectangle {
@@ -415,9 +380,7 @@ export component ConnectionsView inherits VerticalLayout {
                 }
             }
             Rectangle { height: 1px; background: Theme.border; }
-            Rectangle {
-                height: 32px;
-                background: Theme.field;
+            TableHeading {
                 JournalLine {
                     x: 0px;
                     width: parent.width - Theme.scroll-gutter;
@@ -441,15 +404,9 @@ export component ConnectionsView inherits VerticalLayout {
                     padding-right: Theme.scroll-gutter;
                     padding-bottom: 8px;
                     alignment: start;
-                    if ConnectionMonitor.process-summaries.length == 0: Rectangle {
-                        height: 66px;
-                        Text {
-                            text: ConnectionMonitor.connection-event-count == 0 ? "No connections observed yet." : "No connections match these filters.";
-                            color: Theme.muted;
-                            font-size: 12px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
-                        }
+                    if ConnectionMonitor.process-summaries.length == 0: EmptyState {
+                        icon: "activity";
+                        title: ConnectionMonitor.connection-event-count == 0 ? "No connections observed yet." : "No connections match these filters.";
                     }
                     for process[index] in ConnectionMonitor.process-summaries: JournalGroup {
                         process: process;

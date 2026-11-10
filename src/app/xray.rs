@@ -26,6 +26,7 @@ enum Command {
     Toggle,
     Restart,
     Import(String),
+    InstallHpwnr(Option<String>),
     RefreshSubscription(String),
     Activate(String),
     Remove(String),
@@ -143,6 +144,7 @@ struct Controller {
     settings_path: PathBuf,
     settings: Settings,
     installed: Option<Installed>,
+    hpwnr_installed: bool,
     latest: Option<Release>,
     runtime: Option<Runtime>,
     runtime_geo: Option<PathBuf>,
@@ -167,6 +169,7 @@ impl Controller {
         let settings = Settings::load(&settings_path)?;
         activity.set_recording(settings.log_recording);
         let installed = assets::installed(&directory)?;
+        let hpwnr_installed = assets::installed_hpwnr(&directory).ok().flatten().is_some();
         let status = if installed.is_some() {
             "Stopped"
         } else {
@@ -178,6 +181,7 @@ impl Controller {
             settings_path,
             settings,
             installed,
+            hpwnr_installed,
             latest: None,
             runtime: None,
             runtime_geo: None,
@@ -236,6 +240,13 @@ impl Controller {
 
     fn perform(&mut self, command: Command) -> Result<()> {
         match command {
+            Command::InstallHpwnr(import) => {
+                assets::hpwnr(&self.directory)?;
+                self.hpwnr_installed = true;
+                if let Some(input) = import {
+                    self.perform(Command::Import(input))?;
+                }
+            }
             Command::Install | Command::InstallUpdate => {
                 ensure!(
                     self.runtime.is_none(),
@@ -513,6 +524,7 @@ struct View {
     listener_port: u16,
     geo_status: String,
     started: Option<std::time::Instant>,
+    hpwnr_installed: bool,
 }
 
 impl View {
@@ -534,11 +546,13 @@ impl View {
                 .unwrap_or(controller.settings.socks_port),
             geo_status: controller.geo_status.clone(),
             started: controller.runtime.as_ref().map(Runtime::started_at),
+            hpwnr_installed: controller.hpwnr_installed,
         }
     }
 
     fn apply(self, ui: &MainWindow, command_done: bool) {
         let xray = ui.global::<XrayModule>();
+        xray.set_hpwnr_installed(self.hpwnr_installed);
         xray.set_installed(!self.version.is_empty());
         xray.set_version(self.version.into());
         xray.set_latest_version(self.latest.into());
@@ -564,6 +578,7 @@ impl View {
         ));
         let mut manual = Vec::new();
         let mut groups = BTreeMap::<&str, Vec<XrayProfileRow>>::new();
+        let mut selected = XrayProfileRow::default();
         for profile in &self.settings.profiles {
             let row = XrayProfileRow {
                 active: self.settings.active.as_deref() == Some(profile.id.as_str()),
@@ -571,12 +586,16 @@ impl View {
                 name: profile.name.as_str().into(),
                 summary: format!("VLESS · {}:{}", profile.host, profile.port).into(),
             };
+            if row.active {
+                selected = row.clone();
+            }
             if let Some(source) = &profile.subscription {
                 groups.entry(source.as_str()).or_default().push(row);
             } else {
                 manual.push(row);
             }
         }
+        xray.set_selected_profile(selected);
         xray.set_profiles(model(manual));
         xray.set_subscriptions(model(
             self.settings
@@ -598,8 +617,55 @@ impl View {
     }
 }
 
-fn set_error(xray: &XrayModule<'_>, manages_core: bool, error: String) {
-    if manages_core {
+fn wire_import(ui: &MainWindow, send: Rc<dyn Fn(Command)>) {
+    let pending = Rc::new(RefCell::new(None::<String>));
+    let xray = ui.global::<XrayModule>();
+    let weak = ui.as_weak();
+    let request = pending.clone();
+    let import = send.clone();
+    xray.on_import_profile(move |input| {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        if xray.get_busy() {
+            return;
+        }
+        let required = true_proxy::xray::hpwnr::encrypted(&input) && !xray.get_hpwnr_installed();
+        xray.set_hpwnr_required(required);
+        *request.borrow_mut() = required.then(|| input.to_string());
+        if !required {
+            import(Command::Import(input.to_string()));
+        }
+    });
+    let weak = ui.as_weak();
+    let request = pending.clone();
+    xray.on_confirm_hpwnr(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        if xray.get_busy() {
+            return;
+        }
+        xray.set_hpwnr_required(false);
+        if let Some(input) = request.borrow_mut().take() {
+            if xray.get_profile_input() == input {
+                send(Command::InstallHpwnr(Some(input)));
+            } else {
+                xray.set_error("The link changed. Select Import again to continue.".into());
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_cancel_hpwnr(move || {
+        pending.borrow_mut().take();
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<XrayModule>().set_hpwnr_required(false);
+        }
+    });
+}
+
+fn set_error(xray: &XrayModule<'_>, manages_core: bool, hpwnr: bool, error: String) {
+    if hpwnr {
+        xray.set_hpwnr_error(error.into());
+    } else if manages_core {
         xray.set_module_error(error.into());
     } else {
         xray.set_error(error.into());
@@ -657,34 +723,36 @@ fn spawn_worker(
                 } else {
                     Duration::from_secs(60)
                 };
-                let (result, command_done, manages_core, revision) = match receiver
-                    .recv_timeout(interval)
-                {
-                    Ok(command) => {
-                        let catalog_only = matches!(command, Command::LoadGeoTags);
-                        let manages_core = command.manages_core();
-                        let revision = match &command {
-                            Command::SaveDraft(revision, _) => Some(*revision),
-                            _ => None,
-                        };
-                        let error = controller
-                            .perform(command)
-                            .err()
-                            .map_or_else(String::new, |error| error.to_string());
-                        if catalog_only {
-                            let weak = weak.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = weak.upgrade() {
-                                    refresh_geo_suggestions(&ui.global::<XrayModule>());
-                                }
-                            });
-                            continue;
+                let (result, command_done, manages_core, hpwnr, revision) =
+                    match receiver.recv_timeout(interval) {
+                        Ok(command) => {
+                            let catalog_only = matches!(command, Command::LoadGeoTags);
+                            let manages_core = command.manages_core();
+                            let hpwnr = matches!(command, Command::InstallHpwnr(_));
+                            let revision = match &command {
+                                Command::SaveDraft(revision, _) => Some(*revision),
+                                _ => None,
+                            };
+                            let error = controller
+                                .perform(command)
+                                .err()
+                                .map_or_else(String::new, |error| error.to_string());
+                            if catalog_only {
+                                let weak = weak.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = weak.upgrade() {
+                                        refresh_geo_suggestions(&ui.global::<XrayModule>());
+                                    }
+                                });
+                                continue;
+                            }
+                            (Some(error), true, manages_core, hpwnr, revision)
                         }
-                        (Some(error), true, manages_core, revision)
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout) => (controller.poll(), false, false, None),
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                };
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            (controller.poll(), false, false, false, None)
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
                 if let Some(error) = result {
                     let view = View::new(&controller);
                     *started.lock().unwrap() = view.started;
@@ -699,7 +767,7 @@ fn spawn_worker(
                                     xray.set_settings_error(error.into());
                                 }
                             } else {
-                                set_error(&xray, manages_core, error);
+                                set_error(&xray, manages_core, hpwnr, error);
                             }
                             refresh_geo_suggestions(&xray);
                             xray.invoke_refresh_activity();
@@ -771,20 +839,22 @@ pub(super) fn wire(
     let geo_queue = queue.clone();
     wire_geo_editor(ui, geo_catalog, move |command| geo_queue(command));
     let weak = ui.as_weak();
-    let send = Rc::new(move |command: Command| {
+    let send: Rc<dyn Fn(Command)> = Rc::new(move |command: Command| {
         if let Some(ui) = weak.upgrade() {
             let xray = ui.global::<XrayModule>();
             if xray.get_busy() {
                 return;
             }
             let manages_core = command.manages_core();
+            let hpwnr = matches!(command, Command::InstallHpwnr(_));
             if queue(command) {
                 xray.set_busy(true);
-                set_error(&xray, manages_core, String::new());
+                set_error(&xray, manages_core, hpwnr, String::new());
             } else {
                 set_error(
                     &xray,
                     manages_core,
+                    hpwnr,
                     "The Xray module worker is unavailable".into(),
                 );
             }
@@ -807,7 +877,8 @@ pub(super) fn wire(
     bind!(on_restart, Command::Restart);
     bind!(on_refresh_hosts, Command::RefreshHosts);
     bind!(on_refresh_geo, Command::RefreshGeo);
-    bind!(on_import_profile, Command::Import, string);
+    bind!(on_install_hpwnr, Command::InstallHpwnr(None));
+    wire_import(ui, send.clone());
     bind!(
         on_refresh_subscription,
         Command::RefreshSubscription,
@@ -1102,6 +1173,56 @@ fn render_activity(ui: &MainWindow, activity: &Activity, started: Option<std::ti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encrypted_import_requires_confirmation_and_cancel_never_queues_downloads() {
+        use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+        use slint::platform::PointerEventButton;
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        ui.set_page(6);
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let queue = commands.clone();
+        wire_import(
+            &ui,
+            Rc::new(move |command| queue.borrow_mut().push(command)),
+        );
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        xray.set_section(1);
+        ui.show().unwrap();
+        let click = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                .unwrap()
+                .mock_single_click(PointerEventButton::Left)
+        };
+        let encrypted = "v2raytun://crypt/abcd";
+        xray.set_profile_input(encrypted.into());
+        click("Import");
+        assert!(xray.get_hpwnr_required());
+        assert!(commands.borrow().is_empty());
+        click("Cancel");
+        xray.invoke_confirm_hpwnr();
+        assert!(!xray.get_hpwnr_required());
+        assert!(commands.borrow().is_empty());
+        xray.invoke_import_profile(encrypted.into());
+        click("Install and Import");
+        assert!(
+            matches!(commands.borrow_mut().pop(), Some(Command::InstallHpwnr(Some(input))) if input == encrypted)
+        );
+        xray.set_hpwnr_installed(true);
+        xray.invoke_import_profile(encrypted.into());
+        assert!(
+            matches!(commands.borrow_mut().pop(), Some(Command::Import(input)) if input == encrypted)
+        );
+        xray.set_hpwnr_installed(false);
+        xray.invoke_import_profile(encrypted.into());
+        xray.set_profile_input("vless://changed".into());
+        xray.invoke_confirm_hpwnr();
+        assert!(commands.borrow().is_empty());
+    }
 
     #[test]
     fn xray_autosave_preserves_invalid_fields_and_keeps_valid_edits() {

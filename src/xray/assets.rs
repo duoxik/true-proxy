@@ -118,7 +118,7 @@ pub fn latest() -> Result<Release> {
     })
 }
 
-pub(super) fn hpwnr(root: &Path) -> Result<PathBuf> {
+pub fn installed_hpwnr(root: &Path) -> Result<Option<PathBuf>> {
     let target = root.join(HPWNR_FILE);
     match fs::symlink_metadata(&target) {
         Ok(_) => {
@@ -128,18 +128,36 @@ pub(super) fn hpwnr(root: &Path) -> Result<PathBuf> {
                 fs::metadata(&target)?.len() == HPWNR_SIZE,
                 "Invalid hpwnr size"
             );
+            verify_file(&target, HPWNR_SHA256)?;
+            crate::updates::validate_pe(&target)?;
+            Ok(Some(target))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let stage = Stage::new(root, "decoder")?;
-            let binary = stage.path.join(HPWNR_FILE);
-            let size = download_file(HPWNR_URL, Some(true), HPWNR_SIZE, &binary)?;
-            ensure!(size == HPWNR_SIZE, "Invalid hpwnr download size");
-            verify_file(&binary, HPWNR_SHA256)?;
-            crate::updates::validate_pe(&binary)?;
-            fs::rename(binary, &target)?;
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Download only after an explicit module installation request.
+pub fn hpwnr(root: &Path) -> Result<PathBuf> {
+    let target = root.join(HPWNR_FILE);
+    match fs::symlink_metadata(&target) {
+        Ok(_) => {
+            plain_directory(root)?;
+            plain_file(&target)?;
+            if let Ok(Some(installed)) = installed_hpwnr(root) {
+                return Ok(installed);
+            }
         }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
+    let stage = Stage::new(root, "decoder")?;
+    let binary = stage.path.join(HPWNR_FILE);
+    let size = download_file(HPWNR_URL, Some(true), HPWNR_SIZE, &binary)?;
+    ensure!(size == HPWNR_SIZE, "Invalid hpwnr download size");
+    verify_file(&binary, HPWNR_SHA256)?;
+    crate::updates::validate_pe(&binary)?;
+    crate::platform::replace_file(&binary, &target)?;
     Ok(target)
 }
 

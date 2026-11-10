@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { Theme, SurfaceCard, SectionHeading, MetricCard, ActionButton, UiIcon, RuleSwitch, ProxyRow, RuleRow } from "common.slint";
+import { Theme, SurfaceCard, SessionCard, SectionHeading, MetricCard, ActionButton, UiIcon, RuleSwitch, ProxyRow, RuleRow } from "common.slint";
 
 component TrafficLegend inherits HorizontalLayout {
     in property <string> label;
@@ -65,7 +65,10 @@ component ProxySummary inherits SurfaceCard {
         HorizontalLayout {
             spacing: 12px;
             SurfaceCard { preferred-width: 0px; horizontal-stretch: 1; height: 34px; border-radius: 17px; background: Theme.neutral-badge;
-                Text { text: "Latency  " + (root.proxy.health == 3 ? "Failed" : root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "Not tested"); color: root.proxy.health == 3 ? Theme.danger : Theme.secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; min-width: 0px; overflow: elide; }
+                HorizontalLayout { alignment: center; spacing: 6px;
+                    Text { text: "Latency"; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
+                    Text { text: root.proxy.health == 3 ? "-1 ms" : root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "Not tested"; color: root.proxy.health == 3 ? Theme.danger : root.proxy.health == 2 ? Theme.success : Theme.secondary; font-size: 12px; font-weight: 600; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 0; }
+                }
             }
             SurfaceCard { preferred-width: 0px; horizontal-stretch: 1; height: 34px; border-radius: 17px; background: Theme.neutral-badge;
                 HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
@@ -95,6 +98,7 @@ export component DashboardView inherits ScrollView {
     in property <string> download-rate;
     in property <string> upload-path;
     in property <string> download-path;
+    in property <[string]> traffic-scale;
     callback open-proxies;
     callback open-rules;
     callback toggle-rule(string);
@@ -105,14 +109,7 @@ export component DashboardView inherits ScrollView {
         alignment: start; spacing: 20px; padding-right: 3px; padding-bottom: 16px;
         HorizontalLayout {
             height: 70px; spacing: 20px;
-            SurfaceCard {
-                preferred-width: 0px; horizontal-stretch: 1.8;
-                HorizontalLayout { padding: 16px; spacing: 10px;
-                    Rectangle { width: 12px; Rectangle { width: 12px; height: 12px; y: (parent.height - self.height) / 2; border-radius: 6px; background: root.active ? Theme.accent : Theme.warning; } }
-                    Text { text: root.status; color: Theme.text; font-size: 15px; font-weight: 600; min-width: 0px; wrap: word-wrap; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                    Text { text: "Session  " + root.uptime; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
-                }
-            }
+            SessionCard { active: root.active; status: root.status; uptime: root.uptime; }
             MetricCard { value: root.connection-count; label: "Active connections"; }
             MetricCard { value: root.proxies.length; label: root.proxies.length == 1 ? "Proxy configured" : "Proxies configured"; }
             MetricCard { value: root.enabled-rule-count + " / " + root.rules.length; label: "Rules enabled"; }
@@ -126,13 +123,26 @@ export component DashboardView inherits ScrollView {
                     TrafficLegend { label: "Download"; value: root.downloaded + " · " + root.download-rate; ink: Theme.chart-download; }
                     TrafficLegend { label: "Upload"; value: root.uploaded + " · " + root.upload-rate; ink: Theme.chart-upload; }
                 }
-                plot := Rectangle {
-                    clip: true;
-                    for i in 4: Rectangle { y: i * (parent.height - 1px) / 3; height: 1px; background: Theme.border; opacity: 0.45; }
-                    for i in 9: Rectangle { x: i * (parent.width - 1px) / 8; width: 1px; background: Theme.border; opacity: 0.25; }
-                    Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.download-path; stroke: Theme.chart-download; stroke-width: 1.5px; }
-                    Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.upload-path; stroke: Theme.chart-upload; stroke-width: 1.5px; }
-                    if root.download-path == "": Text { text: "Traffic will appear as connections transfer data"; color: Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                HorizontalLayout { spacing: 12px;
+                    Rectangle { width: 66px;
+                        for label[i] in root.traffic-scale: Text {
+                            text: label; color: Theme.muted; font-size: 10px;
+                            height: 14px; width: parent.width;
+                            y: i * (parent.height - self.height) / 3;
+                            horizontal-alignment: right; vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        plot := Rectangle {
+                            y: 7px; height: parent.height - 14px;
+                            clip: true;
+                            for i in 4: Rectangle { y: i * (parent.height - 1px) / 3; height: 1px; background: Theme.border; opacity: 0.45; }
+                            for i in 9: Rectangle { x: i * (parent.width - 1px) / 8; width: 1px; background: Theme.border; opacity: 0.25; }
+                            Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.download-path; stroke: Theme.chart-download; stroke-width: 1.5px; }
+                            Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.upload-path; stroke: Theme.chart-upload; stroke-width: 1.5px; }
+                            if root.download-path == "": Text { text: "Traffic will appear as connections transfer data"; color: Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
                 }
             }
         }

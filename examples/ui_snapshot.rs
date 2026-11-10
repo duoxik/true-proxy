@@ -155,6 +155,12 @@ fn main() -> Result<()> {
     ui.set_downloaded("16.4 MB".into());
     ui.set_upload_rate("24.0 KB/s".into());
     ui.set_download_rate("38.0 KB/s".into());
+    ui.set_traffic_scale(model(vec![
+        "60 KB/s".into(),
+        "40 KB/s".into(),
+        "20 KB/s".into(),
+        "0 B/s".into(),
+    ]));
     ui.set_upload_share(2.1 / (2.1 + 16.4));
     ui.set_has_transfer(true);
     ui.set_connection_count("4".into());
@@ -183,7 +189,7 @@ fn main() -> Result<()> {
             key: "proxy:p".into(),
             name: "VPN".into(),
             address: "192.0.2.10:1080".into(),
-            status: "3 ms".into(),
+            status: "0 ms".into(),
             location: "Frankfurt am Main, DE".into(),
             flag_index: include_str!("../assets/country-flags.txt")
                 .split_ascii_whitespace()
@@ -389,6 +395,48 @@ fn main() -> Result<()> {
         ui.set_page(6);
         save(&main_adapter, &destination.join("xray-dashboard-dark.png"))?;
     }
+    // Recheck the full page family in both themes and at the minimum window size.
+    // These are development fixtures only, never user profile or network state.
+    for dark in [true, false] {
+        ui.set_dark_theme(dark);
+        let theme = if dark { "dark" } else { "light" };
+        for (width, height, size) in [(1240, 780, "normal"), (960, 640, "compact")] {
+            ui.window().set_size(PhysicalSize::new(width, height));
+            for (page, name) in [
+                (0, "dashboard"),
+                (1, "rules"),
+                (2, "proxies"),
+                (3, "connections"),
+                (4, "settings"),
+                (5, "logs"),
+            ] {
+                ui.set_page(page);
+                ui.set_settings_section(0);
+                save(
+                    &main_adapter,
+                    &destination.join(format!("review-{name}-{theme}-{size}.png")),
+                )?;
+            }
+            ui.set_page(4);
+            for section in [1, 2] {
+                ui.set_settings_section(section);
+                save(
+                    &main_adapter,
+                    &destination.join(format!("review-settings-{section}-{theme}-{size}.png")),
+                )?;
+            }
+            ui.set_page(6);
+            let xray = ui.global::<XrayModule>();
+            for section in 0..7 {
+                xray.set_section(section);
+                xray.set_pending(false);
+                save(
+                    &main_adapter,
+                    &destination.join(format!("review-xray-{section}-{theme}-{size}.png")),
+                )?;
+            }
+        }
+    }
     ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());
     Ok(())
@@ -418,6 +466,12 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         summary: "VLESS · vpn.example.test:443".into(),
         active: true,
     }]));
+    xray.set_selected_profile(XrayProfileRow {
+        id: "primary".into(),
+        name: "Primary".into(),
+        summary: "VLESS · vpn.example.test:443".into(),
+        active: true,
+    });
     xray.set_subscriptions(model(vec![XraySubscriptionGroup {
         id: "sample-source".into(),
         name: "Subscription 1".into(),
@@ -513,5 +567,27 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         }
         save(adapter, &destination.join(format!("xray-{name}.png")))?;
     }
+    xray.set_section(1);
+    xray.set_hpwnr_required(true);
+    xray.set_profile_input("v2raytun://crypt/example-fixture".into());
+    save(adapter, &destination.join("hpwnr-import-confirmation.png"))?;
+    xray.set_hpwnr_required(false);
+    xray.set_profile_input("".into());
+    xray.set_hpwnr_installed(true);
+    ui.set_page(4);
+    ui.set_settings_section(2);
+    save(adapter, &destination.join("hpwnr-installed.png"))?;
+    xray.set_hpwnr_installed(false);
+    ui.set_page(0);
+    ui.set_update_available(true);
+    ui.set_update_version("999.0.0".into());
+    ui.set_update_text(
+        "Install and restart automatically. Active proxy connections will close briefly.".into(),
+    );
+    save(
+        adapter,
+        &destination.join("update-while-routing-active.png"),
+    )?;
+    ui.set_update_available(false);
     Ok(())
 }

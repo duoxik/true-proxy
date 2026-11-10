@@ -1,5 +1,5 @@
 import { DashboardView } from "dashboard.slint";
-import { PageHeader, DialogHeader, DialogActions } from "common.slint";
+import { PageHeader, FormCard, SurfaceCard, PanelToolbar, TableHeading, EmptyState, IconLicenseButton, DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
@@ -9,7 +9,7 @@ import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
 import { LogsView, TechnicalLogs } from "logs.slint";
 export { TechnicalLogs }
-import { XrayModule, XrayModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow } from "xray.slint";
+import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow } from "xray.slint";
 export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow }
 
 component NavItem inherits Rectangle {
@@ -556,7 +556,7 @@ component ProxyTableColumns inherits HorizontalLayout {
     Rectangle {
         width: 78px;
         if root.heading: Text { width: parent.width; text: "PROTOCOL"; color: Theme.secondary; font-size: 10px; font-weight: 600; vertical-alignment: center; }
-        if !root.heading: RouteBadge { x: 0px; value: "SOCKS5"; width: 58px; height: 22px; y: (parent.height - self.height) / 2; }
+        if !root.heading: RouteBadge { x: 0px; value: "SOCKS5"; neutral: true; width: 68px; height: 24px; y: (parent.height - self.height) / 2; }
     }
     Text {
         text: root.heading ? "ADDRESS" : root.proxy.address;
@@ -639,7 +639,7 @@ component ProxyTableColumns inherits HorizontalLayout {
 
 export component MainWindow inherits Window {
     icon: @image-url("../assets/icon.svg");
-    title: root.preview-ui ? (root.page == 3 ? "True Proxy · Connections UI Preview" : "True Proxy · UI Preview") : "True Proxy";
+    title: root.preview-ui ? "True Proxy · Local UI Preview" : root.local-build ? "True Proxy · Local build" : "True Proxy";
     preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
     in-out property <bool> dark-theme <=> Theme.dark;
@@ -652,6 +652,7 @@ export component MainWindow inherits Window {
     in-out property <int> page: 0;
     changed page => { root.sync-connection-observation(); }
     in property <bool> preview-ui: false;
+    in property <bool> local-build: false;
     in-out property <int> settings-section: 0;
     in-out property <int> dialog: 0;
     in property <bool> active: false;
@@ -686,6 +687,7 @@ export component MainWindow inherits Window {
     in property <string> download-rate: "0 B/s";
     in property <string> upload-path;
     in property <string> download-path;
+    in property <[string]> traffic-scale: ["3 B/s", "2 B/s", "1 B/s", "0 B/s"];
     in property <float> upload-share: 0;
     in property <bool> has-transfer: false;
     in property <string> connection-count: "0";
@@ -882,7 +884,7 @@ export component MainWindow inherits Window {
                 spacing: 16px;
                 if root.page != 3 && root.page != 6: PageHeader {
                     title: ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
-                    subtitle: root.page == 0 ? "Monitor your proxy traffic and manage rules." : root.page == 1 ? "Define how traffic is routed: directly or through a proxy." : "";
+                    subtitle: root.page == 0 ? "Monitor your proxy traffic and manage rules." : root.page == 1 ? "Define how traffic is routed: directly or through a proxy." : root.page == 2 ? "Manage your SOCKS5 servers and check their availability." : root.page == 4 ? "Personalize True Proxy and manage local configuration." : root.page == 5 ? "Review routing diagnostics and backend activity." : "";
                     action-label: root.page == 0 ? (root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing") : root.page == 1 ? "Add Rule" : root.page == 2 ? "Add Proxy" : "";
                     action-icon: root.page == 0 ? (root.active ? "stop" : "play") : "plus";
                     action-accessibility: root.page == 0 ? "Routing" : root.page == 1 ? "Add Routing Rule" : "Add Proxy";
@@ -916,9 +918,9 @@ export component MainWindow inherits Window {
                             Text { text: root.update-text; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
                         }
                         ActionButton {
-                            label: root.update-busy ? "Please wait…" : root.update-ready ? "Install and Restart" : "Update";
+                            label: root.update-busy ? "Please wait…" : "Install and Restart";
                             primary: true;
-                            enabled: !root.update-busy && (!root.update-ready || (!root.active && !root.busy));
+                            enabled: !root.update-busy && !root.busy;
                             clicked => { root.update-now(); }
                         }
                     }
@@ -940,7 +942,7 @@ export component MainWindow inherits Window {
                     proxies: root.proxies; rules: root.rules; fallback-label: root.fallback-label;
                     uploaded: root.uploaded; downloaded: root.downloaded;
                     upload-rate: root.upload-rate; download-rate: root.download-rate;
-                    upload-path: root.upload-path; download-path: root.download-path;
+                    upload-path: root.upload-path; download-path: root.download-path; traffic-scale: root.traffic-scale;
                     open-proxies => { root.page = 2; }
                     open-rules => { root.page = 1; }
                     toggle-rule(id) => { root.toggle-rule(id); }
@@ -977,8 +979,8 @@ export component MainWindow inherits Window {
                             y: 0px;
                             width: parent.width;
                             height: min(parent.height, rules-content.preferred-height + 2px);
-                            background: Theme.sidebar;
-                            border-radius: Theme.radius-medium;
+                            background: Theme.surface;
+                            border-radius: Theme.radius-large;
                             border-width: 1px;
                             border-color: Theme.border;
                             clip: true;
@@ -1110,20 +1112,12 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if root.page == 2: Rectangle {
-                    border-radius: Theme.radius-medium;
-                    border-width: 1px;
-                    border-color: Theme.border;
-                    background: Theme.surface;
+                if root.page == 2: SurfaceCard {
                     VerticalLayout {
                         padding: 1px;
                         spacing: 0px;
-                        HorizontalLayout {
-                            height: 56px;
-                            padding-left: 16px;
-                            padding-right: 16px;
-                            spacing: 10px;
-                            Text { text: "All Proxies"; color: Theme.text; font-size: 15px; font-weight: 600; width: 78px; vertical-alignment: center; }
+                        PanelToolbar {
+                            Text { text: "All Proxies"; color: Theme.text; font-size: 18px; font-weight: 600; width: 94px; vertical-alignment: center; }
                             Rectangle { width: 24px; CountPill { value: root.visible-proxies.length; width: 24px; y: (parent.height - self.height) / 2; } }
                             Rectangle { horizontal-stretch: 1; }
                             if root.selected-proxy-ids.length > 0: Text {
@@ -1146,42 +1140,17 @@ export component MainWindow inherits Window {
                             }
                             Rectangle {
                                 width: 206px;
-                                Rectangle {
+                                Field {
                                     y: (parent.height - self.height) / 2;
-                                    height: 34px;
-                                    border-radius: Theme.radius-small;
-                                    border-width: 1px;
-                                    border-color: proxy-search.has-focus ? Theme.accent : Theme.border;
-                                    background: Theme.surface;
-                                    UiIcon { name: "search"; x: 9px; y: 9px; width: 16px; height: 16px; }
-                                    if root.proxy-query == "": Text {
-                                        x: 31px; width: parent.width - 41px;
-                                        text: "Search…"; color: Theme.muted; font-size: 12px;
-                                        vertical-alignment: center;
-                                        accessible-role: none;
-                                    }
-                                    proxy-search := TextInput {
-                                        x: 31px; width: parent.width - 41px; height: parent.height;
-                                        text <=> root.proxy-query;
-                                        color: Theme.text;
-                                        selection-background-color: Theme.selection;
-                                        selection-foreground-color: Theme.text;
-                                        font-size: 12px;
-                                        single-line: true;
-                                        vertical-alignment: center;
-                                        accessible-label: "Search proxies";
-                                        edited => {
-                                            proxy-list.content-y = 0px;
-                                            root.filter-proxies();
-                                        }
-                                    }
+                                    field-height: 34px; height: 34px;
+                                    placeholder: "Search proxies"; icon: "search";
+                                    value <=> root.proxy-query;
+                                    edited => { proxy-list.content-y = 0px; root.filter-proxies(); }
                                 }
                             }
                         }
                         Rectangle { height: 1px; background: Theme.border; }
-                        Rectangle {
-                            height: 32px;
-                            background: Theme.field;
+                        TableHeading {
                             ProxyTableColumns {
                                 heading: true;
                                 selected: root.proxy-selection-state == 2;
@@ -1198,15 +1167,16 @@ export component MainWindow inherits Window {
                             proxy-content := VerticalLayout {
                                 alignment: start;
                                 spacing: 0px;
-                                if root.visible-proxies.length == 0: Text {
-                                    text: root.proxies.length == 0 ? "No SOCKS5 proxies configured" : "No matching proxies";
-                                    color: Theme.muted; font-size: 13px; height: 90px;
-                                    horizontal-alignment: center; vertical-alignment: center;
+                                if root.visible-proxies.length == 0: EmptyState {
+                                    icon: "server";
+                                    title: root.proxies.length == 0 ? "No SOCKS5 proxies configured" : "No matching proxies";
+                                    caption: root.proxies.length == 0 ? "Add a proxy to start routing application traffic." : "Try another name or address.";
                                 }
                                 for proxy[index] in root.visible-proxies: Rectangle {
                                     property <bool> selected: index < root.proxy-selection.length && root.proxy-selection[index];
-                                    height: 58px;
+                                    height: 68px;
                                     background: self.selected ? Theme.accent-soft : Theme.surface;
+                                    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
                                     ProxyTableColumns {
                                         proxy: proxy;
                                         selected: parent.selected;
@@ -1223,22 +1193,18 @@ export component MainWindow inherits Window {
                 }
                 if root.page == 3: ConnectionsView { preview-ui: root.preview-ui; }
                 if root.page == 5: LogsView { }
-                if root.page == 6 && XrayModule.installed: XrayView { }
+                if root.page == 6 && XrayModule.installed: XrayView { preview-ui: root.preview-ui; }
                 if root.page == 4: HorizontalLayout {
                     spacing: 16px;
                     Rectangle {
-                        width: 190px;
-                        border-radius: Theme.radius-medium;
-                        border-width: 1px;
-                        border-color: Theme.border;
-                        background: Theme.surface;
+                        width: 170px;
                         VerticalLayout {
-                            padding: 10px;
+                            padding-top: 4px;
                             spacing: 5px;
                             alignment: start;
                             NavItem { label: "General"; icon: "settings"; selected: root.settings-section == 0; clicked => { root.settings-section = 0; } }
-                            NavItem { label: "Profiles"; icon: "rules"; selected: root.settings-section == 1; clicked => { root.settings-section = 1; } }
-                            NavItem { label: "Modules"; icon: "server"; selected: root.settings-section == 2; clicked => { root.settings-section = 2; } }
+                            NavItem { label: "Profiles"; icon: "files"; selected: root.settings-section == 1; clicked => { root.settings-section = 1; } }
+                            NavItem { label: "Modules"; icon: "boxes"; selected: root.settings-section == 2; clicked => { root.settings-section = 2; } }
                         }
                     }
                     settings-scroll := ScrollView {
@@ -1247,92 +1213,65 @@ export component MainWindow inherits Window {
                         content-height: max(self.visible-height, settings-content.preferred-height);
                         settings-content := VerticalLayout {
                             alignment: start;
-                            spacing: 12px;
+                            spacing: 16px;
                             padding-right: 3px;
                             padding-bottom: 14px;
                             if root.settings-section == 2: XrayModuleCard {
                                 open => { root.page = 6; }
                             }
-                            if root.settings-section == 0: Rectangle {
-                                height: appearance-settings.preferred-height;
-                                border-radius: Theme.radius-medium;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                background: Theme.surface;
-                                appearance-settings := VerticalLayout { padding: 16px; spacing: 9px; alignment: start;
-                                    Text { text: "Appearance"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                            if root.settings-section == 2: HpwnrModuleCard {}
+                            if root.settings-section == 0: FormCard {
+                                title: "Appearance"; icon: "sun"; caption: "Choose a comfortable workspace.";
                                     HorizontalLayout {
                                         alignment: start;
                                         spacing: 8px;
                                         ActionButton {
-                                            label: "Light";
+                                            label: "Light"; icon: "sun";
                                             accessible-label: "Light theme";
                                             primary: !root.dark-theme;
-                                            height: 34px;
+                                            height: 40px;
                                             clicked => { root.choose-theme(false); }
                                         }
                                         ActionButton {
-                                            label: "Dark";
+                                            label: "Dark"; icon: "moon";
                                             accessible-label: "Dark theme";
                                             primary: root.dark-theme;
-                                            height: 34px;
+                                            height: 40px;
                                             clicked => { root.choose-theme(true); }
                                         }
                                     }
-                                }
                             }
-                            if root.settings-section == 0: Rectangle {
-                                height: startup-settings.preferred-height;
-                                border-radius: Theme.radius-medium;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                background: Theme.surface;
-                                startup-settings := VerticalLayout { padding: 16px; spacing: 9px; alignment: start;
-                                    Text { text: "Startup"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                            if root.settings-section == 0: FormCard {
+                                title: "Startup"; icon: "power"; caption: "";
                                     ThemedCheckBox { text: "Start when I sign in to Windows"; checked <=> root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.set-autostart(self.checked); } }
                                     Text { text: root.autostart-busy ? "Updating startup settings…" : "Start in the system tray and restore the last routing state."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
-                                }
                             }
-                            if root.settings-section == 0: Rectangle {
-                                height: update-settings.preferred-height;
-                                border-radius: Theme.radius-medium;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                background: Theme.surface;
-                                update-settings := VerticalLayout { padding: 16px; spacing: 9px; alignment: start;
-                                    Text { text: "Updates"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                            if root.settings-section == 0: FormCard {
+                                title: "Updates"; icon: "refresh"; caption: "";
                                     ThemedCheckBox { text: "Check for updates automatically"; checked <=> root.updates-automatic; toggled => { root.set-updates-automatic(self.checked); } }
                                     if root.update-status != "": Text { text: root.update-status; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
-                                    HorizontalLayout { ActionButton { label: root.update-busy ? "Checking…" : "Check for Updates"; height: 34px; enabled: !root.update-busy; clicked => { root.check-updates(); } } }
+                                    HorizontalLayout { ActionButton { label: root.update-busy ? "Checking…" : "Check for Updates"; icon: "refresh"; height: 40px; enabled: !root.update-busy; clicked => { root.check-updates(); } } }
                                     Text { text: "Checks at launch and every 6 hours."; color: Theme.muted; font-size: 11px; }
-                                }
                             }
-                            if root.settings-section == 0: Rectangle {
-                                height: dns-settings.preferred-height;
-                                border-radius: Theme.radius-medium;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                background: Theme.surface;
-                                dns-settings := VerticalLayout { padding: 16px; spacing: 9px; alignment: start;
-                                    Text { text: "System DNS"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                            if root.settings-section == 0: FormCard {
+                                title: "System DNS"; icon: "globe"; caption: "";
                                     Text { text: "Windows resolves names. DNS on TCP or UDP port 53 goes directly."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
                                     Text { text: "DoH and DoT follow application routing rules."; color: Theme.muted; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
+                            }
+                            if root.settings-section == 0: FormCard {
+                                title: "About True Proxy"; icon: "info";
+                                HorizontalLayout { spacing: 12px;
+                                    Text { text: "Version " + root.app-version; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                    IconLicenseButton {}
                                 }
                             }
-                            if root.settings-section == 1: Rectangle {
-                                height: config-settings.preferred-height;
-                                border-radius: Theme.radius-medium;
-                                border-width: 1px;
-                                border-color: Theme.border;
-                                background: Theme.surface;
-                                config-settings := VerticalLayout { padding: 16px; spacing: 12px; alignment: start;
-                                    Text { text: "Configuration"; font-size: 16px; font-weight: 600; color: Theme.text; }
+                            if root.settings-section == 1: FormCard {
+                                title: "Configuration"; icon: "files"; caption: "";
                                     Text { text: "Import or export rules and proxies as JSON. Exported JSON includes proxy passwords."; color: Theme.secondary; font-size: 13px; wrap: word-wrap; height: self.preferred-height; }
                                     HorizontalLayout { spacing: 8px; alignment: start;
-                                        ActionButton { label: "Import"; height: 34px; enabled: !root.busy; clicked => { root.open-import(); } }
-                                        ActionButton { label: "Export"; height: 34px; clicked => { root.export-config(); } }
+                                        ActionButton { label: "Import"; icon: "download"; height: 40px; enabled: !root.busy; clicked => { root.open-import(); } }
+                                        ActionButton { label: "Export"; icon: "upload"; height: 40px; clicked => { root.export-config(); } }
                                     }
-                                }
                             }
                         }
                     }

@@ -5,6 +5,19 @@ use anyhow::{Context, Result, ensure};
 use percent_encoding::percent_decode_str;
 use std::{borrow::Cow, path::Path};
 
+pub fn encrypted(input: &str) -> bool {
+    input
+        .trim()
+        .split_once("://")
+        .is_some_and(|(scheme, path)| {
+            scheme.eq_ignore_ascii_case("v2raytun")
+                && path
+                    .split('/')
+                    .next()
+                    .is_some_and(|action| action.eq_ignore_ascii_case("crypt"))
+        })
+}
+
 pub(super) fn resolve<'a>(root: &Path, input: &'a str) -> Result<Cow<'a, str>> {
     let input = input.trim();
     let Some((scheme, path)) = input.split_once("://") else {
@@ -31,7 +44,8 @@ pub(super) fn resolve<'a>(root: &Path, input: &'a str) -> Result<Cow<'a, str>> {
                 .all(|b| b.is_ascii_alphanumeric() || b"+/_-=".contains(&b)),
         "Invalid encrypted v2RayTun link"
     );
-    let binary = assets::hpwnr(root).context("Could not prepare hpwnr v1.0.3 from GitHub")?;
+    let binary = assets::installed_hpwnr(root)?
+        .context("Install the hpwnr module to import encrypted v2RayTun links")?;
     let output = run_link_decoder(
         &binary,
         assets::HPWNR_SHA256,
@@ -79,5 +93,20 @@ mod tests {
         assert_eq!(plaintext(format!("{url}\r\n").as_bytes()).unwrap(), url);
         assert!(plaintext(b"http://example.test/list").is_err());
         assert!(plaintext(b"https://example.test/a\nhttps://example.test/b").is_err());
+    }
+
+    #[test]
+    fn missing_module_never_downloads_during_import() {
+        let root = std::env::temp_dir().join(format!("hpwnr-absent-{}", std::process::id()));
+        assert!(!root.exists());
+        assert!(encrypted("V2RayTun://CRYPT/abcd"));
+        assert!(!encrypted("v2raytun://import/https://example.test"));
+        assert!(
+            resolve(&root, "v2raytun://crypt/abcd")
+                .unwrap_err()
+                .to_string()
+                .contains("Install the hpwnr module")
+        );
+        assert!(!root.exists(), "import must not create a download stage");
     }
 }

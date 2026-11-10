@@ -8,9 +8,11 @@ use std::{
 };
 use true_proxy::engine::Statistics;
 
-// The one-second dashboard timer shares its callback with resize and focus events.
-// Ignore early events without moving the sampling window.
+// Keep only two minutes of aggregated rates. Sampling follows the existing
+// visible-window timer, for up to two minutes after leaving the Dashboard.
 const MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(900);
+const RETENTION: Duration = Duration::from_secs(120);
+const MAX_POINTS: usize = 121;
 
 #[derive(Clone, Copy)]
 struct Sample {
@@ -19,46 +21,96 @@ struct Sample {
     downloaded: u64,
 }
 
+#[derive(Clone, Copy)]
+struct Point {
+    at: Instant,
+    upload: u64,
+    download: u64,
+}
+
 #[derive(Default)]
 pub(super) struct DashboardTraffic {
     previous: Cell<Option<Sample>>,
-    history: RefCell<VecDeque<(u64, u64)>>,
+    last_dashboard: Cell<Option<Instant>>,
+    history: RefCell<VecDeque<Point>>,
 }
 
 impl DashboardTraffic {
-    pub(super) fn reset(&self) {
+    pub(super) fn suspend(&self) {
+        // Retain recent points, but never average a hidden interval into a rate.
         self.previous.set(None);
-        self.history.borrow_mut().clear();
     }
 
-    pub(super) fn refresh(&self, ui: &MainWindow, statistics: &Statistics) {
-        let sample = Sample {
-            at: Instant::now(),
-            uploaded: statistics.uploaded.load(Ordering::Relaxed),
-            downloaded: statistics.downloaded.load(Ordering::Relaxed),
-        };
-        ui.set_uploaded(bytes(sample.uploaded).into());
-        ui.set_downloaded(bytes(sample.downloaded).into());
-        let total = sample.uploaded as f64 + sample.downloaded as f64;
+    pub(super) fn observe(&self, statistics: &Statistics, dashboard: bool) -> bool {
+        self.sample(
+            Sample {
+                at: Instant::now(),
+                uploaded: statistics.uploaded.load(Ordering::Relaxed),
+                downloaded: statistics.downloaded.load(Ordering::Relaxed),
+            },
+            dashboard,
+        )
+    }
+
+    fn sample(&self, sample: Sample, dashboard: bool) -> bool {
+        if dashboard {
+            self.last_dashboard.set(Some(sample.at));
+        }
+        let recording = self
+            .last_dashboard
+            .get()
+            .is_some_and(|last| sample.at.saturating_duration_since(last) < RETENTION);
+        let mut history = self.history.borrow_mut();
+        while history
+            .front()
+            .is_some_and(|point| sample.at.saturating_duration_since(point.at) > RETENTION)
+        {
+            history.pop_front();
+        }
+        if !recording {
+            history.clear();
+            self.suspend();
+            return false;
+        }
+        if let Some((upload, download)) = self.rates(sample) {
+            if history.len() == MAX_POINTS {
+                history.pop_front();
+            }
+            history.push_back(Point {
+                at: sample.at,
+                upload,
+                download,
+            });
+        }
+        true
+    }
+
+    pub(super) fn render(&self, ui: &MainWindow, statistics: &Statistics) {
+        let uploaded = statistics.uploaded.load(Ordering::Relaxed);
+        let downloaded = statistics.downloaded.load(Ordering::Relaxed);
+        ui.set_uploaded(bytes(uploaded).into());
+        ui.set_downloaded(bytes(downloaded).into());
+        let total = uploaded as f64 + downloaded as f64;
         ui.set_has_transfer(total > 0.0);
         ui.set_upload_share(if total > 0.0 {
-            (sample.uploaded as f64 / total) as f32
+            (uploaded as f64 / total) as f32
         } else {
             0.0
         });
-
-        if let Some((upload, download)) = self.rates(sample) {
-            ui.set_upload_rate(format!("{}/s", bytes(upload)).into());
-            ui.set_download_rate(format!("{}/s", bytes(download)).into());
-            let mut history = self.history.borrow_mut();
-            if history.len() == 60 {
-                history.pop_front();
-            }
-            history.push_back((upload, download));
-            let (upload, download) = chart_paths(&history);
-            ui.set_upload_path(upload.into());
-            ui.set_download_path(download.into());
+        let history = self.history.borrow();
+        if let Some(point) = history.back() {
+            ui.set_upload_rate(format!("{}/s", bytes(point.upload)).into());
+            ui.set_download_rate(format!("{}/s", bytes(point.download)).into());
         }
+        let scale = chart_scale(&history);
+        let (upload, download) = chart_paths(&history, Instant::now(), scale);
+        ui.set_upload_path(upload.into());
+        ui.set_download_path(download.into());
+        ui.set_traffic_scale(super::model(
+            (0..4)
+                .map(|i| format!("{}/s", bytes(scale / 3 * (3 - i))).into())
+                .collect(),
+        ));
     }
 
     fn rates(&self, sample: Sample) -> Option<(u64, u64)> {
@@ -71,6 +123,7 @@ impl DashboardTraffic {
             return None;
         }
         self.previous.set(Some(sample));
+        // A restart resets counters; don't carry an old session into the chart.
         let per_second = |current: u64, previous| {
             (current.saturating_sub(previous) as f64 / elapsed.as_secs_f64()).round() as u64
         };
@@ -81,33 +134,54 @@ impl DashboardTraffic {
     }
 }
 
-// Both series share a scale. Keep missing/hidden intervals out of the chart;
-// refresh is driven only by the existing visible-dashboard timer.
-fn chart_paths(history: &VecDeque<(u64, u64)>) -> (String, String) {
+fn chart_scale(history: &VecDeque<Point>) -> u64 {
+    let peak = history
+        .iter()
+        .map(|p| p.upload.max(p.download))
+        .max()
+        .unwrap_or(0)
+        .max(3);
+    let raw_step = peak.div_ceil(3);
+    let power = 10_u64.pow(raw_step.ilog10());
+    let step = [1, 2, 5, 10]
+        .into_iter()
+        .map(|n| power.saturating_mul(n))
+        .find(|step| *step >= raw_step)
+        .unwrap_or(raw_step);
+    step.saturating_mul(3)
+}
+
+fn chart_paths(history: &VecDeque<Point>, now: Instant, scale: u64) -> (String, String) {
     use std::fmt::Write;
     if history.len() < 2 {
         return (String::new(), String::new());
     }
-    let peak = history
-        .iter()
-        .map(|&(up, down)| up.max(down))
-        .max()
-        .unwrap_or(1)
-        .max(1) as f64;
     let mut upload = String::new();
     let mut download = String::new();
-    for (index, &(up, down)) in history.iter().enumerate() {
-        let x = (60 - history.len() + index) as f64 * 600.0 / 59.0;
-        let command = if index == 0 { 'M' } else { 'L' };
+    let mut previous = None::<Instant>;
+    for point in history {
+        let age = now.saturating_duration_since(point.at).as_secs_f64();
+        if age > RETENTION.as_secs_f64() {
+            continue;
+        }
+        let x = (1.0 - age / RETENTION.as_secs_f64()) * 600.0;
+        let command = if previous
+            .is_none_or(|at| point.at.saturating_duration_since(at) > Duration::from_secs(3))
+        {
+            'M'
+        } else {
+            'L'
+        };
+        previous = Some(point.at);
         let _ = write!(
             upload,
             "{command}{x:.2} {:.2} ",
-            98.0 - up as f64 / peak * 90.0
+            100.0 - point.upload as f64 / scale as f64 * 100.0
         );
         let _ = write!(
             download,
             "{command}{x:.2} {:.2} ",
-            98.0 - down as f64 / peak * 90.0
+            100.0 - point.download as f64 / scale as f64 * 100.0
         );
     }
     (upload, download)
@@ -161,19 +235,42 @@ mod tests {
     }
 
     #[test]
-    fn chart_uses_shared_scale_and_requires_two_observations() {
-        assert_eq!(
-            chart_paths(&VecDeque::from([(0, 0)])),
-            (String::new(), String::new())
-        );
-        let (up, down) = chart_paths(&VecDeque::from([(0, 100), (50, 0)]));
-        assert!(up.ends_with("L600.00 53.00 "));
-        assert!(down.ends_with("L600.00 98.00 "));
-        assert!(down.contains(" 8.00 "));
+    fn recent_history_survives_navigation_and_expires_with_bounded_storage() {
         let traffic = DashboardTraffic::default();
-        traffic.history.borrow_mut().push_back((1, 2));
-        traffic.reset();
+        let at = Instant::now();
+        let make = |seconds| Sample {
+            at: at + Duration::from_secs(seconds),
+            uploaded: seconds * 100,
+            downloaded: seconds * 200,
+        };
+        traffic.sample(make(0), true);
+        traffic.sample(make(1), true);
+        traffic.sample(make(2), false);
+        assert_eq!(traffic.history.borrow().len(), 3);
+        traffic.sample(make(3), true);
+        assert_eq!(traffic.history.borrow().len(), 4);
+        traffic.suspend();
+        traffic.sample(make(20), true);
+        assert_eq!(traffic.history.borrow().back().unwrap().download, 0);
+        let points = traffic.history.borrow();
+        let scale = chart_scale(&points);
+        assert!(scale >= 200);
+        let (_, path) = chart_paths(&points, make(20).at, scale);
+        assert_eq!(
+            path.matches('M').count(),
+            2,
+            "hidden intervals must not be interpolated"
+        );
+        drop(points);
+        for seconds in 21..400 {
+            traffic.sample(make(seconds), true);
+        }
+        assert!(traffic.history.borrow().len() <= MAX_POINTS);
+        assert!(traffic.sample(make(400), false));
+        assert!(!traffic.sample(make(521), false));
         assert!(traffic.history.borrow().is_empty());
+        traffic.sample(make(522), true);
+        assert_eq!(traffic.history.borrow().len(), 1);
     }
 
     #[test]
@@ -224,7 +321,7 @@ mod tests {
             }),
             Some((0, 0))
         );
-        traffic.reset();
+        traffic.suspend();
         assert_eq!(
             traffic.rates(Sample {
                 at: at + Duration::from_secs(30),

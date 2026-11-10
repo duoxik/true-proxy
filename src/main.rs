@@ -381,6 +381,31 @@ mod ui_tests {
     }
 
     #[test]
+    fn local_xray_preview_selects_profiles_and_keeps_core_disabled() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.set_local_build(true);
+        ui.set_preview_ui(true);
+        ui.window().set_size(slint::LogicalSize::new(960., 640.));
+        app::preview::populate_xray(&ui);
+        let xray = ui.global::<XrayModule>();
+        ui.set_page(6);
+        ui.show().unwrap();
+        click(&ui, "Local SOCKS settings");
+        assert_eq!(xray.get_section(), 2);
+        xray.set_section(0);
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        click(&ui, "Activate Backup tunnel");
+        assert_eq!(xray.get_selected_profile().id, "preview-backup");
+        assert!(!xray.get_profiles().row_data(0).unwrap().active);
+        click(&ui, "Start Xray");
+        assert!(!xray.get_running() && !ui.get_active());
+        assert!(xray.get_error().contains("disabled in this UI preview"));
+        click(&ui, "Change selected profile");
+        assert_eq!(xray.get_section(), 1);
+    }
+
+    #[test]
     fn xray_profiles_refresh_only_the_clicked_subscription() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
@@ -1049,7 +1074,7 @@ mod ui_tests {
     }
 
     #[test]
-    fn update_banner_clicks_once_and_installation_requires_pause() {
+    fn update_banner_installs_while_routing_runs_and_blocks_conflicting_actions() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
@@ -1059,18 +1084,21 @@ mod ui_tests {
         let calls = Rc::new(Cell::new(0));
         let count = calls.clone();
         ui.on_update_now(move || count.set(count.get() + 1));
-        click(&ui, "Update");
+        click(&ui, "Install and Restart");
         assert_eq!(calls.get(), 1);
         ui.set_update_ready(true);
         ui.set_active(true);
         click(&ui, "Install and Restart");
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.get(), 2);
         ui.set_active(false);
         ui.set_busy(true);
         click(&ui, "Install and Restart");
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls.get(), 2);
         ui.set_busy(false);
         click(&ui, "Install and Restart");
-        assert_eq!(calls.get(), 2);
+        assert_eq!(calls.get(), 3);
+        ui.set_update_busy(true);
+        click(&ui, "Please wait…");
+        assert_eq!(calls.get(), 3);
     }
 }

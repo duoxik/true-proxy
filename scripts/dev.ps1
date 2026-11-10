@@ -1,8 +1,10 @@
 param(
-    [ValidateSet('check', 'test', 'build', 'run', 'package', 'fmt', 'clippy', 'smoke', 'snapshot', 'dns-probe')]
+    [ValidateSet('check', 'test', 'build', 'run', 'preview', 'package', 'fmt', 'clippy', 'smoke', 'snapshot', 'dns-probe')]
     [string]$Task = 'check',
     [string]$PackageDirectory = 'dist\TrueProxy',
-    [string]$PackageArchive = 'dist\TrueProxy-windows-x64.zip'
+    [string]$PackageArchive = 'dist\TrueProxy-windows-x64.zip',
+    [ValidateSet('xray', 'dashboard', 'rules', 'proxies', 'connections', 'logs', 'settings')]
+    [string]$Page = 'xray'
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
@@ -28,6 +30,23 @@ try {
         'test' { cargo test --locked }
         'build' { cargo build --locked --release }
         'run' { cargo run --locked -- --paused }
+        'preview' {
+            cargo build --locked
+            if ($LASTEXITCODE -ne 0) { throw 'Local build failed' }
+            # Each preview owns its EXE copy so an open window cannot lock the next build.
+            $taskPreviewRoot = Join-Path $taskRoot ('.tools\local-preview\' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $taskPreviewRoot -Force | Out-Null
+            $taskPreviewExe = Join-Path $taskPreviewRoot 'TrueProxy-Local.exe'
+            Copy-Item -LiteralPath (Join-Path $taskRoot 'target\debug\true-proxy.exe') -Destination $taskPreviewExe
+            try {
+                # This is the interactive preview explicitly requested by the launcher.
+                $taskPreviewProcess = Start-Process -FilePath $taskPreviewExe -ArgumentList @('--preview-ui', $Page) -WindowStyle Normal -Wait -PassThru
+                if ($taskPreviewProcess.ExitCode -ne 0) { throw "Local preview exited with $($taskPreviewProcess.ExitCode)" }
+            } finally {
+                Remove-Item -LiteralPath $taskPreviewExe -Force
+                Remove-Item -LiteralPath $taskPreviewRoot
+            }
+        }
         'fmt' { cargo fmt --all }
         'clippy' { cargo clippy --locked --all-targets -- -D warnings }
         'snapshot' { cargo run --locked --example ui_snapshot -- .tools/ui-headless }

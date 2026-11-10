@@ -15,12 +15,12 @@ use true_proxy::updates::{self, Preferences, Release, Staged};
 
 enum Command {
     Check,
-    Download,
     Install,
     Automatic,
     Quit,
 }
 pub struct Controller(SyncSender<Command>);
+
 impl Drop for Controller {
     fn drop(&mut self) {
         let _ = self.0.try_send(Command::Quit);
@@ -32,16 +32,22 @@ pub fn wire(
     preferences_path: PathBuf,
     preview: bool,
 ) -> Result<Option<Controller>> {
-    ui.set_app_version(updates::VERSION.into());
+    let preview = preview || ui.get_local_build();
+    ui.set_app_version(if ui.get_local_build() {
+        format!("{}-dev", updates::VERSION).into()
+    } else {
+        updates::VERSION.into()
+    });
     let preferences = if preview {
         Ok(Preferences::default())
     } else {
         Preferences::load(&preferences_path)
     };
-    let automatic = preferences
-        .as_ref()
-        .map(|preferences| preferences.automatic)
-        .unwrap_or(false);
+    let automatic = !preview
+        && preferences
+            .as_ref()
+            .map(|preferences| preferences.automatic)
+            .unwrap_or(false);
     ui.set_updates_automatic(automatic);
     let automatic = Arc::new(AtomicBool::new(automatic));
     ui.set_update_status(match preferences {
@@ -54,7 +60,7 @@ pub fn wire(
     ui.on_check_updates(move || {
         if let Some(ui) = weak.upgrade() {
             if preview {
-                ui.set_update_status("GitHub requests are disabled in UI preview mode.".into());
+                ui.set_update_status("Update checks are disabled in local/preview builds.".into());
                 return;
             }
             if !ui.get_update_busy() {
@@ -74,6 +80,13 @@ pub fn wire(
     let setting = automatic.clone();
     ui.on_set_updates_automatic(move |enabled| {
         if let Some(ui) = weak.upgrade() {
+            if preview {
+                ui.set_updates_automatic(false);
+                ui.set_update_status(
+                    "Automatic updates are disabled in local/preview builds.".into(),
+                );
+                return;
+            }
             let result = Preferences { automatic: enabled }.save(&preferences_path);
             match result {
                 Ok(()) => {
@@ -93,37 +106,21 @@ pub fn wire(
     ui.on_update_now(move || {
         if let Some(ui) = weak.upgrade() {
             if preview {
-                ui.set_update_text("Update installation is disabled in UI preview mode.".into());
+                ui.set_update_text(
+                    "Update installation is disabled in local/preview builds.".into(),
+                );
                 return;
             }
             if ui.get_update_busy() {
                 return;
             }
-            let install = ui.get_update_ready();
-            if install && (ui.get_active() || ui.get_busy()) {
-                ui.set_update_text("Pause routing before installing the update.".into());
+            if ui.get_busy() {
                 return;
             }
-            if tx
-                .try_send(if install {
-                    Command::Install
-                } else {
-                    Command::Download
-                })
-                .is_ok()
-            {
+            if tx.try_send(Command::Install).is_ok() {
                 ui.set_update_busy(true);
-                if install {
-                    ui.set_busy(true);
-                }
-                ui.set_update_text(
-                    if install {
-                        "Preparing the update…"
-                    } else {
-                        "Downloading update…"
-                    }
-                    .into(),
-                );
+                ui.set_busy(true);
+                ui.set_update_text("Preparing to download, install and restart…".into());
             }
         }
     });
@@ -160,7 +157,7 @@ pub fn wire(
                             release = Some(candidate.clone());
                             post(&weak, move |ui| {
                                 ui.set_update_version(candidate.version.into()); ui.set_update_available(true); ui.set_update_ready(already_ready); ui.set_update_busy(false);
-                                ui.set_update_text(if already_ready { "The update is ready. Pause the proxy and restart the app." } else { "A new version is available to download." }.into());
+                                ui.set_update_text(if already_ready { "Ready to install. Routing will stop and resume automatically if it is enabled." } else { "Install and restart automatically. Active proxy connections will close briefly." }.into());
                                 ui.set_update_status("An update is available.".into());
                             });
                         }
@@ -168,25 +165,21 @@ pub fn wire(
                         Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_status(format!("Could not check for updates: {error:#}").into()); }),
                     }
                 }
-                Command::Download => {
-                    let result = (|| -> Result<Staged> {
-                        let release = release.as_ref().context("Check for updates first")?;
-                        #[cfg(windows)] { updates::download(release, &root, |downloaded, total| {
-                            let percent = downloaded * 100 / total;
-                            post(&weak, move |ui| ui.set_update_text(format!("Downloading update… {percent}%").into()));
-                        }) }
-                        #[cfg(not(windows))] { let _ = (&root, release); anyhow::bail!("Updates are currently available only on Windows") }
-                    })();
-                    match result {
-                        Ok(ready) => { staged = Some(ready); post(&weak, |ui| { ui.set_update_busy(false); ui.set_update_ready(true); ui.set_update_text("The update is ready. Pause routing to install it.".into()); }); }
-                        Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_text(format!("Download failed: {error:#}").into()); }),
-                    }
-                }
+
                 Command::Install => {
                     let result = (|| -> Result<()> {
-                        let staged = staged.as_ref().context("Download the update first")?;
-                        #[cfg(windows)] { updates::installer::prepare(staged) }
-                        #[cfg(not(windows))] { let _ = staged; anyhow::bail!("Installation is currently available only on Windows") }
+                        #[cfg(windows)] {
+                            if staged.is_none() {
+                                let candidate = release.as_ref().context("Check for updates first")?;
+                                staged = Some(updates::download(candidate, &root, |downloaded, total| {
+                                    let percent = downloaded * 100 / total;
+                                    post(&weak, move |ui| ui.set_update_text(format!("Downloading update… {percent}%").into()));
+                                })?);
+                            }
+                            post(&weak, |ui| { ui.set_update_ready(true); ui.set_update_text("Restarting the app. Routing will resume with its saved state…".into()); });
+                            updates::installer::prepare(staged.as_ref().context("Update is not ready")?)
+                        }
+                        #[cfg(not(windows))] { let _ = (&staged, &root); anyhow::bail!("Installation is currently available only on Windows") }
                     })();
                     match result {
                         Ok(()) => { let _ = slint::invoke_from_event_loop(|| { let _ = slint::quit_event_loop(); }); break; }
@@ -212,4 +205,29 @@ fn post(ui: &slint::Weak<MainWindow>, callback: impl FnOnce(MainWindow) + Send +
             callback(ui);
         }
     });
+}
+
+#[cfg(test)]
+mod local_tests {
+    use super::*;
+
+    #[test]
+    fn local_build_disables_updates_without_writing_preferences() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.set_local_build(true);
+        let path = std::env::temp_dir().join(format!(
+            "true-proxy-local-updates-{}.json",
+            crate::app::id()
+        ));
+        assert!(!path.exists());
+        assert!(wire(&ui, path.clone(), false).unwrap().is_none());
+        assert!(ui.get_app_version().ends_with("-dev"));
+        assert!(!ui.get_updates_automatic());
+        ui.invoke_set_updates_automatic(true);
+        ui.invoke_check_updates();
+        ui.invoke_update_now();
+        assert!(!ui.get_updates_automatic() && !ui.get_update_busy());
+        assert!(!path.exists());
+    }
 }

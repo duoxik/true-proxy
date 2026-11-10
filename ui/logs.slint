@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { Theme } from "common.slint";
+import { Theme, SurfaceCard, PanelToolbar, SegmentButton, UiIcon } from "common.slint";
 
 export global TechnicalLogs {
     in property <string> text;
@@ -15,49 +15,11 @@ export global TechnicalLogs {
     callback clear;
 }
 
-component LogFilterButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> selected;
-    in property <color> selected-color: Theme.primary;
-    in property <color> resting-color: transparent;
-    callback clicked;
-
-    width: max(28px, caption.preferred-width + 16px);
-    height: 26px;
-    border-radius: 6px;
-    border-width: focus.has-focus ? 1px : 0px;
-    border-color: Theme.accent-hover;
-    background: root.selected ? root.selected-color : touch.has-hover ? Theme.surface-hover : root.resting-color;
-    accessible-role: button;
-    accessible-label: root.label;
-    accessible-action-default => { root.clicked(); }
-
-    caption := Text {
-        text: root.label;
-        color: root.selected ? Theme.primary-text : Theme.secondary;
-        font-size: 11px;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        accessible-role: none;
-    }
-    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
-    focus := FocusScope {
-        width: 0px;
-        key-pressed(event) => {
-            if event.text == Key.Space || event.text == Key.Return {
-                root.clicked();
-                return accept;
-            }
-            return reject;
-        }
-    }
-    forward-focus: focus;
-}
+component LogFilterButton inherits SegmentButton {}
 
 component LogFilterGroup inherits Rectangle {
     width: filters.preferred-width;
-    height: 30px;
+    height: 32px;
     border-radius: Theme.radius-small;
     border-width: 1px;
     border-color: Theme.border;
@@ -70,7 +32,7 @@ component LogFilterGroup inherits Rectangle {
     }
 }
 
-export component LogStreamView inherits Rectangle {
+export component LogStreamView inherits SurfaceCard {
     in property <string> title: "Live log stream";
     in property <string> backend-label: "Backend";
     in property <string> connections-label: "Connections";
@@ -90,10 +52,6 @@ export component LogStreamView inherits Rectangle {
     vertical-stretch: 1;
     min-width: 0px;
     min-height: 0px;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: Theme.surface;
     clip: true;
 
     function follow-latest() {
@@ -115,15 +73,12 @@ export component LogStreamView inherits Rectangle {
     changed height => { root.follow-latest(); }
 
     VerticalLayout {
-        HorizontalLayout {
-            height: 40px;
-            padding-left: 14px;
-            padding-right: 14px;
-            spacing: 10px;
+        PanelToolbar {
+            Rectangle { width: 18px; UiIcon { name: "file"; y: (parent.height - self.height) / 2; } }
             Text {
                 text: root.title;
                 color: Theme.text;
-                font-size: 14px;
+                font-size: 18px;
                 font-weight: 600;
                 vertical-alignment: center;
             }
@@ -154,7 +109,7 @@ export component LogStreamView inherits Rectangle {
         }
         Rectangle { height: 1px; background: Theme.border; }
         HorizontalLayout {
-            height: 44px;
+            height: 48px;
             padding-left: 14px;
             padding-right: 14px;
             spacing: 8px;

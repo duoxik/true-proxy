@@ -1,0 +1,2 @@
+# Keep pinned asset digests reproducible on Windows checkouts.
+assets/icons/lucide/* text eol=lf

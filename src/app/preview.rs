@@ -5,6 +5,101 @@ use true_proxy::{
     engine::{LogLevel, LogSource, Statistics},
 };
 
+/// Explicit fixtures for the isolated local UI preview; never a core process.
+pub(crate) fn populate_xray(ui: &crate::MainWindow) {
+    use crate::{XrayModule, XrayProfileRow, XraySubscriptionGroup};
+    use slint::ComponentHandle;
+    let xray = ui.global::<XrayModule>();
+    let primary = XrayProfileRow {
+        id: "preview-primary".into(),
+        name: "Primary tunnel".into(),
+        summary: "VLESS · vpn.example.test:443".into(),
+        active: true,
+    };
+    xray.set_installed(true);
+    xray.set_version("Sample core".into());
+    xray.set_selected_profile(primary.clone());
+    xray.set_profiles(super::model(vec![primary]));
+    xray.set_subscriptions(super::model(vec![XraySubscriptionGroup {
+        id: "preview-subscription".into(),
+        name: "Subscription 1".into(),
+        profiles: super::model(vec![XrayProfileRow {
+            id: "preview-backup".into(),
+            name: "Backup tunnel".into(),
+            summary: "VLESS · backup.example.test:443".into(),
+            active: false,
+        }]),
+    }]));
+    let weak = ui.as_weak();
+    xray.on_activate_profile(move |id| {
+        use slint::Model;
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        let mut selected = XrayProfileRow::default();
+        let mut select = |mut row: XrayProfileRow| {
+            row.active = row.id == id;
+            if row.active {
+                selected = row.clone();
+            }
+            row
+        };
+        let manual = xray.get_profiles().iter().map(&mut select).collect();
+        let groups = xray
+            .get_subscriptions()
+            .iter()
+            .map(|mut group| {
+                group.profiles = super::model(group.profiles.iter().map(&mut select).collect());
+                group
+            })
+            .collect();
+        if selected.id.is_empty() {
+            return;
+        }
+        xray.set_profiles(super::model(manual));
+        xray.set_subscriptions(super::model(groups));
+        xray.set_selected_profile(selected);
+    });
+    let weak = ui.as_weak();
+    xray.on_toggle(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<XrayModule>().set_error(
+                "Xray is disabled in this UI preview. No core process is started.".into(),
+            );
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_import_profile(move |input| {
+        if let Some(ui) = weak.upgrade() {
+            let xray = ui.global::<XrayModule>();
+            xray.set_hpwnr_required(true_proxy::xray::hpwnr::encrypted(&input));
+            if !xray.get_hpwnr_required() {
+                xray.set_error("Profile imports are disabled in this UI preview.".into());
+            }
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_install_hpwnr(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<XrayModule>()
+                .set_hpwnr_error("Module downloads are disabled in this UI preview.".into());
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_confirm_hpwnr(move || {
+        if let Some(ui) = weak.upgrade() {
+            let xray = ui.global::<XrayModule>();
+            xray.set_hpwnr_required(false);
+            xray.invoke_install_hpwnr();
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_cancel_hpwnr(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<XrayModule>().set_hpwnr_required(false);
+        }
+    });
+}
+
 pub(super) fn populate_logs(stats: &Statistics) {
     use LogLevel::{Error, Info, Verbose};
     use LogSource::{Backend, Connections};

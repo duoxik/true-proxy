@@ -11,8 +11,9 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, FILETIME, HANDLE},
     Security::Cryptography::*,
     System::Threading::{
-        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW, WaitForSingleObject,
+        CreateEventW, EVENT_MODIFY_STATE, GetCurrentProcess, GetProcessTimes, OpenEventW,
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, SetEvent,
+        WaitForSingleObject,
     },
 };
 
@@ -182,9 +183,102 @@ pub fn spawn_hidden(
         .context("Could not start the update helper")
 }
 
+const HEALTH_PREFIX: &str = "Local\\TrueProxy.Update.";
+
+/// One random, non-inherited event per owned restart. No destination file path
+/// is accepted from the new application's command line.
+pub struct HealthEvent {
+    handle: HANDLE,
+    name: String,
+}
+impl Drop for HealthEvent {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.handle);
+        }
+    }
+}
+impl HealthEvent {
+    pub fn create() -> Result<Self> {
+        let mut random = [0u8; 16];
+        // SAFETY: a valid 16-byte output buffer, using the system RNG provider.
+        crypto(unsafe {
+            BCryptGenRandom(
+                ptr::null_mut(),
+                random.as_mut_ptr(),
+                random.len() as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        })?;
+        let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let name = format!("{HEALTH_PREFIX}{suffix}");
+        let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: NUL-terminated name; the owned handle is closed by Drop.
+        let handle = unsafe { CreateEventW(ptr::null(), 1, 0, wide.as_ptr()) };
+        ensure!(
+            !handle.is_null(),
+            "Could not create the update startup event"
+        );
+        Ok(Self { handle, name })
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn wait(&self, child: &mut std::process::Child) -> Result<()> {
+        let started = std::time::Instant::now();
+        loop {
+            ensure!(
+                child.try_wait()?.is_none(),
+                "The new version exited before confirming startup"
+            );
+            // SAFETY: this event remains owned throughout the wait.
+            if unsafe { WaitForSingleObject(self.handle, 50) } == 0 {
+                return Ok(());
+            }
+            ensure!(
+                started.elapsed() < std::time::Duration::from_secs(30),
+                "The new version did not confirm startup"
+            );
+        }
+    }
+}
+
+pub fn confirm_health(name: &str) -> Result<()> {
+    ensure!(
+        name.strip_prefix(HEALTH_PREFIX).is_some_and(
+            |suffix| suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+        ),
+        "Invalid update startup event"
+    );
+    let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: opens only an existing event with the narrow right to signal it.
+    let handle = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, wide.as_ptr()) };
+    ensure!(!handle.is_null(), "Could not open the update startup event");
+    let event = HealthEvent {
+        handle,
+        name: name.into(),
+    };
+    ensure!(
+        unsafe { SetEvent(event.handle) } != 0,
+        "Could not confirm app startup"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_event_is_validated_and_requires_a_real_signal() {
+        let event = HealthEvent::create().unwrap();
+        assert_ne!(unsafe { WaitForSingleObject(event.handle, 0) }, 0);
+        assert!(confirm_health("C:\\arbitrary-file").is_err());
+        assert!(confirm_health("Local\\TrueProxy.Update.not-a-token").is_err());
+        confirm_health(event.name()).unwrap();
+        assert_eq!(unsafe { WaitForSingleObject(event.handle, 0) }, 0);
+        let other = HealthEvent::create().unwrap();
+        assert_ne!(unsafe { WaitForSingleObject(other.handle, 0) }, 0);
+    }
     #[test]
     fn sha256_detects_modified_payload_with_known_digest() {
         let path = std::env::temp_dir().join(format!("true-proxy-hash-{}.tmp", std::process::id()));
