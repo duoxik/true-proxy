@@ -3,6 +3,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      verify_only:
+        description: 'Build and verify the release package without publishing'
+        type: boolean
+        default: true
 permissions:
   contents: write
 concurrency:
@@ -22,8 +27,11 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-static
+          shared-key: windows-x64-static-v1
+          # CI on main owns the cache; tags and verification runs only restore it.
+          save-if: false
       - name: Validate release tag
+        if: github.event_name != 'workflow_dispatch' || !inputs.verify_only
         shell: pwsh
         run: |
           $project = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
@@ -61,6 +69,7 @@ jobs:
           $result = Get-Content -LiteralPath (Join-Path $preview 'result.txt') -Raw
           if ($result -notlike 'PASS:*') { throw $result }
       - name: Upload complete release
+        if: github.event_name != 'workflow_dispatch' || !inputs.verify_only
         shell: pwsh
         run: |
           $exe = './dist/TrueProxy/TrueProxy.exe'
