@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { ActionButton, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { PageHeader, ActionButton, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
 
 export struct XrayProfileRow { id: string, name: string, summary: string, active: bool }
@@ -699,21 +699,12 @@ export component XrayView inherits VerticalLayout {
     min-height: 0px;
     vertical-stretch: 1;
     spacing: 12px;
-    HorizontalLayout {
-        height: 44px;
-        spacing: 14px;
-        Text { text: "X-RAY"; color: Theme.text; font-size: 28px; font-weight: 600; min-width: 0px; horizontal-stretch: 1; vertical-alignment: center; }
-        Rectangle {
-            width: toggle.min-width;
-            toggle := ActionButton {
-                label: XrayModule.running ? "Stop Xray" : "Start Xray";
-                icon: XrayModule.running ? "stop" : "play";
-                primary: !XrayModule.running;
-                enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.settings-saving && XrayModule.settings-error == ""));
-                y: (parent.height - self.height) / 2;
-                clicked => { XrayModule.toggle(); }
-            }
-        }
+    PageHeader {
+        title: "X-RAY";
+        action-label: XrayModule.running ? "Stop Xray" : "Start Xray";
+        action-icon: XrayModule.running ? "stop" : "play";
+        action-enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.settings-saving && XrayModule.settings-error == ""));
+        action => { XrayModule.toggle(); }
     }
     if XrayModule.pending: Rectangle {
         height: pending-content.preferred-height;

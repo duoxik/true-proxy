@@ -1,5 +1,5 @@
 import { DashboardView } from "dashboard.slint";
-import { DialogHeader, DialogActions } from "common.slint";
+import { PageHeader, DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
@@ -880,70 +880,17 @@ export component MainWindow inherits Window {
                 horizontal-stretch: 1;
                 padding: 26px;
                 spacing: 16px;
-                if root.page == 1: HorizontalLayout {
-                    spacing: 14px;
-                    VerticalLayout {
-                        spacing: 4px;
-                        Text { text: "Routing Rules"; color: Theme.text; font-size: 30px; font-weight: 700; }
-                        Text { text: "Define how traffic is routed: directly or through a proxy."; color: Theme.secondary; font-size: 13px; }
-                    }
-                    ActionButton {
-                        label: "Add Rule";
-                        accessible-label: "Add Routing Rule";
-                        icon: "plus";
-                        icon-ink: Theme.accent;
-                        outline: Theme.dark ? Theme.switch-off : Theme.border;
-                        min-width: 122px;
-                        height: 43px;
-                        clicked => { root.add-rule(); }
-                    }
-                }
-                if root.page == 0: VerticalLayout {
-                    spacing: 10px; vertical-stretch: 0;
-                    Text { text: "Overview  /  Dashboard"; color: Theme.secondary; font-size: 12px; }
-                    HorizontalLayout {
-                        spacing: 16px;
-                        VerticalLayout { spacing: 3px;
-                            Text { text: "Dashboard"; color: Theme.text; font-size: 32px; font-weight: 700; }
-                            Text { text: "Monitor your proxy traffic and manage rules."; color: Theme.secondary; font-size: 14px; }
-                        }
-                        ActionButton {
-                            label: root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing";
-                            icon: root.active ? "stop" : "play"; accessible-label: "Routing";
-                            enabled: !root.busy; height: 40px; primary: !root.active;
-                            clicked => { root.toggle(); }
-                        }
-                    }
-                    Rectangle { height: 12px; }
-                }
-                if root.page != 0 && root.page != 1 && root.page != 3 && root.page != 6: HorizontalLayout {
-                    height: 44px;
-                    spacing: 14px;
-                    Text {
-                        text: ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
-                        color: Theme.text;
-                        font-size: 28px;
-                        font-weight: 600;
-                        overflow: elide;
-                        min-width: 0px;
-                        horizontal-stretch: 1;
-                        vertical-alignment: center;
-                    }
-                    Rectangle {
-                        width: page-action.min-width;
-                        page-action := ActionButton {
-                            y: (parent.height - self.height) / 2;
-                            label: root.page == 2 ? "Add Proxy" : root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing";
-                            icon: root.page == 2 ? "plus" : root.active ? "stop" : "play";
-                            accessible-label: root.page == 2 ? "Add Proxy" : "Routing";
-                            visible: root.page != 4 && root.page != 5;
-                            enabled: root.page != 0 || !root.busy;
-                            primary: root.page != 0 || !root.active;
-                            clicked => {
-                                if root.page == 2 { root.add-proxy(); }
-                                else { root.toggle(); }
-                            }
-                        }
+                if root.page != 3 && root.page != 6: PageHeader {
+                    title: ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
+                    subtitle: root.page == 0 ? "Monitor your proxy traffic and manage rules." : root.page == 1 ? "Define how traffic is routed: directly or through a proxy." : "";
+                    action-label: root.page == 0 ? (root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing") : root.page == 1 ? "Add Rule" : root.page == 2 ? "Add Proxy" : "";
+                    action-icon: root.page == 0 ? (root.active ? "stop" : "play") : "plus";
+                    action-accessibility: root.page == 0 ? "Routing" : root.page == 1 ? "Add Routing Rule" : "Add Proxy";
+                    action-enabled: root.page != 0 || !root.busy;
+                    action => {
+                        if root.page == 0 { root.toggle(); }
+                        else if root.page == 1 { root.add-rule(); }
+                        else if root.page == 2 { root.add-proxy(); }
                     }
                 }
                 if root.notice != "": Rectangle {

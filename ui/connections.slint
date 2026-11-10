@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+import { PageHeader, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
 
 component TrafficMetric inherits Rectangle {
     in property <string> label;
@@ -334,23 +334,7 @@ export component ConnectionsView inherits VerticalLayout {
     in property <bool> preview-ui;
     min-width: 0px;
     spacing: 10px;
-    HorizontalLayout {
-        height: 44px;
-        spacing: 8px;
-        vertical-stretch: 0;
-        Text { text: "Traffic Monitor"; color: Theme.text; font-size: 28px; font-weight: 600; vertical-alignment: center; }
-        Rectangle { horizontal-stretch: 1; }
-        if root.preview-ui: Rectangle {
-            width: 92px;
-            Rectangle {
-                y: (parent.height - self.height) / 2;
-                height: 24px;
-                border-radius: 12px;
-                background: Theme.accent-soft;
-                Text { text: "Sample data"; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-            }
-        }
-    }
+    PageHeader { title: "Traffic Monitor"; badge: root.preview-ui ? "Sample data" : ""; }
     HorizontalLayout {
         height: 68px;
         spacing: 10px;

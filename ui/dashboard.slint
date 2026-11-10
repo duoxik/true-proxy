@@ -24,11 +24,15 @@ component SummaryRule inherits Rectangle {
     HorizontalLayout {
         padding-left: 6px; padding-right: 4px; spacing: 10px;
         Text { text: root.name; accessible-label: root.locked ? root.name + " · Fixed route: " + root.route : root.name; color: Theme.text; font-size: 13px; font-weight: 600; width: 90px; overflow: elide; vertical-alignment: center; }
-        SurfaceCard {
-            width: 144px; height: 26px; border-radius: 13px; background: Theme.neutral-badge;
-            HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
-                Rectangle { width: 15px; UiIcon { name: root.route == "Direct" ? "external" : root.route == "Block" ? "block" : "server"; ink: Theme.text; width: 15px; height: 15px; y: (parent.height - self.height) / 2; } }
-                route-text := Text { text: root.route; color: Theme.text; font-size: 12px; min-width: 0px; overflow: elide; vertical-alignment: center; }
+        Rectangle {
+            width: 144px;
+            SurfaceCard {
+                y: (parent.height - self.height) / 2;
+                height: 26px; border-radius: 13px; background: Theme.neutral-badge;
+                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
+                    Rectangle { width: 15px; UiIcon { name: root.route == "Direct" ? "external" : root.route == "Block" ? "block" : "server"; ink: Theme.text; width: 15px; height: 15px; y: (parent.height - self.height) / 2; } }
+                    Text { text: root.route; color: Theme.text; font-size: 12px; min-width: 0px; overflow: elide; vertical-alignment: center; }
+                }
             }
         }
         Rectangle { horizontal-stretch: 1; }

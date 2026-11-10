@@ -67,9 +67,10 @@ export component MetricCard inherits SurfaceCard {
     preferred-width: 0px;
     horizontal-stretch: 1;
     VerticalLayout {
-        padding: 18px; spacing: 3px; alignment: center;
-        Text { text: root.value; color: Theme.text; font-size: 24px; font-weight: 600; min-width: 0px; overflow: elide; height: 28px; }
-        Text { text: root.label; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; height: 16px; }
+        padding-left: 18px; padding-right: 18px;
+        padding-top: 10px; padding-bottom: 10px; spacing: 2px; alignment: center;
+        Text { text: root.value; color: Theme.text; font-size: 24px; font-weight: 600; min-width: 0px; overflow: elide; height: 28px; vertical-alignment: center; }
+        Text { text: root.label; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; height: 16px; vertical-alignment: center; }
     }
 }
 
@@ -135,11 +136,12 @@ export component ActionButton inherits Rectangle {
     in property <bool> primary: false;
     in property <bool> quiet: false;
     in property <bool> enabled: true;
+    in property <length> content-min-width: 38px;
     in property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text;
     in property <color> icon-ink: root.ink;
     in property <color> outline: Theme.border;
     callback clicked;
-    min-width: root.icon-only ? 36px : max(38px, label-text.preferred-width + 26px + (root.icon == "" ? 0px : 23px)); max-width: self.min-width;
+    min-width: root.icon-only ? 36px : max(root.content-min-width, label-text.preferred-width + 26px + (root.icon == "" ? 0px : 23px)); max-width: self.min-width;
     height: 38px; horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: Theme.radius-small; border-width: 1px;
     border-color: focus.has-focus ? Theme.accent : root.primary || root.quiet ? transparent : root.outline;
@@ -170,6 +172,42 @@ export component ActionButton inherits Rectangle {
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
     // Like Slint's standard Button: keyboard focus must not cover the pointer target.
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
+}
+
+export component PageAction inherits ActionButton {
+    content-min-width: 122px;
+    height: 43px;
+    icon-ink: Theme.accent;
+    outline: Theme.dark ? Theme.switch-off : Theme.border;
+}
+
+export component PageHeader inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> action-label;
+    in property <string> action-icon;
+    in property <string> action-accessibility: root.action-label;
+    in property <bool> action-enabled: true;
+    in property <string> badge;
+    callback action;
+    height: root.subtitle == "" ? 44px : 62px;
+    vertical-stretch: 0;
+    spacing: 14px;
+    VerticalLayout {
+        min-width: 0px; horizontal-stretch: 1; spacing: 4px; alignment: center;
+        Text { text: root.title; color: Theme.text; font-size: 30px; font-weight: 700; min-width: 0px; overflow: elide; height: 36px; vertical-alignment: center; }
+        if root.subtitle != "": Text { text: root.subtitle; color: Theme.secondary; font-size: 13px; min-width: 0px; overflow: elide; height: 18px; vertical-alignment: center; }
+    }
+    if root.badge != "": Rectangle {
+        width: 92px;
+        Rectangle { height: 24px; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.accent-soft;
+            Text { text: root.badge; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+    if root.action-label != "": Rectangle {
+        width: button.min-width;
+        button := PageAction { label: root.action-label; icon: root.action-icon; accessible-label: root.action-accessibility; enabled: root.action-enabled; y: (parent.height - self.height) / 2; clicked => { root.action(); } }
+    }
 }
 
 export component SectionHeading inherits HorizontalLayout {
