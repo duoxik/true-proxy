@@ -124,12 +124,17 @@ export component DashboardView inherits ScrollView {
                     TrafficLegend { label: "Upload"; value: root.uploaded + " · " + root.upload-rate; ink: Theme.chart-upload; }
                 }
                 HorizontalLayout { spacing: 12px;
-                    Rectangle { width: 66px;
+                    Rectangle {
+                        width: max(scale-top.preferred-width, scale-upper.preferred-width, scale-lower.preferred-width, scale-zero.preferred-width);
+                        scale-top := Text { text: root.traffic-scale[0]; font-size: 10px; visible: false; accessible-role: none; }
+                        scale-upper := Text { text: root.traffic-scale[1]; font-size: 10px; visible: false; accessible-role: none; }
+                        scale-lower := Text { text: root.traffic-scale[2]; font-size: 10px; visible: false; accessible-role: none; }
+                        scale-zero := Text { text: root.traffic-scale[3]; font-size: 10px; visible: false; accessible-role: none; }
                         for label[i] in root.traffic-scale: Text {
                             text: label; color: Theme.muted; font-size: 10px;
                             height: 14px; width: parent.width;
                             y: i * (parent.height - self.height) / 3;
-                            horizontal-alignment: right; vertical-alignment: center;
+                            horizontal-alignment: left; vertical-alignment: center;
                         }
                     }
                     Rectangle {
