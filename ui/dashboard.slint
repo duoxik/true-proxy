@@ -1,0 +1,158 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme, SurfaceCard, SectionHeading, MetricCard, ActionButton, UiIcon, RuleSwitch, ProxyRow, RuleRow } from "common.slint";
+
+component TrafficLegend inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <color> ink;
+    horizontal-stretch: 0;
+    spacing: 8px;
+    Rectangle { width: 11px; Rectangle { y: (parent.height - self.height) / 2; width: 11px; height: 11px; border-radius: 3px; background: root.ink; } }
+    Text { text: root.label; color: Theme.text; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
+    Text { text: root.value; color: Theme.secondary; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 0; }
+}
+
+component SummaryRule inherits Rectangle {
+    in property <string> name;
+    in property <string> route;
+    in property <bool> checked;
+    in property <bool> locked;
+    in property <bool> busy;
+    callback toggled;
+    height: 38px;
+    Rectangle { y: 0px; height: 1px; background: Theme.border; }
+    HorizontalLayout {
+        padding-left: 6px; padding-right: 4px; spacing: 10px;
+        Text { text: root.name; accessible-label: root.locked ? root.name + " · Fixed route: " + root.route : root.name; color: Theme.text; font-size: 13px; font-weight: 600; width: 90px; overflow: elide; vertical-alignment: center; }
+        SurfaceCard {
+            width: 144px; height: 26px; border-radius: 13px; background: Theme.neutral-badge;
+            HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
+                Rectangle { width: 15px; UiIcon { name: root.route == "Direct" ? "external" : root.route == "Block" ? "block" : "server"; ink: Theme.text; width: 15px; height: 15px; y: (parent.height - self.height) / 2; } }
+                route-text := Text { text: root.route; color: Theme.text; font-size: 12px; min-width: 0px; overflow: elide; vertical-alignment: center; }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle { width: 44px;
+            if root.locked: UiIcon { name: "lock"; x: 13px; y: (parent.height - self.height) / 2; }
+            if !root.locked: RuleSwitch { label: "Rule " + root.name; checked: root.checked; enabled: !root.busy; toggled => { root.toggled(); } }
+        }
+    }
+}
+
+component ProxySummary inherits SurfaceCard {
+    in property <ProxyRow> proxy;
+    height: 138px;
+    background: Theme.field;
+    VerticalLayout {
+        padding: 16px; spacing: 14px;
+        HorizontalLayout {
+            spacing: 16px;
+            Rectangle { width: 48px; height: 48px; border-radius: 12px; background: Theme.neutral-badge;
+                UiIcon { name: "server"; ink: Theme.text; x: 12px; y: 12px; width: 24px; height: 24px; }
+            }
+            VerticalLayout { spacing: 4px; alignment: center; min-width: 0px;
+                Text { text: root.proxy.name; color: Theme.text; font-size: 18px; font-weight: 600; min-width: 0px; overflow: elide; }
+                HorizontalLayout { spacing: 10px; alignment: start;
+                    Text { text: "SOCKS5"; color: Theme.secondary; font-size: 12px; }
+                    Text { text: root.proxy.address; color: Theme.text; font-size: 13px; min-width: 0px; overflow: elide; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 12px;
+            SurfaceCard { preferred-width: 0px; horizontal-stretch: 1; height: 34px; border-radius: 17px; background: Theme.neutral-badge;
+                Text { text: "Latency  " + (root.proxy.health == 3 ? "Failed" : root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "Not tested"); color: root.proxy.health == 3 ? Theme.danger : Theme.secondary; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; min-width: 0px; overflow: elide; }
+            }
+            SurfaceCard { preferred-width: 0px; horizontal-stretch: 1; height: 34px; border-radius: 17px; background: Theme.neutral-badge;
+                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
+                    if root.proxy.flag-index > 0: Rectangle { width: 24px;
+                        Image { width: 24px; height: 15px; y: (parent.height - self.height) / 2; source: @image-url("../assets/country-flags.png"); source-clip-x: Math.mod(root.proxy.flag-index - 1, 16) * 32; source-clip-y: Math.floor((root.proxy.flag-index - 1) / 16) * 20; source-clip-width: 32; source-clip-height: 20; }
+                    }
+                    Text { text: root.proxy.location == "" ? "Location unknown" : root.proxy.location; color: Theme.secondary; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; }
+                }
+            }
+        }
+    }
+}
+
+export component DashboardView inherits ScrollView {
+    in property <bool> active;
+    in property <bool> busy;
+    in property <string> status;
+    in property <string> uptime;
+    in property <string> connection-count;
+    in property <int> enabled-rule-count;
+    in property <[ProxyRow]> proxies;
+    in property <[RuleRow]> rules;
+    in property <string> fallback-label;
+    in property <string> uploaded;
+    in property <string> downloaded;
+    in property <string> upload-rate;
+    in property <string> download-rate;
+    in property <string> upload-path;
+    in property <string> download-path;
+    callback open-proxies;
+    callback open-rules;
+    callback toggle-rule(string);
+    horizontal-scrollbar-policy: always-off;
+    content-width: self.visible-width;
+    content-height: max(self.visible-height, content.preferred-height);
+    content := VerticalLayout {
+        alignment: start; spacing: 20px; padding-right: 3px; padding-bottom: 16px;
+        HorizontalLayout {
+            height: 70px; spacing: 20px;
+            SurfaceCard {
+                preferred-width: 0px; horizontal-stretch: 1.8;
+                HorizontalLayout { padding: 16px; spacing: 10px;
+                    Rectangle { width: 12px; Rectangle { width: 12px; height: 12px; y: (parent.height - self.height) / 2; border-radius: 6px; background: root.active ? Theme.accent : Theme.warning; } }
+                    Text { text: root.status; color: Theme.text; font-size: 15px; font-weight: 600; min-width: 0px; wrap: word-wrap; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: "Session  " + root.uptime; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
+                }
+            }
+            MetricCard { value: root.connection-count; label: "Active connections"; }
+            MetricCard { value: root.proxies.length; label: root.proxies.length == 1 ? "Proxy configured" : "Proxies configured"; }
+            MetricCard { value: root.enabled-rule-count + " / " + root.rules.length; label: "Rules enabled"; }
+        }
+        SurfaceCard {
+            height: 202px;
+            VerticalLayout {
+                padding: 18px; spacing: 16px;
+                HorizontalLayout { height: 25px; spacing: 24px;
+                    Text { text: "Traffic"; color: Theme.text; font-size: 20px; font-weight: 600; horizontal-stretch: 1; }
+                    TrafficLegend { label: "Download"; value: root.downloaded + " · " + root.download-rate; ink: Theme.chart-download; }
+                    TrafficLegend { label: "Upload"; value: root.uploaded + " · " + root.upload-rate; ink: Theme.chart-upload; }
+                }
+                plot := Rectangle {
+                    clip: true;
+                    for i in 4: Rectangle { y: i * (parent.height - 1px) / 3; height: 1px; background: Theme.border; opacity: 0.45; }
+                    for i in 9: Rectangle { x: i * (parent.width - 1px) / 8; width: 1px; background: Theme.border; opacity: 0.25; }
+                    Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.download-path; stroke: Theme.chart-download; stroke-width: 1.5px; }
+                    Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.upload-path; stroke: Theme.chart-upload; stroke-width: 1.5px; }
+                    if root.download-path == "": Text { text: "Traffic will appear as connections transfer data"; color: Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 24px;
+            SurfaceCard {
+                preferred-width: 0px; horizontal-stretch: 0.9; height: 222px;
+                VerticalLayout { padding: 16px; spacing: 12px; alignment: start;
+                    SectionHeading { title: "Proxy"; action-accessibility: "View Proxies"; open => { root.open-proxies(); } }
+                    if root.proxies.length > 0: ProxySummary { proxy: root.proxies[0]; }
+                    if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; height: 138px; vertical-alignment: center; }
+                }
+            }
+            SurfaceCard {
+                preferred-width: 0px; horizontal-stretch: 1.1; height: 222px;
+                VerticalLayout { padding: 16px; spacing: 0px; alignment: start;
+                    SectionHeading { title: "Routing rules"; action-accessibility: "View Rules"; open => { root.open-rules(); } }
+                    Rectangle { height: 8px; }
+                    SummaryRule { name: "Local"; route: "Direct"; locked: true; }
+                    if root.rules.length > 0: SummaryRule { name: root.rules[0].name; route: root.rules[0].route; checked: root.rules[0].enabled; busy: root.busy; toggled => { root.toggle-rule(root.rules[0].id); } }
+                    if root.rules.length > 1: SummaryRule { name: root.rules[1].name; route: root.rules[1].route; checked: root.rules[1].enabled; busy: root.busy; toggled => { root.toggle-rule(root.rules[1].id); } }
+                    SummaryRule { name: "Fallback"; route: root.fallback-label; locked: true; }
+                }
+            }
+        }
+    }
+}

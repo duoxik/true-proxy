@@ -1,8 +1,11 @@
-True Proxy 0.12.4
+True Proxy 0.12.5
 
-- X-RAY Profiles supports VLESS RAW/TCP with REALITY, including XTLS Vision, in individual links and HTTPS subscriptions.
-- Paste encrypted `v2raytun://crypt/` links directly into Import profile. The first encrypted import downloads hpwnr v1.0.3 from its GitHub release and verifies its SHA-256. True Proxy runs it without administrator privileges and decrypts the link locally.
+- Redesigned Dashboard with a dark palette, lime accents, session status, compact metrics, and proxy and routing-rule summaries.
+- Added a live traffic chart using real SOCKS upload/download counters, a shared scale, and at most 60 samples. Sampling pauses while the dashboard is hidden.
+- Extracted reusable native Slint cards, metrics, and section headings for future page updates.
+- Dark appearance is the default for new installations; saved appearance preferences are preserved.
+- Removed sidebar focus outlines, including the outline that appeared when restoring the window. Keyboard navigation remains available.
 
 Windows x64. WinDivert is bundled in the executable. The interception backend is experimental.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.4/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.5/docs/branding/slint-badge.png)](https://slint.dev)

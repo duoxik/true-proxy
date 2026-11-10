@@ -25,10 +25,16 @@ pub fn refresh(ui: &MainWindow) {
     ui.set_surface_fresh(!ui.get_surface_fresh());
     ui.window().request_redraw();
 }
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(default)]
 struct Preferences {
     dark_theme: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self { dark_theme: true }
+    }
 }
 
 impl Preferences {
@@ -264,15 +270,15 @@ mod tests {
         };
 
         let ui = window();
-        assert!(!ui.get_dark_theme());
-        click(&ui, "Dark theme");
-        assert!(ui.get_dark_theme() && Preferences::load(&path).unwrap().dark_theme);
-        ui.hide().unwrap();
-
-        let ui = window();
         assert!(ui.get_dark_theme());
         click(&ui, "Light theme");
         assert!(!ui.get_dark_theme() && !Preferences::load(&path).unwrap().dark_theme);
+        ui.hide().unwrap();
+
+        let ui = window();
+        assert!(!ui.get_dark_theme());
+        click(&ui, "Dark theme");
+        assert!(ui.get_dark_theme() && Preferences::load(&path).unwrap().dark_theme);
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
     }

@@ -9,21 +9,21 @@ export struct ProcessSummary { name: string, icon: image, active: int, events: i
 export struct ConnectionFilterOption { key: string, label: string, checked: bool }
 
 export global Theme {
-    in property <bool> dark;
+    in property <bool> dark: true;
     out property <color> background: dark ? #0d0d0d : #f1f3f5;
     out property <color> background-refresh: dark ? #0e0e0e : #f1f3f6;
     out property <color> sidebar: dark ? #0b0b0b : #ffffff;
-    out property <color> surface: dark ? #151516 : #ffffff;
+    out property <color> surface: dark ? #101010 : #ffffff;
     out property <color> surface-hover: dark ? #292a2d : #f7f5ff;
     out property <color> pressed: dark ? #383a3e : #ede7ff;
-    out property <color> field: dark ? #1b1c1e : #f7f8f9;
-    out property <color> border: dark ? #292b2f : #e0e3e7;
+    out property <color> field: dark ? #151515 : #f7f8f9;
+    out property <color> border: dark ? #252525 : #e0e3e7;
     out property <color> text: dark ? #f1f1f2 : #141d2d;
     out property <color> secondary: dark ? #aaacb1 : #4f5c6c;
     out property <color> muted: dark ? #888a90 : #687585;
-    out property <color> accent: dark ? #d6f94a : #7846db;
+    out property <color> accent: dark ? #c4f52b : #7846db;
     out property <color> accent-hover: dark ? #e3fc7c : #6235bf;
-    out property <color> accent-soft: dark ? #292a2d : #f3efff;
+    out property <color> accent-soft: dark ? #292e14 : #f3efff;
     out property <color> primary: dark ? self.accent : #8354ea;
     out property <color> primary-hover: dark ? self.accent-hover : #7546d9;
     out property <color> primary-pressed: dark ? #bedf35 : #6739c9;
@@ -42,11 +42,35 @@ export global Theme {
     out property <color> success-soft: dark ? #1d3327 : #ebf9f0;
     out property <color> danger-soft: dark ? #382427 : #fff1f2;
     out property <color> blue: dark ? #8bb5ff : #2864ca;
+    out property <color> chart-download: dark ? #659dff : #2864ca;
+    out property <color> chart-upload: dark ? #8df574 : #167b45;
     out property <length> radius-small: 10px;
     out property <length> radius-medium: 14px;
     out property <length> radius-large: 18px;
     // Fluent scrollbars overlay the viewport; reserve the same space in toolbars.
     out property <length> scroll-gutter: 15px;
+}
+
+// Shared page building blocks. Content remains native Slint throughout.
+export component SurfaceCard inherits Rectangle {
+    min-width: 0px;
+    background: Theme.surface;
+    border-radius: Theme.radius-large;
+    border-width: 1px;
+    border-color: Theme.border;
+    @children
+}
+
+export component MetricCard inherits SurfaceCard {
+    in property <string> value;
+    in property <string> label;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        padding: 18px; spacing: 3px; alignment: center;
+        Text { text: root.value; color: Theme.text; font-size: 24px; font-weight: 600; min-width: 0px; overflow: elide; height: 28px; }
+        Text { text: root.label; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; height: 16px; }
+    }
 }
 
 // Small, independently drawn outline icons for the desktop UI.
@@ -66,6 +90,8 @@ export component UiIcon inherits Rectangle {
         commands: root.glyph(root.name);
     }
     pure function glyph(name: string) -> string {
+        if name == "external" { return "M6 18 L18 6 M7 6 H18 V17"; }
+        if name == "brand" { return "M3 7 H21 M15 1 L21 7 L15 13 M21 17 H3 M9 11 L3 17 L9 23"; }
         if name == "dashboard" { return "M3 3 H9 V9 H3 Z M15 3 H21 V9 H15 Z M3 15 H9 V21 H3 Z M15 15 H21 V21 H15 Z"; }
         if name == "server" { return "M5 4 H19 Q21 4 21 6 V9 Q21 11 19 11 H5 Q3 11 3 9 V6 Q3 4 5 4 Z M5 13 H19 Q21 13 21 15 V18 Q21 20 19 20 H5 Q3 20 3 18 V15 Q3 13 5 13 Z M7 7.5 H8 M7 16.5 H8 M12 7.5 H17 M12 16.5 H17"; }
         if name == "rules" { return "M5 3 H19 Q21 3 21 5 V19 Q21 21 19 21 H5 Q3 21 3 19 V5 Q3 3 5 3 Z M7 7 L8 8 L10 6 M13 7 H17 M7 12 L8 13 L10 11 M13 12 H17 M7 17 L8 18 L10 16 M13 17 H17"; }
@@ -144,6 +170,16 @@ export component ActionButton inherits Rectangle {
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
     // Like Slint's standard Button: keyboard focus must not cover the pointer target.
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
+}
+
+export component SectionHeading inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> action-label: "View all";
+    in property <string> action-accessibility;
+    callback open;
+    height: 30px;
+    Text { text: root.title; color: Theme.text; font-size: 19px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+    ActionButton { label: root.action-label; accessible-label: root.action-accessibility; icon: "external"; quiet: true; height: 30px; clicked => { root.open(); } }
 }
 
 export component RuleSwitch inherits Rectangle {

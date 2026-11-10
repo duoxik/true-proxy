@@ -582,12 +582,19 @@ mod ui_tests {
             move || weak.unwrap().set_dialog(0)
         });
 
-        for label in ["Rule Local", "Rule Fallback"] {
-            let switch = ElementHandle::find_by_accessible_label(&ui, label)
-                .find(|element| element.accessible_role() == Some(AccessibleRole::Switch))
-                .unwrap();
-            assert_eq!(switch.accessible_checked(), Some(true));
-            assert_eq!(switch.accessible_enabled(), Some(false));
+        for name in ["Local", "Fallback"] {
+            assert!(
+                ElementHandle::find_by_accessible_label(
+                    &ui,
+                    &format!("{name} · Fixed route: Direct")
+                )
+                .next()
+                .is_some()
+            );
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, &format!("Rule {name}"))
+                    .all(|element| element.accessible_role() != Some(AccessibleRole::Switch))
+            );
         }
         click(&ui, "View Rules");
         assert_eq!(ui.get_page(), 1);

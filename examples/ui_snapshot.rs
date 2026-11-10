@@ -141,6 +141,7 @@ fn main() -> Result<()> {
     .map_err(|error| anyhow::anyhow!("Memory platform: {error}"))?;
 
     let ui = MainWindow::new()?;
+    ui.set_dark_theme(false);
     let main_adapter = windows
         .borrow()
         .last()
@@ -157,6 +158,24 @@ fn main() -> Result<()> {
     ui.set_upload_share(2.1 / (2.1 + 16.4));
     ui.set_has_transfer(true);
     ui.set_connection_count("4".into());
+    // Deterministic chart fixture, confined to this offline example.
+    let chart = |amplitude: f64| {
+        use std::fmt::Write;
+        let mut path = String::new();
+        for i in 0..60 {
+            let y = 98.0
+                - amplitude * (0.5 + 0.25 * (i as f64 * 0.6).sin() + 0.2 * (i as f64 * 0.17).sin());
+            let _ = write!(
+                path,
+                "{}{} {y:.2} ",
+                if i == 0 { 'M' } else { 'L' },
+                i as f64 * 600.0 / 59.0
+            );
+        }
+        path
+    };
+    ui.set_download_path(chart(80.0).into());
+    ui.set_upload_path(chart(9.0).into());
     ui.set_proxy_names(model(vec!["VPN".into(), "Work".into()]));
     ui.set_proxies(model(vec![
         ProxyRow {
@@ -351,6 +370,12 @@ fn main() -> Result<()> {
     save(&main_adapter, &destination.join("routes-dark.png"))?;
     ui.set_page(0);
     save(&main_adapter, &destination.join("dashboard-dark.png"))?;
+    ui.window().set_size(slint::LogicalSize::new(960., 640.));
+    save(
+        &main_adapter,
+        &destination.join("dashboard-dark-compact.png"),
+    )?;
+    ui.window().set_size(slint::LogicalSize::new(1240., 780.));
     ui.set_page(3);
     save(&main_adapter, &destination.join("connections-dark.png"))?;
     ui.set_page(4);

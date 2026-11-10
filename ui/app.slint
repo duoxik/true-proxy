@@ -1,3 +1,4 @@
+import { DashboardView } from "dashboard.slint";
 import { DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
@@ -15,7 +16,6 @@ component NavItem inherits Rectangle {
     in property <string> label;
     in property <string> icon;
     in property <bool> selected;
-    private property <bool> pointer-focused;
     callback clicked;
     height: 35px;
     border-radius: Theme.radius-small;
@@ -25,7 +25,7 @@ component NavItem inherits Rectangle {
         padding-right: 10px;
         spacing: 11px;
         Rectangle { width: 18px;
-            UiIcon { name: root.icon; ink: root.selected ? Theme.accent : Theme.muted; y: (parent.height - self.height) / 2; }
+            UiIcon { name: root.icon; ink: root.selected ? Theme.accent : Theme.text; y: (parent.height - self.height) / 2; }
         }
         Text {
             text: root.label;
@@ -38,16 +38,13 @@ component NavItem inherits Rectangle {
     }
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.pointer-focused = true; focus.focus(); root.clicked(); }
+        clicked => { focus.focus(); root.clicked(); }
     }
     focus := FocusScope {
         width: 0px;
-        changed has-focus => { if !self.has-focus { root.pointer-focused = false; } }
         key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; }
     }
     forward-focus: focus;
-    border-width: 1px;
-    border-color: focus.has-focus && !root.pointer-focused ? Theme.accent : transparent;
     accessible-role: button; accessible-label: root.label; accessible-action-default => { root.clicked(); }
 }
 
@@ -66,8 +63,6 @@ component SidebarGroup inherits VerticalLayout {
         height: 24px;
         border-radius: Theme.radius-small;
         background: touch.has-hover ? Theme.surface-hover : transparent;
-        border-width: 1px;
-        border-color: focus.has-focus ? Theme.accent : transparent;
         accessible-role: button;
         accessible-label: root.title;
         accessible-expanded: root.expanded;
@@ -241,80 +236,6 @@ component ListEditor inherits VerticalLayout {
             }
         }
         ActionButton { label: "×"; height: 34px; accessible-label: value == "" ? "Remove row " + (index + 1) + " · " + root.title : "Remove " + value; clicked => { root.remove(index); } }
-    }
-}
-
-component StatCard inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-    in property <string> note;
-    in property <color> marker: Theme.accent;
-    in property <bool> transfer;
-    in property <string> uploaded;
-    in property <string> downloaded;
-    in property <string> upload-rate;
-    in property <string> download-rate;
-    in property <float> upload-share;
-    in property <bool> has-transfer;
-    min-width: 0px;
-    preferred-width: 0px;
-    horizontal-stretch: root.transfer ? 1.35 : 1;
-    background: Theme.surface;
-    border-radius: Theme.radius-medium;
-    border-width: 1px;
-    border-color: Theme.border;
-    if !root.transfer: Rectangle {
-        x: 0px;
-        y: 12px;
-        width: 4px;
-        height: parent.height - 24px;
-        border-radius: 2px;
-        background: root.marker;
-    }
-    VerticalLayout {
-        padding: 13px;
-        padding-left: root.transfer ? 13px : 16px;
-        spacing: 5px;
-        alignment: start;
-        Text { text: root.label; font-size: 10px; font-weight: 600; color: Theme.secondary; overflow: elide; min-width: 0px; }
-        if !root.transfer: Text { text: root.value; font-size: 23px; font-weight: 700; color: Theme.text; overflow: elide; min-width: 0px; }
-        if root.transfer: VerticalLayout {
-            spacing: 5px;
-            HorizontalLayout {
-                spacing: 6px;
-                VerticalLayout {
-                    spacing: 2px;
-                    min-width: 0px;
-                    preferred-width: 0px;
-                    horizontal-stretch: 1;
-                    Text { text: "↑ " + root.uploaded; font-size: 12px; font-weight: 700; color: Theme.success; overflow: elide; min-width: 0px; }
-                    Text { text: root.upload-rate; font-size: 10px; color: Theme.muted; overflow: elide; min-width: 0px; }
-                }
-                Rectangle { width: 1px; background: Theme.border; }
-                VerticalLayout {
-                    spacing: 2px;
-                    min-width: 0px;
-                    preferred-width: 0px;
-                    horizontal-stretch: 1;
-                    Text { text: "↓ " + root.downloaded; font-size: 12px; font-weight: 700; color: Theme.blue; overflow: elide; min-width: 0px; horizontal-alignment: right; }
-                    Text { text: root.download-rate; font-size: 10px; color: Theme.muted; overflow: elide; min-width: 0px; horizontal-alignment: right; }
-                }
-            }
-            Rectangle {
-                height: 6px;
-                border-radius: 3px;
-                clip: true;
-                background: root.has-transfer ? Theme.blue : Theme.border;
-                if root.has-transfer: Rectangle {
-                    x: 0px;
-                    y: 0px;
-                    width: parent.width * min(max(root.upload-share, 0), 1);
-                    height: parent.height;
-                    background: Theme.success;
-                }
-            }
-        }
-        if root.note != "": Text { text: root.note; font-size: 11px; color: Theme.muted; overflow: elide; min-width: 0px; }
     }
 }
 
@@ -541,143 +462,6 @@ component CountryFlag inherits Rectangle {
     }
 }
 
-component ProxyPreview inherits Rectangle {
-    in property <ProxyRow> proxy;
-    private property <bool> measured: root.proxy.health == 2 && root.proxy.status != "";
-    private property <bool> failed: root.proxy.health == 3;
-    private property <color> latency-ink: root.failed ? Theme.danger : root.measured ? Theme.success : Theme.muted;
-    min-width: 0px;
-    preferred-width: 0px;
-    horizontal-stretch: 1;
-    height: 80px;
-    border-radius: Theme.radius-small;
-    border-width: 1px;
-    border-color: root.measured ? Theme.selection : Theme.border;
-    background: Theme.field;
-    if root.measured || root.failed: Rectangle {
-        x: 5px;
-        y: 9px;
-        width: 3px;
-        height: parent.height - 18px;
-        border-radius: 2px;
-        background: root.latency-ink;
-    }
-    HorizontalLayout {
-        padding: 9px;
-        padding-left: 15px;
-        spacing: 10px;
-        Rectangle {
-            width: 36px;
-            Rectangle {
-                y: (parent.height - self.height) / 2;
-                height: 36px;
-                border-radius: Theme.radius-small;
-                background: Theme.accent-soft;
-                UiIcon { name: "server"; ink: Theme.accent; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            spacing: 3px;
-            min-width: 0px;
-            Text { text: root.proxy.name; color: Theme.text; font-size: 14px; font-weight: 600; overflow: elide; min-width: 0px; }
-            HorizontalLayout {
-                spacing: 7px;
-                RouteBadge { value: "SOCKS5"; width: 58px; height: 18px; }
-                Text {
-                    text: root.proxy.address;
-                    color: Theme.secondary;
-                    font-family: "Consolas";
-                    font-size: 11px;
-                    overflow: elide;
-                    min-width: 0px;
-                    vertical-alignment: center;
-                }
-            }
-            HorizontalLayout {
-                spacing: 8px;
-                alignment: start;
-                Text {
-                    text: "Latency  " + (root.failed ? "-1 ms" : root.measured ? root.proxy.status : "—");
-                    color: root.latency-ink;
-                    font-size: 11px;
-                    horizontal-stretch: 0;
-                    vertical-alignment: center;
-                }
-                HorizontalLayout {
-                    spacing: 4px;
-                    min-width: 0px;
-                    horizontal-stretch: 0;
-                    Text {
-                        text: "Location";
-                        color: Theme.secondary;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-                    if root.proxy.flag-index > 0: CountryFlag { index: root.proxy.flag-index; }
-                    Text {
-                        text: root.proxy.location == "" ? "—" : root.proxy.location;
-                        color: Theme.secondary;
-                        font-size: 11px;
-                        min-width: 0px;
-                        overflow: elide;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-        }
-    }
-}
-
-component RulePreview inherits Rectangle {
-    in property <RuleRow> rule;
-    in property <string> name: root.rule.name;
-    in property <string> route: root.rule.route;
-    in property <bool> active: root.rule.enabled;
-    in property <bool> fixed-route: false;
-    in property <bool> busy: false;
-    callback toggled;
-    min-width: 0px;
-    height: 38px;
-    border-radius: Theme.radius-small;
-    border-width: 1px;
-    border-color: Theme.border;
-    background: root.active ? Theme.surface : Theme.field;
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        spacing: 10px;
-        Text {
-            text: root.name;
-            color: root.active ? Theme.text : Theme.muted;
-            font-size: 13px;
-            font-weight: 600;
-            overflow: elide;
-            width: 128px;
-            vertical-alignment: center;
-        }
-        Rectangle {
-            width: route-badge.width;
-            route-badge := RouteBadge {
-                value: root.route;
-                y: (parent.height - self.height) / 2;
-                compact: true;
-                height: 24px;
-            }
-        }
-        Rectangle { horizontal-stretch: 1; }
-        Rectangle {
-            width: 44px;
-            RuleSwitch {
-                label: "Rule " + root.name;
-                checked: root.active;
-                enabled: !root.fixed-route && !root.busy;
-                toggled => { root.toggled(); }
-            }
-        }
-    }
-}
-
 component ProxySelectionCheck inherits Rectangle {
     in property <string> label;
     in property <bool> checked;
@@ -900,6 +684,8 @@ export component MainWindow inherits Window {
     in property <string> downloaded: "0 B";
     in property <string> upload-rate: "0 B/s";
     in property <string> download-rate: "0 B/s";
+    in property <string> upload-path;
+    in property <string> download-path;
     in property <float> upload-share: 0;
     in property <bool> has-transfer: false;
     in property <string> connection-count: "0";
@@ -1027,6 +813,11 @@ export component MainWindow inherits Window {
                             padding: 16px;
                             spacing: 15px;
                             alignment: start;
+                            HorizontalLayout {
+                                height: 52px; spacing: 16px; padding-left: 12px;
+                                Rectangle { width: 32px; UiIcon { name: "brand"; ink: Theme.accent; width: 32px; height: 32px; y: 6px; } }
+                                Text { text: "TRUE PROXY"; color: Theme.text; font-size: 17px; font-weight: 600; vertical-alignment: center; }
+                            }
                             SidebarGroup {
                                 title: "PROXY";
                                 selection: root.page;
@@ -1107,7 +898,25 @@ export component MainWindow inherits Window {
                         clicked => { root.add-rule(); }
                     }
                 }
-                if root.page != 1 && root.page != 3 && root.page != 6: HorizontalLayout {
+                if root.page == 0: VerticalLayout {
+                    spacing: 10px; vertical-stretch: 0;
+                    Text { text: "Overview  /  Dashboard"; color: Theme.secondary; font-size: 12px; }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        VerticalLayout { spacing: 3px;
+                            Text { text: "Dashboard"; color: Theme.text; font-size: 32px; font-weight: 700; }
+                            Text { text: "Monitor your proxy traffic and manage rules."; color: Theme.secondary; font-size: 14px; }
+                        }
+                        ActionButton {
+                            label: root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing";
+                            icon: root.active ? "stop" : "play"; accessible-label: "Routing";
+                            enabled: !root.busy; height: 40px; primary: !root.active;
+                            clicked => { root.toggle(); }
+                        }
+                    }
+                    Rectangle { height: 12px; }
+                }
+                if root.page != 0 && root.page != 1 && root.page != 3 && root.page != 6: HorizontalLayout {
                     height: 44px;
                     spacing: 14px;
                     Text {
@@ -1178,112 +987,16 @@ export component MainWindow inherits Window {
                         ActionButton { label: "Restart"; height: 34px; enabled: root.active && !root.busy; clicked => { root.restart-routing(); } }
                     }
                 }
-                if root.page == 0: ScrollView {
-                    horizontal-scrollbar-policy: always-off;
-                    content-width: self.visible-width;
-                    content-height: max(self.visible-height, overview-content.preferred-height);
-                    overview-content := VerticalLayout {
-                        alignment: start;
-                        spacing: 16px;
-                        padding-right: 3px;
-                        padding-bottom: 12px;
-                        HorizontalLayout {
-                            height: 104px;
-                            spacing: 10px;
-                            StatCard { label: "ACTIVE CONNECTIONS"; value: root.connection-count; note: "Current session"; }
-                            StatCard { label: "PROXIES"; value: root.proxies.length; note: "Configured"; marker: Theme.success; }
-                            StatCard { label: "RULES"; value: root.enabled-rule-count; note: root.enabled-rule-count + " / " + root.rules.length + " enabled"; marker: Theme.success; }
-                            StatCard {
-                                label: "DATA TRANSFER";
-                                transfer: true;
-                                uploaded: root.uploaded;
-                                downloaded: root.downloaded;
-                                upload-rate: root.upload-rate;
-                                download-rate: root.download-rate;
-                                upload-share: root.upload-share;
-                                has-transfer: root.has-transfer;
-                            }
-                            StatCard { label: "UPTIME"; value: root.uptime; note: root.active ? "Current session" : "Routing paused"; }
-                        }
-                        Rectangle {
-                            height: dashboard-proxies.preferred-height;
-                            border-radius: Theme.radius-medium;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            background: Theme.surface;
-                            dashboard-proxies := VerticalLayout {
-                                padding: 13px;
-                                spacing: 11px;
-                                HorizontalLayout {
-                                    height: 34px;
-                                    spacing: 8px;
-                                    Text { text: "Proxies"; color: Theme.text; font-size: 15px; font-weight: 600; width: 54px; vertical-alignment: center; }
-                                    Rectangle { width: 42px; CountPill { value: root.proxies.length; y: (parent.height - self.height) / 2; } }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    ActionButton { label: "View Proxies"; icon: "arrow-right"; height: 32px; clicked => { root.page = 2; } }
-                                }
-                                if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; height: 40px; vertical-alignment: center; }
-                                if root.proxies.length > 0: HorizontalLayout {
-                                    height: 80px;
-                                    spacing: 10px;
-                                    ProxyPreview { proxy: root.proxies[0]; }
-                                    if root.proxies.length > 1: ProxyPreview { proxy: root.proxies[1]; }
-                                    if root.proxies.length == 1: Rectangle { min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
-                                }
-                            }
-                        }
-                        Rectangle {
-                            height: dashboard-rules.preferred-height;
-                            border-radius: Theme.radius-medium;
-                            border-width: 1px;
-                            border-color: Theme.border;
-                            background: Theme.surface;
-                            dashboard-rules := VerticalLayout {
-                                padding: 13px;
-                                spacing: 10px;
-                                HorizontalLayout {
-                                    height: 34px;
-                                    spacing: 8px;
-                                    Text { text: "Routing rules"; color: Theme.text; font-size: 15px; font-weight: 600; width: 96px; vertical-alignment: center; }
-                                    Rectangle {
-                                        width: root.rules.length >= 100 ? 72px : 52px;
-                                        CountPill {
-                                            value: (root.enabled-rule-count + 2) + " / " + (root.rules.length + 2);
-                                            width: parent.width;
-                                            y: (parent.height - self.height) / 2;
-                                        }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    ActionButton { label: "View Rules"; icon: "arrow-right"; height: 32px; clicked => { root.page = 1; } }
-                                }
-                                VerticalLayout {
-                                    spacing: 6px;
-                                    RulePreview {
-                                        name: "Local";
-                                        route: "Direct";
-                                        active: true;
-                                        fixed-route: true;
-                                    }
-                                    if root.rules.length > 0: RulePreview {
-                                        rule: root.rules[0];
-                                        busy: root.busy;
-                                        toggled => { root.toggle-rule(root.rules[0].id); }
-                                    }
-                                    if root.rules.length > 1: RulePreview {
-                                        rule: root.rules[1];
-                                        busy: root.busy;
-                                        toggled => { root.toggle-rule(root.rules[1].id); }
-                                    }
-                                    RulePreview {
-                                        name: "Fallback";
-                                        route: root.fallback-label;
-                                        active: true;
-                                        fixed-route: true;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if root.page == 0: DashboardView {
+                    active: root.active; busy: root.busy; status: root.status; uptime: root.uptime;
+                    connection-count: root.connection-count; enabled-rule-count: root.enabled-rule-count;
+                    proxies: root.proxies; rules: root.rules; fallback-label: root.fallback-label;
+                    uploaded: root.uploaded; downloaded: root.downloaded;
+                    upload-rate: root.upload-rate; download-rate: root.download-rate;
+                    upload-path: root.upload-path; download-path: root.download-path;
+                    open-proxies => { root.page = 2; }
+                    open-rules => { root.page = 1; }
+                    toggle-rule(id) => { root.toggle-rule(id); }
                 }
                 if root.page == 1: VerticalLayout {
                     spacing: 8px;

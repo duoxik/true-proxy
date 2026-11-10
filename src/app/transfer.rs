@@ -393,6 +393,7 @@ mod tests {
     #[test]
     fn coloring_is_limited_to_the_visible_lines_and_cancel_stops_validation() {
         let ui = window();
+        ui.set_dark_theme(false);
         wire_copy(
             &ui,
             super::super::ProfileState::new(Config::default()),
