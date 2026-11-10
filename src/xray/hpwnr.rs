@@ -44,11 +44,11 @@ pub(super) fn resolve<'a>(root: &Path, input: &'a str) -> Result<Cow<'a, str>> {
                 .all(|b| b.is_ascii_alphanumeric() || b"+/_-=".contains(&b)),
         "Invalid encrypted v2RayTun link"
     );
-    let binary = assets::installed_hpwnr(root)?
+    let binary = assets::hpwnr_installation(root)?
         .context("Install the hpwnr module to import encrypted v2RayTun links")?;
     let output = run_link_decoder(
-        &binary,
-        assets::HPWNR_SHA256,
+        &binary.executable,
+        &binary.sha256,
         &format!("hpwnr.exe v2raytun://crypt/{payload}"),
     )?;
     Ok(Cow::Owned(plaintext(&output)?.to_owned()))

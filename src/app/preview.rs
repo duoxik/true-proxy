@@ -17,7 +17,9 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
         active: true,
     };
     xray.set_installed(true);
-    xray.set_version("Sample core".into());
+    xray.set_version("26.10.31".into());
+    xray.set_hpwnr_installed(true);
+    xray.set_hpwnr_version("1.0.3".into());
     xray.set_selected_profile(primary.clone());
     xray.set_profiles(super::model(vec![primary]));
     xray.set_subscriptions(super::model(vec![XraySubscriptionGroup {
@@ -71,7 +73,9 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     xray.on_import_profile(move |input| {
         if let Some(ui) = weak.upgrade() {
             let xray = ui.global::<XrayModule>();
-            xray.set_hpwnr_required(true_proxy::xray::hpwnr::encrypted(&input));
+            xray.set_hpwnr_required(
+                true_proxy::xray::hpwnr::encrypted(&input) && !xray.get_hpwnr_installed(),
+            );
             if !xray.get_hpwnr_required() {
                 xray.set_error("Profile imports are disabled in this UI preview.".into());
             }
@@ -96,6 +100,19 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     xray.on_cancel_hpwnr(move || {
         if let Some(ui) = weak.upgrade() {
             ui.global::<XrayModule>().set_hpwnr_required(false);
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_check_hpwnr_updates(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<XrayModule>()
+                .set_hpwnr_update_status("Update checks are disabled in this UI preview.".into());
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_update_hpwnr(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<XrayModule>().invoke_install_hpwnr();
         }
     });
 }

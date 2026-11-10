@@ -13,6 +13,9 @@ mod geodata;
 
 const CORE_MANIFEST: &str = "core.json";
 const GEO_MANIFEST: &str = "geodata.json";
+const HPWNR_MANIFEST: &str = "hpwnr.json";
+const HPWNR_REPOSITORY: &str = "Omegaplexx/hpwnr";
+const HPWNR_ASSET: &str = "hpwnr-windows-x64.exe";
 const MAX_ARCHIVE: u64 = 64 * 1024 * 1024;
 const MAX_GEODATA: u64 = 128 * 1024 * 1024;
 const MAX_METADATA: u64 = 512 * 1024;
@@ -101,6 +104,13 @@ struct CoreRecord {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct DecoderRecord {
+    version: String,
+    sha256: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct GeoRecord {
     directory: String,
 }
@@ -119,6 +129,25 @@ pub fn latest() -> Result<Release> {
 }
 
 pub fn installed_hpwnr(root: &Path) -> Result<Option<PathBuf>> {
+    Ok(hpwnr_installation(root)?.map(|installed| installed.executable))
+}
+
+pub fn hpwnr_installation(root: &Path) -> Result<Option<Installed>> {
+    if let Some(record) = read_record::<DecoderRecord>(&root.join(HPWNR_MANIFEST))? {
+        stable_version(&record.version)?;
+        crate::updates::validate_digest(&record.sha256)?;
+        plain_directory(root)?;
+        let executable = root.join(format!("hpwnr-{}.exe", record.sha256));
+        plain_file(&executable)?;
+        verify_file(&executable, &record.sha256)?;
+        crate::updates::validate_pe(&executable)?;
+        return Ok(Some(Installed {
+            version: record.version,
+            executable,
+            sha256: record.sha256,
+        }));
+    }
+    // Recognize installations made before module update metadata was introduced.
     let target = root.join(HPWNR_FILE);
     match fs::symlink_metadata(&target) {
         Ok(_) => {
@@ -130,11 +159,119 @@ pub fn installed_hpwnr(root: &Path) -> Result<Option<PathBuf>> {
             );
             verify_file(&target, HPWNR_SHA256)?;
             crate::updates::validate_pe(&target)?;
-            Ok(Some(target))
+            Ok(Some(Installed {
+                version: "1.0.3".into(),
+                executable: target,
+                sha256: HPWNR_SHA256.into(),
+            }))
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
+}
+
+pub fn latest_hpwnr() -> Result<Release> {
+    let release = github_release(HPWNR_REPOSITORY)?;
+    Ok(Release {
+        version: stable_version(release.tag_name.trim_start_matches('v'))?.to_string(),
+        asset: release.asset(HPWNR_ASSET, crate::updates::MAX_EXE_SIZE)?,
+    })
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn decoder_manifest_verifies_the_exe_and_rejects_downgrades_without_downloading() -> Result<()> {
+    let stage = Stage::new(&std::env::temp_dir(), "true-proxy-decoder-record")?;
+    assert!(hpwnr_installation(&stage.path)?.is_none());
+    let source = std::env::current_exe()?;
+    let sha256 = hash_file(&source)?;
+    let executable = stage.path.join(format!("hpwnr-{sha256}.exe"));
+    fs::copy(&source, &executable)?;
+    write_record(
+        &stage.path.join(HPWNR_MANIFEST),
+        &DecoderRecord {
+            version: "1.0.4".into(),
+            sha256: sha256.clone(),
+        },
+    )?;
+    assert_eq!(hpwnr_installation(&stage.path)?.unwrap().version, "1.0.4");
+    let old = Release {
+        version: "1.0.3".into(),
+        asset: VerifiedAsset {
+            id: 1,
+            size: 1,
+            sha256: sha256.clone(),
+        },
+    };
+    assert!(
+        install_hpwnr(&stage.path, &old)
+            .unwrap_err()
+            .to_string()
+            .contains("older")
+    );
+    assert_eq!(hpwnr_installation(&stage.path)?.unwrap().version, "1.0.4");
+    fs::write(&executable, b"corrupt")?;
+    assert!(hpwnr_installation(&stage.path).is_err());
+    write_record(
+        &stage.path.join(HPWNR_MANIFEST),
+        &DecoderRecord {
+            version: "1.0.4".into(),
+            sha256: "../../outside".into(),
+        },
+    )?;
+    assert!(hpwnr_installation(&stage.path).is_err());
+    Ok(())
+}
+
+pub fn install_hpwnr(root: &Path, release: &Release) -> Result<Installed> {
+    let version = stable_version(&release.version)?;
+    crate::updates::validate_digest(&release.asset.sha256)?;
+    let previous = hpwnr_installation(root).ok().flatten();
+    if let Some(previous) = &previous {
+        ensure!(
+            version >= stable_version(&previous.version)?,
+            "The hpwnr release is older than the installed version"
+        );
+    }
+    let stage = Stage::new(root, "decoder-update")?;
+    let binary = stage.path.join(HPWNR_ASSET);
+    download_verified(HPWNR_REPOSITORY, &release.asset, &binary)?;
+    crate::updates::validate_pe(&binary)?;
+    let target = root.join(format!("hpwnr-{}.exe", release.asset.sha256));
+    if target.exists() {
+        plain_file(&target)?;
+        verify_file(&target, &release.asset.sha256)?;
+    } else {
+        fs::rename(&binary, &target)?;
+    }
+    write_record(
+        &root.join(HPWNR_MANIFEST),
+        &DecoderRecord {
+            version: release.version.clone(),
+            sha256: release.asset.sha256.clone(),
+        },
+    )?;
+    // Retain the selected snapshot and its predecessor; remove only our known files.
+    for entry in fs::read_dir(root)?.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let owned = name == HPWNR_FILE
+            || name
+                .strip_prefix("hpwnr-")
+                .and_then(|name| name.strip_suffix(".exe"))
+                .is_some_and(|digest| crate::updates::validate_digest(digest).is_ok());
+        if owned
+            && path != target
+            && previous
+                .as_ref()
+                .is_none_or(|previous| path != previous.executable)
+            && plain_file(&path).is_ok()
+        {
+            let _ = fs::remove_file(path);
+        }
+    }
+    hpwnr_installation(root)?.context("The hpwnr installation was not saved")
 }
 
 /// Download only after an explicit module installation request.

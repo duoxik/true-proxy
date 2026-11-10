@@ -418,13 +418,11 @@ fn main() -> Result<()> {
                 )?;
             }
             ui.set_page(4);
-            for section in [1, 2] {
-                ui.set_settings_section(section);
-                save(
-                    &main_adapter,
-                    &destination.join(format!("review-settings-{section}-{theme}-{size}.png")),
-                )?;
-            }
+            ui.set_settings_section(2);
+            save(
+                &main_adapter,
+                &destination.join(format!("review-settings-2-{theme}-{size}.png")),
+            )?;
             ui.set_page(6);
             let xray = ui.global::<XrayModule>();
             for section in 0..7 {
@@ -574,10 +572,12 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     xray.set_hpwnr_required(false);
     xray.set_profile_input("".into());
     xray.set_hpwnr_installed(true);
+    xray.set_hpwnr_version("1.0.3".into());
     ui.set_page(4);
     ui.set_settings_section(2);
     save(adapter, &destination.join("hpwnr-installed.png"))?;
     xray.set_hpwnr_installed(false);
+    xray.set_hpwnr_version("".into());
     ui.set_page(0);
     ui.set_update_available(true);
     ui.set_update_version("999.0.0".into());

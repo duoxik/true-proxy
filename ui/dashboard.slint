@@ -43,12 +43,11 @@ component SummaryRule inherits Rectangle {
     }
 }
 
-component ProxySummary inherits SurfaceCard {
+component ProxySummary inherits Rectangle {
     in property <ProxyRow> proxy;
     height: 138px;
-    background: Theme.field;
     VerticalLayout {
-        padding: 16px; spacing: 14px;
+        padding-top: 8px; padding-bottom: 8px; spacing: 18px;
         HorizontalLayout {
             spacing: 16px;
             Rectangle { width: 48px; height: 48px; border-radius: 12px; background: Theme.neutral-badge;
@@ -64,14 +63,14 @@ component ProxySummary inherits SurfaceCard {
         }
         HorizontalLayout {
             spacing: 12px;
-            SurfaceCard { preferred-width: 0px; horizontal-stretch: 1; height: 34px; border-radius: 17px; background: Theme.neutral-badge;
-                HorizontalLayout { alignment: center; spacing: 6px;
+            Rectangle { preferred-width: 0px; horizontal-stretch: 1; height: 34px;
+                HorizontalLayout { alignment: start; spacing: 6px;
                     Text { text: "Latency"; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
                     Text { text: root.proxy.health == 3 ? "-1 ms" : root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "Not tested"; color: root.proxy.health == 3 ? Theme.danger : root.proxy.health == 2 ? Theme.success : Theme.secondary; font-size: 12px; font-weight: 600; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 0; }
                 }
             }
-            SurfaceCard { preferred-width: 0px; horizontal-stretch: 1; height: 34px; border-radius: 17px; background: Theme.neutral-badge;
-                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
+            Rectangle { preferred-width: 0px; horizontal-stretch: 1; height: 34px;
+                HorizontalLayout { spacing: 8px;
                     if root.proxy.flag-index > 0: Rectangle { width: 24px;
                         Image { width: 24px; height: 15px; y: (parent.height - self.height) / 2; source: @image-url("../assets/country-flags.png"); source-clip-x: Math.mod(root.proxy.flag-index - 1, 16) * 32; source-clip-y: Math.floor((root.proxy.flag-index - 1) / 16) * 20; source-clip-width: 32; source-clip-height: 20; }
                     }

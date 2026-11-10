@@ -198,7 +198,8 @@ mod ui_tests {
                 ("Proxies", 2),
                 ("Connections", 3),
                 ("Logs", 5),
-                ("Settings", 4),
+                ("General", 4),
+                ("Modules", 4),
             ] {
                 let button = ElementHandle::find_by_accessible_label(&ui, label)
                     .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
@@ -210,7 +211,31 @@ mod ui_tests {
                 assert!(position.y + size.height <= height + 0.1);
                 button.mock_single_click(PointerEventButton::Left);
                 assert_eq!(ui.get_page(), page);
+                if page == 4 {
+                    assert_eq!(
+                        ui.get_settings_section(),
+                        if label == "Modules" { 2 } else { 0 }
+                    );
+                }
             }
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Settings")
+                    .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
+                    .is_none()
+            );
+            ui.global::<XrayModule>().set_installed(true);
+            ElementHandle::find_by_element_id(&ui, "MainWindow::navigation-scroll")
+                .next()
+                .unwrap()
+                .scroll(0., -10000.);
+            click(&ui, "General");
+            assert_eq!((ui.get_page(), ui.get_settings_section()), (4, 0));
+            click(&ui, "Modules");
+            assert_eq!((ui.get_page(), ui.get_settings_section()), (4, 2));
+            ElementHandle::find_by_element_id(&ui, "MainWindow::navigation-scroll")
+                .next()
+                .unwrap()
+                .scroll(0., 10000.);
             click(&ui, "Logs");
             let logs = ui.global::<TechnicalLogs>();
             assert!(!logs.get_follow());
@@ -271,8 +296,9 @@ mod ui_tests {
             "Logs",
             "X-RAY",
             "Xray Logs",
-            "SYSTEM",
-            "Settings",
+            "SETTINGS",
+            "General",
+            "Modules",
         ]
         .windows(2)
         {
@@ -281,7 +307,7 @@ mod ui_tests {
         for (heading, links) in [
             ("PROXY", &["Dashboard", "Connections", "Logs"][..]),
             ("X-RAY", &["Xray Dashboard"]),
-            ("SYSTEM", &["Settings"]),
+            ("SETTINGS", &["General", "Modules"]),
         ] {
             let group = ElementHandle::find_by_accessible_label(&ui, heading)
                 .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
@@ -301,7 +327,7 @@ mod ui_tests {
             assert_eq!(group.accessible_expanded(), Some(true));
         }
 
-        let settings = ElementHandle::find_by_accessible_label(&ui, "Settings")
+        let settings = ElementHandle::find_by_accessible_label(&ui, "General")
             .find(|element| element.accessible_role() == Some(AccessibleRole::Button))
             .unwrap();
         let sidebar_x = settings.absolute_position().x;
@@ -326,6 +352,64 @@ mod ui_tests {
         click(&ui, "Xray Logs");
         assert_eq!(ui.get_page(), 6);
         assert_eq!(xray.get_section(), 6);
+    }
+
+    #[test]
+    fn module_header_actions_and_dns_refresh_work_on_first_click() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        xray.set_version("26.10.31".into());
+        xray.set_hpwnr_installed(true);
+        xray.set_hpwnr_version("1.0.3".into());
+        ui.set_page(4);
+        ui.set_settings_section(2);
+        let checks = Rc::new(Cell::new(0));
+        xray.on_check_hpwnr_updates({
+            let checks = checks.clone();
+            move || checks.set(checks.get() + 1)
+        });
+        ui.show().unwrap();
+        click(&ui, "Check for hpwnr updates");
+        assert_eq!(checks.get(), 1);
+        xray.set_busy(true);
+        click(&ui, "Check for hpwnr updates");
+        assert_eq!(checks.get(), 1);
+        xray.set_busy(false);
+        let updates = Rc::new(Cell::new(0));
+        xray.on_update_hpwnr({
+            let updates = updates.clone();
+            move || updates.set(updates.get() + 1)
+        });
+        xray.set_hpwnr_latest_version("1.0.4".into());
+        click(&ui, "Install 1.0.4");
+        assert_eq!(updates.get(), 1);
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Open X-RAY")
+                .next()
+                .is_none()
+        );
+        click(&ui, "Xray Dashboard");
+        assert_eq!(ui.get_page(), 6);
+        xray.set_section(3);
+        xray.set_hosts(slint::ModelRc::new(slint::VecModel::from(vec![
+            XrayHostRow {
+                host: "example.test".into(),
+                address: "203.0.113.1".into(),
+            },
+        ])));
+        let refreshes = Rc::new(Cell::new(0));
+        xray.on_refresh_hosts({
+            let refreshes = refreshes.clone();
+            move || refreshes.set(refreshes.get() + 1)
+        });
+        click(&ui, "Refresh");
+        assert_eq!(refreshes.get(), 1);
+        xray.set_busy(true);
+        click(&ui, "Refresh");
+        assert_eq!(refreshes.get(), 1);
     }
 
     #[test]

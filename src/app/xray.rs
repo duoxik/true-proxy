@@ -27,6 +27,8 @@ enum Command {
     Restart,
     Import(String),
     InstallHpwnr(Option<String>),
+    CheckHpwnrUpdates,
+    UpdateHpwnr,
     RefreshSubscription(String),
     Activate(String),
     Remove(String),
@@ -144,7 +146,9 @@ struct Controller {
     settings_path: PathBuf,
     settings: Settings,
     installed: Option<Installed>,
-    hpwnr_installed: bool,
+    hpwnr_installed: Option<Installed>,
+    hpwnr_latest: Option<Release>,
+    hpwnr_update_status: String,
     latest: Option<Release>,
     runtime: Option<Runtime>,
     runtime_geo: Option<PathBuf>,
@@ -169,7 +173,7 @@ impl Controller {
         let settings = Settings::load(&settings_path)?;
         activity.set_recording(settings.log_recording);
         let installed = assets::installed(&directory)?;
-        let hpwnr_installed = assets::installed_hpwnr(&directory).ok().flatten().is_some();
+        let hpwnr_installed = assets::hpwnr_installation(&directory).ok().flatten();
         let status = if installed.is_some() {
             "Stopped"
         } else {
@@ -182,6 +186,8 @@ impl Controller {
             settings,
             installed,
             hpwnr_installed,
+            hpwnr_latest: None,
+            hpwnr_update_status: String::new(),
             latest: None,
             runtime: None,
             runtime_geo: None,
@@ -241,11 +247,35 @@ impl Controller {
     fn perform(&mut self, command: Command) -> Result<()> {
         match command {
             Command::InstallHpwnr(import) => {
-                assets::hpwnr(&self.directory)?;
-                self.hpwnr_installed = true;
+                let release = assets::latest_hpwnr()?;
+                self.hpwnr_installed = Some(assets::install_hpwnr(&self.directory, &release)?);
+                self.hpwnr_update_status = "Installed".into();
                 if let Some(input) = import {
                     self.perform(Command::Import(input))?;
                 }
+            }
+            Command::CheckHpwnrUpdates => {
+                let release = assets::latest_hpwnr()?;
+                let available = self
+                    .hpwnr_installed
+                    .as_ref()
+                    .is_none_or(|installed| newer(&release.version, &installed.version));
+                self.hpwnr_update_status = if available {
+                    "An hpwnr update is available."
+                } else {
+                    "You're using the latest hpwnr version."
+                }
+                .into();
+                self.hpwnr_latest = available.then_some(release);
+            }
+            Command::UpdateHpwnr => {
+                let release = self
+                    .hpwnr_latest
+                    .as_ref()
+                    .context("Check for hpwnr updates first")?;
+                self.hpwnr_installed = Some(assets::install_hpwnr(&self.directory, release)?);
+                self.hpwnr_latest = None;
+                self.hpwnr_update_status = "hpwnr updated successfully.".into();
             }
             Command::Install | Command::InstallUpdate => {
                 ensure!(
@@ -525,6 +555,9 @@ struct View {
     geo_status: String,
     started: Option<std::time::Instant>,
     hpwnr_installed: bool,
+    hpwnr_version: String,
+    hpwnr_latest: String,
+    hpwnr_update_status: String,
 }
 
 impl View {
@@ -546,13 +579,25 @@ impl View {
                 .unwrap_or(controller.settings.socks_port),
             geo_status: controller.geo_status.clone(),
             started: controller.runtime.as_ref().map(Runtime::started_at),
-            hpwnr_installed: controller.hpwnr_installed,
+            hpwnr_installed: controller.hpwnr_installed.is_some(),
+            hpwnr_version: controller
+                .hpwnr_installed
+                .as_ref()
+                .map_or_else(String::new, |installed| installed.version.clone()),
+            hpwnr_latest: controller
+                .hpwnr_latest
+                .as_ref()
+                .map_or_else(String::new, |release| release.version.clone()),
+            hpwnr_update_status: controller.hpwnr_update_status.clone(),
         }
     }
 
     fn apply(self, ui: &MainWindow, command_done: bool) {
         let xray = ui.global::<XrayModule>();
         xray.set_hpwnr_installed(self.hpwnr_installed);
+        xray.set_hpwnr_version(self.hpwnr_version.into());
+        xray.set_hpwnr_latest_version(self.hpwnr_latest.into());
+        xray.set_hpwnr_update_status(self.hpwnr_update_status.into());
         xray.set_installed(!self.version.is_empty());
         xray.set_version(self.version.into());
         xray.set_latest_version(self.latest.into());
@@ -664,6 +709,9 @@ fn wire_import(ui: &MainWindow, send: Rc<dyn Fn(Command)>) {
 
 fn set_error(xray: &XrayModule<'_>, manages_core: bool, hpwnr: bool, error: String) {
     if hpwnr {
+        if !error.is_empty() {
+            xray.set_hpwnr_update_status("".into());
+        }
         xray.set_hpwnr_error(error.into());
     } else if manages_core {
         xray.set_module_error(error.into());
@@ -728,7 +776,12 @@ fn spawn_worker(
                         Ok(command) => {
                             let catalog_only = matches!(command, Command::LoadGeoTags);
                             let manages_core = command.manages_core();
-                            let hpwnr = matches!(command, Command::InstallHpwnr(_));
+                            let hpwnr = matches!(
+                                command,
+                                Command::InstallHpwnr(_)
+                                    | Command::CheckHpwnrUpdates
+                                    | Command::UpdateHpwnr
+                            );
                             let revision = match &command {
                                 Command::SaveDraft(revision, _) => Some(*revision),
                                 _ => None,
@@ -846,10 +899,17 @@ pub(super) fn wire(
                 return;
             }
             let manages_core = command.manages_core();
-            let hpwnr = matches!(command, Command::InstallHpwnr(_));
+            let checking_hpwnr = matches!(command, Command::CheckHpwnrUpdates);
+            let hpwnr = matches!(
+                command,
+                Command::InstallHpwnr(_) | Command::CheckHpwnrUpdates | Command::UpdateHpwnr
+            );
             if queue(command) {
                 xray.set_busy(true);
                 set_error(&xray, manages_core, hpwnr, String::new());
+                if checking_hpwnr {
+                    xray.set_hpwnr_update_status("Checking for updates…".into());
+                }
             } else {
                 set_error(
                     &xray,
@@ -878,6 +938,8 @@ pub(super) fn wire(
     bind!(on_refresh_hosts, Command::RefreshHosts);
     bind!(on_refresh_geo, Command::RefreshGeo);
     bind!(on_install_hpwnr, Command::InstallHpwnr(None));
+    bind!(on_check_hpwnr_updates, Command::CheckHpwnrUpdates);
+    bind!(on_update_hpwnr, Command::UpdateHpwnr);
     wire_import(ui, send.clone());
     bind!(
         on_refresh_subscription,

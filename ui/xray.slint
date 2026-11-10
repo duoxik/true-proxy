@@ -10,6 +10,9 @@ export struct XrayConnectionRow { time: string, protocol: string, destination: s
 export global XrayModule {
     in property <bool> installed;
     in property <bool> hpwnr-installed;
+    in property <string> hpwnr-version;
+    in property <string> hpwnr-latest-version;
+    in property <string> hpwnr-update-status;
     in-out property <bool> hpwnr-required;
     in property <string> hpwnr-error;
     in property <bool> busy;
@@ -65,6 +68,8 @@ export global XrayModule {
     callback restart;
     callback import-profile(string);
     callback install-hpwnr;
+    callback check-hpwnr-updates;
+    callback update-hpwnr;
     callback confirm-hpwnr;
     callback cancel-hpwnr;
     callback refresh-subscription(string);
@@ -110,10 +115,14 @@ component XrayNotice inherits Rectangle {
 }
 
 export component XrayModuleCard inherits XrayCard {
-    callback open;
     title: "Xray-core"; icon: "boxes";
+    version: XrayModule.version;
+    action-label: XrayModule.installed ? "Check for Updates" : "";
+    action-icon: "refresh";
+    action-enabled: !XrayModule.busy;
+    action => { XrayModule.check-updates(); }
     caption: "Adds a managed local SOCKS5 listener and VLESS profiles. The Xray-core executable is downloaded separately.";
-    HorizontalLayout {
+    if !XrayModule.installed: HorizontalLayout {
         spacing: 8px;
         alignment: start;
         if !XrayModule.installed: ActionButton {
@@ -123,28 +132,11 @@ export component XrayModuleCard inherits XrayCard {
             enabled: !XrayModule.busy;
             clicked => { XrayModule.install(); }
         }
-        if XrayModule.installed: ActionButton {
-            label: "Open X-RAY";
-            icon: "arrow-right";
-            primary: true;
-            clicked => { root.open(); }
-        }
-        if XrayModule.installed: Text {
-            text: "Installed · " + XrayModule.version;
-            color: Theme.success;
-            font-size: 12px;
-            vertical-alignment: center;
-        }
+
     }
-    if XrayModule.installed: HorizontalLayout {
+    if XrayModule.installed && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: HorizontalLayout {
         spacing: 8px;
         alignment: start;
-        ActionButton {
-            label: "Check for Updates";
-            icon: "refresh";
-            enabled: !XrayModule.busy;
-            clicked => { XrayModule.check-updates(); }
-        }
         if XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: ActionButton {
             label: "Install " + XrayModule.latest-version;
             icon: "download";
@@ -161,15 +153,25 @@ export component XrayModuleCard inherits XrayCard {
 
 export component HpwnrModuleCard inherits XrayCard {
     title: "hpwnr"; icon: "lock";
+    version: XrayModule.hpwnr-version;
+    action-label: XrayModule.hpwnr-installed ? "Check for Updates" : "";
+    action-icon: "refresh";
+    action-accessibility: "Check for hpwnr updates";
+    action-enabled: !XrayModule.busy;
+    action => { XrayModule.check-hpwnr-updates(); }
     caption: "Imports encrypted v2RayTun links. Decryption runs locally; the module is downloaded separately.";
-    HorizontalLayout { spacing: 12px; alignment: start;
+    if !XrayModule.hpwnr-installed || XrayModule.hpwnr-latest-version != "": HorizontalLayout { spacing: 12px; alignment: start;
         if !XrayModule.hpwnr-installed: ActionButton {
             label: "Install hpwnr"; icon: "download"; primary: true;
             enabled: !XrayModule.busy;
             clicked => { XrayModule.install-hpwnr(); }
         }
-        Text { text: XrayModule.hpwnr-installed ? "Installed · v1.0.3" : "Not installed · v1.0.3"; color: XrayModule.hpwnr-installed ? Theme.success : Theme.secondary; font-size: 12px; vertical-alignment: center; }
+        if XrayModule.hpwnr-latest-version != "": ActionButton {
+            label: "Install " + XrayModule.hpwnr-latest-version; icon: "download"; primary: true;
+            enabled: !XrayModule.busy; clicked => { XrayModule.update-hpwnr(); }
+        }
     }
+    if XrayModule.hpwnr-update-status != "": XrayNote { text: XrayModule.hpwnr-update-status; }
     if XrayModule.hpwnr-error != "": XrayNotice { message: XrayModule.hpwnr-error; error: true; }
 }
 
@@ -396,16 +398,11 @@ component XrayDns inherits VerticalLayout {
     }
     XrayCard {
         title: "VPN server hosts"; icon: "server";
+        action-label: "Refresh"; action-icon: "refresh";
+        action-enabled: !XrayModule.busy && XrayModule.hosts.length > 0;
+        action => { XrayModule.refresh-hosts(); }
         caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original server name (SNI).";
-        HorizontalLayout {
-            alignment: start;
-            ActionButton {
-                label: "Refresh";
-                icon: "refresh";
-                enabled: !XrayModule.busy && XrayModule.hosts.length > 0;
-                clicked => { XrayModule.refresh-hosts(); }
-            }
-        }
+
         if XrayModule.hosts.length == 0: XrayNote { text: "No VPN server hostnames."; }
         if XrayModule.hosts.length > 0: HorizontalLayout {
             spacing: 8px;

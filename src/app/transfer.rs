@@ -253,9 +253,26 @@ mod tests {
     use std::sync::mpsc;
     use true_proxy::config::Config;
     fn click(ui: &MainWindow, label: &str) {
+        if ui.get_dialog() == 0 && matches!(label, "Import" | "Export") {
+            let viewport = ElementHandle::find_by_element_id(ui, "MainWindow::settings-scroll")
+                .next()
+                .unwrap();
+            let control = ElementHandle::find_by_accessible_label(ui, label)
+                .next()
+                .unwrap();
+            let top = control.absolute_position().y;
+            let bottom = top + control.size().height;
+            let viewport_top = viewport.absolute_position().y;
+            let viewport_bottom = viewport_top + viewport.size().height;
+            if top < viewport_top {
+                viewport.scroll(0., viewport_top - top + 8.);
+            } else if bottom > viewport_bottom {
+                viewport.scroll(0., viewport_bottom - bottom - 8.);
+            }
+        }
         ElementHandle::find_by_accessible_label(ui, label)
             .next()
-            .unwrap()
+            .unwrap_or_else(|| panic!("Missing control: {label}"))
             .mock_single_click(slint::platform::PointerEventButton::Left);
     }
     fn window() -> MainWindow {
@@ -264,7 +281,6 @@ mod tests {
         ui.window().set_size(slint::LogicalSize::new(1120., 780.));
         ui.set_page(4);
         ui.show().unwrap();
-        click(&ui, "Profiles");
         ui
     }
     fn validate_now(ui: &MainWindow, text: &str) {

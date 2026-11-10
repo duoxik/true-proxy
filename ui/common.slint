@@ -37,6 +37,7 @@ export global Theme {
     out property <color> danger: dark ? #f18a96 : #b72b40;
     out property <color> switch-off: dark ? #383a3e : #cbd0d6;
     out property <color> switch-off-thumb: dark ? #e6e7e9 : #ffffff;
+    out property <color> switch-on-thumb: #ffffff;
     out property <color> selection: dark ? #383a3e : #e9ddff;
     out property <color> neutral-badge: dark ? #252629 : #eff1f4;
     out property <color> overlay: dark ? #000000a8 : #19212e82;
@@ -123,33 +124,7 @@ export component UiIcon inherits Rectangle {
 }
 
 // A single shell for settings, profile and module panels on every page.
-export component FormCard inherits SurfaceCard {
-    in property <string> title;
-    in property <string> caption;
-    in property <string> icon;
-    height: content.preferred-height;
-    vertical-stretch: 0;
-    content := VerticalLayout {
-        padding: 20px; spacing: 16px; alignment: start;
-        if root.title != "": HorizontalLayout {
-            height: max(40px, heading.preferred-height);
-            spacing: 12px;
-            if root.icon != "": Rectangle {
-                width: 40px;
-                Rectangle { height: 40px; y: (parent.height - self.height) / 2;
-                    background: Theme.field; border-radius: 12px;
-                    UiIcon { name: root.icon; ink: Theme.text; width: 20px; height: 20px; x: 10px; y: 10px; }
-                }
-            }
-            heading := VerticalLayout {
-                alignment: center; spacing: 4px; min-width: 0px;
-                Text { text: root.title; color: Theme.text; font-size: 18px; font-weight: 600; min-width: 0px; overflow: elide; }
-                if root.caption != "": Text { text: root.caption; color: Theme.secondary; font-size: 12px; min-width: 0px; wrap: word-wrap; height: self.preferred-height; }
-            }
-        }
-        @children
-    }
-}
+
 
 export component EmptyState inherits Rectangle {
     in property <string> title;
@@ -168,6 +143,7 @@ export component ActionButton inherits Rectangle {
     in property <string> label;
     in property <string> icon;
     in property <bool> icon-only: false;
+    in property <bool> trailing-icon: false;
     in property <bool> primary: false;
     in property <bool> quiet: false;
     in property <bool> enabled: true;
@@ -180,7 +156,7 @@ export component ActionButton inherits Rectangle {
     height: 40px; horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: Theme.radius-small; border-width: 1px;
     border-color: focus.has-focus ? Theme.accent : root.primary || root.quiet ? transparent : root.outline;
-    background: !root.enabled ? Theme.disabled : root.primary
+    background: !root.enabled ? (root.quiet ? transparent : Theme.disabled) : root.primary
         ? (touch.pressed ? Theme.primary-pressed : touch.has-hover ? Theme.primary-hover : Theme.primary)
         : (touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : root.quiet ? transparent : Theme.surface);
     animate background, border-color { duration: 100ms; }
@@ -198,15 +174,67 @@ export component ActionButton inherits Rectangle {
     HorizontalLayout {
         alignment: center;
         spacing: root.icon-only || root.label == "" ? 0px : 6px;
-        if !root.icon-only && root.icon != "": Rectangle {
+        if !root.icon-only && !root.trailing-icon && root.icon != "": Rectangle {
             width: 16px;
             UiIcon { name: root.icon; ink: root.icon-ink; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
         }
         label-text := Text { text: root.icon-only ? "" : root.label; color: root.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
+        if !root.icon-only && root.trailing-icon && root.icon != "": Rectangle {
+            width: 16px;
+            UiIcon { name: root.icon; ink: root.icon-ink; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
+        }
     }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
     // Like Slint's standard Button: keyboard focus must not cover the pointer target.
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.clicked(); return accept; } return reject; } }
+}
+
+// Shared navigation link, kept on the same pointer/keyboard implementation.
+export component TextLink inherits ActionButton {
+    quiet: true; icon: "external"; trailing-icon: true;
+    height: 30px;
+}
+
+export component FormCard inherits SurfaceCard {
+    in property <string> title;
+    in property <string> caption;
+    in property <string> icon;
+    in property <string> version;
+    in property <string> action-label;
+    in property <string> action-icon: "external";
+    in property <bool> action-enabled: true;
+    in property <string> action-accessibility: root.action-label;
+    callback action;
+    out property <length> content-height: content.preferred-height;
+    height: root.content-height;
+    vertical-stretch: 0;
+    content := VerticalLayout {
+        padding: 20px; spacing: 16px; alignment: start;
+        if root.title != "": HorizontalLayout {
+            height: max(40px, heading.preferred-height);
+            spacing: 12px;
+            if root.icon != "": Rectangle {
+                width: 40px;
+                Rectangle { height: 40px; y: (parent.height - self.height) / 2;
+                    background: Theme.field; border-radius: 12px;
+                    UiIcon { name: root.icon; ink: Theme.text; width: 20px; height: 20px; x: 10px; y: 10px; }
+                }
+            }
+            heading := VerticalLayout {
+                alignment: center; spacing: 4px; min-width: 0px; horizontal-stretch: 1;
+                HorizontalLayout { spacing: 8px; alignment: start;
+                    Text { text: root.title; color: Theme.text; font-size: 18px; font-weight: 600; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
+                    if root.version != "": Text { text: root.version; color: Theme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
+                }
+                if root.caption != "": Text { text: root.caption; color: Theme.secondary; font-size: 12px; min-width: 0px; wrap: word-wrap; height: self.preferred-height; }
+            }
+            if root.action-label != "": Rectangle {
+                width: action-link.min-width;
+                action-link := TextLink { x: 0px; y: 0px; label: root.action-label; icon: root.action-icon; enabled: root.action-enabled; accessible-label: root.action-accessibility; clicked => { root.action(); } }
+            }
+        }
+        @children
+    }
 }
 
 // Full upstream notices are available even in the standalone executable.
@@ -314,7 +342,7 @@ export component SectionHeading inherits HorizontalLayout {
     callback open;
     height: 30px;
     Text { text: root.title; color: Theme.text; font-size: 19px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
-    ActionButton { label: root.action-label; accessible-label: root.action-accessibility; icon: "external"; quiet: true; height: 30px; clicked => { root.open(); } }
+    TextLink { label: root.action-label; accessible-label: root.action-accessibility; clicked => { root.open(); } }
 }
 
 export component RuleSwitch inherits Rectangle {
@@ -326,9 +354,9 @@ export component RuleSwitch inherits Rectangle {
     callback toggled;
     width: 44px; height: 38px;
     opacity: root.enabled || root.fixed ? 1 : 0.45;
-    Rectangle { y: (parent.height - self.height) / 2; x: (parent.width - self.width) / 2; width: root.track-width; height: 24px; border-radius: 12px; background: root.checked && root.enabled ? Theme.primary : Theme.switch-off;
+    Rectangle { y: (parent.height - self.height) / 2; x: (parent.width - self.width) / 2; width: root.track-width; height: 24px; border-radius: 12px; background: root.checked && root.fixed ? Theme.accent-soft : root.checked && root.enabled ? Theme.primary : Theme.switch-off;
         border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
-        Rectangle { x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.checked && root.enabled ? Theme.primary-text : Theme.switch-off-thumb; animate x { duration: 100ms; } }
+        Rectangle { x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.fixed ? Theme.secondary : root.checked && root.enabled ? Theme.switch-on-thumb : Theme.switch-off-thumb; animate x { duration: 100ms; } }
     }
     TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }

@@ -7,35 +7,112 @@ use schannel::{
 };
 use serde::Deserialize;
 use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     io::{self, BufRead, BufReader, Read, Write},
     net::TcpStream,
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
-const HOST: &str = "ipinfo.io";
+const PROVIDERS: [(&str, &str); 2] = [
+    ("ipinfo.io", "/json"),
+    ("ipwho.is", "/?fields=success,country_code,city"),
+];
 const TIME_LIMIT: Duration = Duration::from_secs(5);
 const HEADER_LIMIT: u64 = 16 * 1024;
 const BODY_LIMIT: usize = 8 * 1024;
 const TLS_READ_LIMIT: usize = 256 * 1024;
+const LOCATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const CACHE_LIMIT: usize = 64;
+
+struct CachedLocation {
+    at: Instant,
+    location: Option<String>,
+}
+#[derive(Default)]
+struct LocationCache {
+    entries: HashMap<u64, CachedLocation>,
+}
+impl LocationCache {
+    // Some(None) is a cached failure; None reserves a lookup for this caller.
+    fn begin(&mut self, key: u64, now: Instant) -> Option<Option<String>> {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            if now.saturating_duration_since(entry.at) < LOCATION_INTERVAL {
+                return Some(entry.location.clone());
+            }
+            entry.at = now;
+        } else {
+            if self.entries.len() >= CACHE_LIMIT
+                && let Some(oldest) = self
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.at)
+                    .map(|(&key, _)| key)
+            {
+                self.entries.remove(&oldest);
+            }
+            self.entries.insert(
+                key,
+                CachedLocation {
+                    at: now,
+                    location: None,
+                },
+            );
+        }
+        None
+    }
+    fn finish(&mut self, key: u64, at: Instant, location: Option<String>) -> Option<String> {
+        let entry = self.entries.get_mut(&key)?;
+        if entry.at == at && location.is_some() {
+            entry.location = location;
+        }
+        entry.location.clone()
+    }
+}
+static CACHE: OnceLock<Mutex<LocationCache>> = OnceLock::new();
 
 /// Only the exit's city and country code are retained from the response.
 pub async fn proxy_location(proxy: &Proxy) -> Option<String> {
-    let deadline = Instant::now() + TIME_LIMIT;
-    tokio::time::timeout(TIME_LIMIT, async {
-        let stream = socks::connect_hostname(proxy, HOST, 443)
-            .await
-            .ok()?
-            .into_std()
-            .ok()?;
-        tokio::task::spawn_blocking(move || lookup(stream, deadline).ok())
-            .await
-            .ok()?
+    let mut hasher = DefaultHasher::new();
+    (
+        &proxy.id,
+        &proxy.host,
+        proxy.port,
+        &proxy.username,
+        &proxy.protected_password,
+    )
+        .hash(&mut hasher);
+    let key = hasher.finish();
+    let at = Instant::now();
+    let cache = CACHE.get_or_init(|| Mutex::new(LocationCache::default()));
+    if let Some(cached) = cache.lock().unwrap().begin(key, at) {
+        return cached;
+    }
+    let deadline = at + TIME_LIMIT;
+    let location = tokio::time::timeout(TIME_LIMIT, async {
+        for (host, path) in PROVIDERS {
+            let Ok(stream) = socks::connect_hostname(proxy, host, 443).await else {
+                continue;
+            };
+            let Ok(stream) = stream.into_std() else {
+                continue;
+            };
+            if let Ok(Ok(location)) =
+                tokio::task::spawn_blocking(move || lookup(stream, deadline, host, path)).await
+            {
+                return Some(location);
+            }
+        }
+        None
     })
     .await
-    .ok()?
+    .ok()
+    .flatten();
+    cache.lock().unwrap().finish(key, at, location)
 }
 
-fn lookup(stream: TcpStream, deadline: Instant) -> Result<String> {
+fn lookup(stream: TcpStream, deadline: Instant, host: &str, path: &str) -> Result<String> {
     stream.set_nonblocking(false)?;
     let socket = BoundedSocket {
         stream,
@@ -47,12 +124,13 @@ fn lookup(stream: TcpStream, deadline: Instant) -> Result<String> {
         .acquire(Direction::Outbound)?;
     // Schannel uses the Windows trust store and verifies this hostname.
     let mut stream = Builder::new()
-        .domain(HOST)
+        .domain(host)
         .connect(cred, socket)
         .map_err(|_| anyhow::anyhow!("GeoIP TLS handshake failed"))?;
     write!(
         stream,
-        "GET /json HTTP/1.0\r\nHost: {HOST}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: TrueProxy/{}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+        env!("CARGO_PKG_VERSION")
     )?;
     stream.flush()?;
     read_location(BufReader::new(stream)).context("Invalid GeoIP response")
@@ -150,10 +228,21 @@ fn read_location(mut response: impl BufRead) -> Option<String> {
 
     #[derive(Deserialize)]
     struct Location {
-        country: String,
+        country: Option<String>,
+        country_code: Option<String>,
+        success: Option<bool>,
         city: Option<String>,
     }
-    let Location { country, city } = serde_json::from_slice(&body).ok()?;
+    let Location {
+        country,
+        country_code,
+        success,
+        city,
+    } = serde_json::from_slice(&body).ok()?;
+    if success == Some(false) || (country_code.is_some() && success != Some(true)) {
+        return None;
+    }
+    let country = country_code.or(country)?;
     if country.len() != 2 || !country.bytes().all(|byte| byte.is_ascii_uppercase()) {
         return None;
     }
@@ -169,6 +258,57 @@ fn read_location(mut response: impl BufRead) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn location_checks_are_cached_for_five_minutes_and_keep_the_last_success() {
+        let mut cache = LocationCache::default();
+        let now = Instant::now();
+        assert_eq!(cache.begin(1, now), None);
+        assert_eq!(
+            cache.begin(1, now),
+            Some(None),
+            "deduplicate in-flight requests"
+        );
+        cache.finish(1, now, Some("Riga, LV".into()));
+        assert_eq!(
+            cache.begin(1, now + Duration::from_secs(299)),
+            Some(Some("Riga, LV".into()))
+        );
+        let next = now + Duration::from_secs(300);
+        assert_eq!(cache.begin(1, next), None);
+        assert_eq!(cache.finish(1, next, None), Some("Riga, LV".into()));
+        assert_eq!(
+            cache.begin(1, now + Duration::from_secs(599)),
+            Some(Some("Riga, LV".into()))
+        );
+        assert_eq!(cache.begin(1, now + Duration::from_secs(600)), None);
+        for key in 2..=100 {
+            cache.begin(key, now);
+        }
+        assert!(cache.entries.len() <= CACHE_LIMIT);
+    }
+
+    #[test]
+    fn fallback_accepts_a_confirmed_country_code_and_rejects_api_errors() {
+        let response = |body: &str| {
+            format!(
+                "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        assert_eq!(
+            read_location(
+                response(r#"{"success":true,"city":"Riga","country_code":"LV"}"#).as_bytes()
+            ),
+            Some("Riga, LV".into())
+        );
+        assert!(
+            read_location(response(r#"{"success":false,"country_code":"LV"}"#).as_bytes())
+                .is_none()
+        );
+        assert!(read_location(response(r#"{"country_code":"LV"}"#).as_bytes()).is_none());
+        assert!(read_location(b"HTTP/1.0 429 Too Many Requests\r\n\r\n".as_slice()).is_none());
+    }
 
     #[test]
     fn accepts_bounded_success_and_rejects_redirect_or_truncated_body() {
