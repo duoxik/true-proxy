@@ -16,7 +16,7 @@ use crate::{
 use anyhow::{Context, Result};
 use ipnet::IpNet;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -34,7 +34,11 @@ use tokio::{
 const MAX_FLOWS: usize = 4096;
 const MAX_LOCAL_MISSES: usize = 256;
 const LOCAL_MISS_TTL: Duration = Duration::from_secs(2);
+const UNKNOWN_UDP_RETRY: Duration = Duration::from_secs(2);
 type NatTable = Arc<Mutex<NatMaps>>;
+
+mod pending;
+use pending::Pending;
 
 #[derive(Default)]
 struct NatMaps {
@@ -253,11 +257,11 @@ mod tests {
             last: now,
             stamp: (0, 0, 0),
             initial_sequence: 0,
-            owner: process::Process {
+            owner: Some(process::Process {
                 pid: 10,
                 name: "game.exe".into(),
                 path: String::new(),
-            },
+            }),
             dns_check: now,
             record: Some(record.clone()),
         };
@@ -508,11 +512,24 @@ struct Decision {
     last: Instant,
     stamp: (u64, u64, u64),
     initial_sequence: u32,
-    owner: process::Process,
+    owner: Option<process::Process>,
     dns_check: Instant,
     record: Option<Connection>,
 }
 impl Decision {
+    fn unattributed(initial_sequence: u32, now: Instant) -> Self {
+        Self {
+            action: Action::Direct,
+            xray_generation: None,
+            last: now,
+            stamp: (0, 0, 0),
+            initial_sequence,
+            owner: None,
+            dns_check: now,
+            record: None,
+        }
+    }
+
     fn active_mapping(flow: FlowKey, table: &NatMaps) -> bool {
         table
             .original
@@ -533,7 +550,11 @@ impl Decision {
                 && (Self::active_mapping(flow, table)
                     // A failed owner-table query must not reroute an established
                     // connection. Journal visibility is never socket lifetime.
-                    || owners.is_none_or(|owners| owners.get(&flow) == Some(&self.owner.pid))))
+                    || owners.is_none_or(|owners| {
+                        owners.get(&flow).is_some_and(|pid| {
+                            self.owner.as_ref().is_none_or(|owner| *pid == owner.pid)
+                        })
+                    })))
     }
 }
 
@@ -763,8 +784,11 @@ fn capture(context: CaptureContext) -> Result<()> {
         generations,
     } = context;
     let mut buffer = vec![0u8; 65575];
+    let mut receiver = device.receiver()?;
     let mut decisions: HashMap<(FlowKey, bool), Decision> = HashMap::new();
     let mut local_misses = LocalAttributionMisses::new(&config.local_networks);
+    let mut pending = Pending::default();
+    let mut ready = VecDeque::<pending::Resolved>::new();
     let inject_device = device.clone();
     let socket_generations = generations.clone();
     let mut udp = Pool::new(
@@ -795,17 +819,35 @@ fn capture(context: CaptureContext) -> Result<()> {
         .any(|rule| rule.enabled && (!rule.domains.is_empty() || !rule.domain_suffixes.is_empty()));
     let mut synthetic = 10000u16;
     let mut cleanup = Instant::now();
-    let mut last_lookup_error = Instant::now() - Duration::from_secs(10);
-    loop {
-        let (length, mut address) = match device.recv(&mut buffer) {
-            Ok(value) => value,
-            Err(_) if stopping.load(Ordering::Acquire) => break,
-            Err(error) => return Err(error),
+    let mut last_attribution_miss = Instant::now() - Duration::from_secs(10);
+    while !stopping.load(Ordering::Acquire) {
+        if ready.is_empty() && !pending.is_empty() {
+            ready.extend(pending.poll(Instant::now(), |flow, tcp| {
+                process::identify(flow, if tcp { Protocol::Tcp } else { Protocol::Udp }).ok()
+            }));
+        }
+        let mut held;
+        let (bytes, mut address, mut attribution) = if let Some(batch) = ready.front_mut() {
+            held = batch.packets.pop_front().expect("nonempty pending batch");
+            let attribution = Some(batch.owner.clone());
+            if batch.packets.is_empty() {
+                ready.pop_front();
+            }
+            (&mut held.bytes[..], held.address, attribution)
+        } else {
+            let wait = pending
+                .next_check()
+                .map(|check| check.saturating_duration_since(Instant::now()));
+            match receiver.recv(&mut buffer, wait) {
+                Ok(Some((length, address))) => (&mut buffer[..length], address, None),
+                Ok(None) => continue,
+                Err(_) if stopping.load(Ordering::Acquire) => break,
+                Err(error) => return Err(error),
+            }
         };
         if stopping.load(Ordering::Acquire) {
-            continue;
+            break;
         }
-        let bytes = &mut buffer[..length];
         let packet = match Packet::parse(bytes) {
             Ok(packet) => packet,
             Err(_) => {
@@ -923,12 +965,43 @@ fn capture(context: CaptureContext) -> Result<()> {
         }
         let tcp = packet.protocol == Protocol::Tcp;
         let key = (packet.flow, tcp);
+        // During the wait the endpoint may have been rebound by another
+        // process. Never apply that process's route to an older queued packet.
+        if matches!(attribution, Some(Some(_)))
+            && stats.activity.socket_closed_since_capture(
+                packet.flow.source,
+                packet.flow.destination,
+                packet.protocol,
+                address.timestamp(),
+            )
+        {
+            continue;
+        }
+        let syn = packet.is_syn().then_some(packet.tcp_sequence);
+        if attribution.is_none() && pending.contains(key) {
+            if !pending.hold(key, bytes, address, syn, now) {
+                stats.blocked.fetch_add(1, Ordering::Relaxed);
+            }
+            continue;
+        }
+        if !tcp
+            && let Some(decision) = decisions.get_mut(&key)
+            && decision.owner.is_none()
+            && now.duration_since(decision.dns_check) >= UNKNOWN_UDP_RETRY
+        {
+            decision.dns_check = now;
+            if let Ok(owner) = process::identify(packet.flow, packet.protocol) {
+                attribution = Some(Some(owner));
+                decisions.remove(&key);
+            }
+        }
         let mut stamp = if tcp {
             (0, 0, 0)
         } else {
             decisions
                 .get(&key)
-                .map(|d| generations.stamp(d.owner.pid, packet.flow, false))
+                .and_then(|d| d.owner.as_ref())
+                .map(|owner| generations.stamp(owner.pid, packet.flow, false))
                 .unwrap_or((0, 0, 0))
         };
         if decisions.get(&key).is_some_and(|d| {
@@ -952,7 +1025,8 @@ fn capture(context: CaptureContext) -> Result<()> {
             d.last = now;
             if !tcp
                 && has_domain_rules
-                && d.owner.pid != std::process::id()
+                && let Some(owner) = &d.owner
+                && owner.pid != std::process::id()
                 && d.xray_generation.is_none()
                 && now.duration_since(d.dns_check) >= Duration::from_secs(1)
             {
@@ -961,8 +1035,8 @@ fn capture(context: CaptureContext) -> Result<()> {
                 let action = rules::resolve(
                     &config,
                     &Flow {
-                        process_name: &d.owner.name,
-                        process_path: &d.owner.path,
+                        process_name: &owner.name,
+                        process_path: &owner.path,
                         destination: packet.flow.destination,
                         protocol: packet.protocol,
                         domains: &names,
@@ -971,7 +1045,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                 if d.action != action {
                     udp.forget(
                         SocketId {
-                            pid: d.owner.pid,
+                            pid: owner.pid,
                             local: packet.flow.source,
                             generation: d.stamp,
                         },
@@ -998,15 +1072,15 @@ fn capture(context: CaptureContext) -> Result<()> {
                         stats.log(
                             LogSource::Connections,
                             LogLevel::Verbose,
-                            &d.owner.name,
+                            &owner.name,
                             packet.flow.destination.to_string(),
                             &route,
                             &detail,
                         );
                         if observe {
                             let info = Info {
-                                pid: d.owner.pid,
-                                process: d.owner.name.clone(),
+                                pid: owner.pid,
+                                process: owner.name.clone(),
                                 source: packet.flow.source,
                                 destination: packet.flow.destination,
                                 protocol: Protocol::Udp,
@@ -1027,45 +1101,55 @@ fn capture(context: CaptureContext) -> Result<()> {
             }
             d.action.clone()
         } else {
-            let owner = match local_misses.classify(
-                packet.flow,
-                tcp,
-                decisions.len() >= MAX_FLOWS,
-                now,
-                |attempts| {
-                    (0..attempts).find_map(|attempt| {
-                        let result = process::identify(packet.flow, packet.protocol).ok();
-                        if result.is_none() && attempt + 1 < attempts {
-                            thread::sleep(Duration::from_millis(1));
-                        }
-                        result
-                    })
-                },
-            ) {
-                NewFlowOwner::Identified(owner) => owner,
-                NewFlowOwner::LocalDirect => {
+            let owner = match attribution {
+                Some(Some(owner)) => owner,
+                Some(None) => {
+                    decisions.insert(key, Decision::unattributed(packet.tcp_sequence, now));
+                    if now.duration_since(last_attribution_miss) > Duration::from_secs(5) {
+                        stats.log(
+                            LogSource::Connections,
+                            LogLevel::Info,
+                            "Unknown process",
+                            packet.flow.destination.to_string(),
+                            "Direct",
+                            "Could not identify the connection owner within 3 seconds",
+                        );
+                        last_attribution_miss = now;
+                    }
                     device.send(bytes, &address)?;
                     continue;
                 }
-                NewFlowOwner::Capacity => {
-                    stats.blocked.fetch_add(1, Ordering::Relaxed);
-                    continue;
-                }
-                NewFlowOwner::Unknown => {
-                    stats.blocked.fetch_add(1, Ordering::Relaxed);
-                    if last_lookup_error.elapsed() > Duration::from_secs(5) {
-                        stats.log(
-                            LogSource::Connections,
-                            LogLevel::Error,
-                            "Unknown process",
-                            packet.flow.destination.to_string(),
-                            "Block",
-                            "Could not identify the connection owner reliably",
-                        );
-                        last_lookup_error = now;
+                None => match local_misses.classify(
+                    packet.flow,
+                    tcp,
+                    decisions.len() + pending.len() >= MAX_FLOWS,
+                    now,
+                    |attempts| {
+                        (0..attempts).find_map(|attempt| {
+                            let result = process::identify(packet.flow, packet.protocol).ok();
+                            if result.is_none() && attempt + 1 < attempts {
+                                thread::sleep(Duration::from_millis(1));
+                            }
+                            result
+                        })
+                    },
+                ) {
+                    NewFlowOwner::Identified(owner) => owner,
+                    NewFlowOwner::LocalDirect => {
+                        device.send(bytes, &address)?;
+                        continue;
                     }
-                    continue;
-                }
+                    NewFlowOwner::Capacity => {
+                        stats.blocked.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                    NewFlowOwner::Unknown => {
+                        if !pending.hold(key, bytes, address, syn, now) {
+                            stats.blocked.fetch_add(1, Ordering::Relaxed);
+                        }
+                        continue;
+                    }
+                },
             };
             if !tcp {
                 stamp = generations.stamp(owner.pid, packet.flow, false);
@@ -1204,7 +1288,7 @@ fn capture(context: CaptureContext) -> Result<()> {
                     last: now,
                     stamp,
                     initial_sequence: packet.tcp_sequence,
-                    owner,
+                    owner: Some(owner),
                     dns_check: now,
                     record,
                 },
@@ -1269,16 +1353,18 @@ fn capture(context: CaptureContext) -> Result<()> {
                 let _ = id;
             }
             Action::Proxy(id) => {
-                if let Some(decision) = decisions.get(&key) {
+                if let Some(decision) = decisions.get(&key)
+                    && let Some(owner) = &decision.owner
+                {
                     let _ = udp.send(
                         SocketId {
-                            pid: decision.owner.pid,
+                            pid: owner.pid,
                             local: packet.flow.source,
                             generation: decision.stamp,
                         },
                         Owner {
-                            name: &decision.owner.name,
-                            path: &decision.owner.path,
+                            name: &owner.name,
+                            path: &owner.path,
                         },
                         &id,
                         Outgoing {

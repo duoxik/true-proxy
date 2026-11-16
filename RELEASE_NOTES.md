@@ -1,14 +1,9 @@
-True Proxy 0.12.9
+True Proxy 0.12.10
 
-- Settings now has General and Modules in the main sidebar. Configuration import/export is the fourth General card.
-- General uses a two-column card grid, switching to a single column in narrow windows.
-- Module versions appear beside their names. Text actions sit in the upper-right corner of shared cards; the redundant Open action for Xray-core was removed.
-- Added Check for Updates for hpwnr, with a separate explicit installation action and verified Windows x64 release assets.
-- Dashboard Proxy no longer nests cards or puts latency and location inside pills.
-- GeoIP checks through SOCKS are limited to once every five minutes. A fallback handles provider rate limits, and temporary failures preserve the last known location.
-- Local and Fallback switches remain enabled and locked, using a dark accent track. Enabled rule switches now have white thumbs.
-- Removed the sidebar logo and added a divider below the native window title bar.
+- TCP and UDP packets with an unknown owner wait up to three seconds for Windows to identify the process. When a process is identified, its routing rules apply. On timeout, queued packets go Direct.
+- TCP keeps the Direct route for the connection. UDP can switch to the configured route when a later lookup identifies the owner.
+- The attribution queue holds up to 64 flows, 16 packets per flow, and 2 MiB of packet data. Packets beyond these limits are dropped.
 
-Windows x64. WinDivert is bundled in the executable. The interception backend is experimental; these changes were checked without intercepting user traffic.
+Windows x64. WinDivert is bundled in the executable. The interception backend is experimental. Tests use synthetic traffic and local sockets.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.9/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.10/docs/branding/slint-badge.png)](https://slint.dev)

@@ -293,7 +293,7 @@ fn owner_pid(flow: FlowKey, protocol: Protocol) -> Result<u32> {
         if let Some(other) = found {
             ensure!(
                 other == pid,
-                "The UDP connection was blocked because multiple processes share its port"
+                "Multiple processes match the connection's local port"
             );
         }
         found = Some(pid);

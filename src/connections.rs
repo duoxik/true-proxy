@@ -118,11 +118,21 @@ struct Close {
 impl Close {
     fn matches(&self, info: &Info) -> bool {
         info.pid == self.pid
-            && (info.protocol == Protocol::Tcp) == self.tcp
-            && info.source.port() == self.source.port()
-            && (self.source.ip().is_unspecified() || info.source.ip() == self.source.ip())
-            && (self.destination.port() == 0 || info.destination == self.destination)
-            && (info.stamp == 0 || self.stamp >= info.stamp)
+            && self.matches_flow(info.source, info.destination, info.protocol, info.stamp)
+    }
+
+    fn matches_flow(
+        &self,
+        source: SocketAddr,
+        destination: SocketAddr,
+        protocol: Protocol,
+        stamp: i64,
+    ) -> bool {
+        (protocol == Protocol::Tcp) == self.tcp
+            && source.port() == self.source.port()
+            && (self.source.ip().is_unspecified() || source.ip() == self.source.ip())
+            && (self.destination.port() == 0 || destination == self.destination)
+            && (stamp == 0 || self.stamp >= stamp)
     }
 }
 pub struct Connections {
@@ -445,6 +455,28 @@ impl Connections {
             self.finish_observed(id, Status::Stopped, reason, Some(event));
         }
     }
+    #[cfg(windows)]
+    pub(crate) fn socket_closed_since_capture(
+        &self,
+        source: SocketAddr,
+        destination: SocketAddr,
+        protocol: Protocol,
+        stamp: i64,
+    ) -> bool {
+        stamp > 0
+            && self
+                .state
+                .lock()
+                .unwrap()
+                .recent_closes
+                .iter()
+                .rev()
+                .any(|close| {
+                    close.source.is_ipv4() == source.is_ipv4()
+                        && close.matches_flow(source, destination, protocol, stamp)
+                })
+    }
+
     pub fn close_socket(
         &self,
         pid: u32,
@@ -764,6 +796,27 @@ mod tests {
         assert!(!c.status().finished());
         store.close_socket(11, row.source, row.destination, true, 300);
         assert!(!c.status().finished());
+        #[cfg(windows)]
+        {
+            assert!(store.socket_closed_since_capture(
+                row.source,
+                row.destination,
+                Protocol::Tcp,
+                200
+            ));
+            assert!(!store.socket_closed_since_capture(
+                row.source,
+                row.destination,
+                Protocol::Tcp,
+                301
+            ));
+            assert!(!store.socket_closed_since_capture(
+                row.source,
+                row.destination,
+                Protocol::Udp,
+                200
+            ));
+        }
         store.close_socket(10, row.source, row.destination, true, 300);
         assert_eq!(c.status(), Status::Closed);
         let mut row = info(Protocol::Udp);

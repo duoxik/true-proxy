@@ -4,10 +4,20 @@ use anyhow::{Context, Result, ensure};
 use libloading::Library;
 use std::{
     ffi::{CStr, CString, c_void},
+    io,
     net::IpAddr,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::Path,
     ptr,
     sync::Arc,
+    time::Duration,
+};
+use windows_sys::Win32::{
+    Foundation::{ERROR_IO_INCOMPLETE, ERROR_IO_PENDING, ERROR_OPERATION_ABORTED, WAIT_TIMEOUT},
+    System::{
+        IO::{CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED},
+        Threading::CreateEventW,
+    },
 };
 
 #[repr(C)]
@@ -42,6 +52,16 @@ impl Address {
 type Handle = *mut c_void;
 type Open = unsafe extern "system" fn(*const i8, i32, i16, u64) -> Handle;
 type Recv = unsafe extern "system" fn(Handle, *mut u8, u32, *mut u32, *mut Address) -> i32;
+type RecvEx = unsafe extern "system" fn(
+    Handle,
+    *mut u8,
+    u32,
+    *mut u32,
+    u64,
+    *mut Address,
+    *mut u32,
+    *mut OVERLAPPED,
+) -> i32;
 type Send = unsafe extern "system" fn(Handle, *const u8, u32, *mut u32, *const Address) -> i32;
 type Shutdown = unsafe extern "system" fn(Handle, i32) -> i32;
 type Close = unsafe extern "system" fn(Handle) -> i32;
@@ -55,6 +75,7 @@ pub struct Driver {
     _bundle: PreparedDriver,
     open: Open,
     recv: Recv,
+    recv_ex: RecvEx,
     send: Send,
     shutdown: Shutdown,
     close: Close,
@@ -75,6 +96,7 @@ impl Driver {
             Ok(Arc::new(Self {
                 open: *library.get(b"WinDivertOpen\0")?,
                 recv: *library.get(b"WinDivertRecv\0")?,
+                recv_ex: *library.get(b"WinDivertRecvEx\0")?,
                 send: *library.get(b"WinDivertSend\0")?,
                 shutdown: *library.get(b"WinDivertShutdown\0")?,
                 close: *library.get(b"WinDivertClose\0")?,
@@ -185,6 +207,87 @@ pub struct Device {
     driver: Arc<Driver>,
     handle: Handle,
 }
+pub struct PacketReceiver<'a> {
+    device: &'a Device,
+    event: OwnedHandle,
+}
+
+impl PacketReceiver<'_> {
+    pub fn recv(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Option<Duration>,
+    ) -> Result<Option<(usize, Address)>> {
+        let Some(timeout) = timeout else {
+            return self.device.recv(buffer).map(Some);
+        };
+        const MAX_FINITE_MILLIS: u128 = (u32::MAX - 1) as u128;
+        let millis = timeout
+            .as_nanos()
+            .div_ceil(1_000_000)
+            .min(MAX_FINITE_MILLIS) as u32;
+        let capacity = buffer
+            .len()
+            .try_into()
+            .context("WinDivert receive buffer is too large")?;
+        let mut len = 0;
+        let mut address = Address::default();
+        let mut overlapped = OVERLAPPED {
+            hEvent: self.event.as_raw_handle(),
+            ..OVERLAPPED::default()
+        };
+        let handle = self.device.handle;
+        // SAFETY: All receive buffers, including the address and OVERLAPPED,
+        // stay live and untouched until WinDivert completes the request. A
+        // null address length selects a single Address (no packet batching).
+        if unsafe {
+            (self.device.driver.recv_ex)(
+                handle,
+                buffer.as_mut_ptr(),
+                capacity,
+                &raw mut len,
+                0,
+                &raw mut address,
+                ptr::null_mut(),
+                &raw mut overlapped,
+            )
+        } != 0
+        {
+            return Ok(Some((len as usize, address)));
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            return Err(error).context("WinDivert read error");
+        }
+        // SAFETY: This waits on the same live request with a dedicated
+        // manual-reset event. Completion returns the length of the packet.
+        if unsafe { GetOverlappedResultEx(handle, &raw const overlapped, &raw mut len, millis, 0) }
+            != 0
+        {
+            return Ok(Some((len as usize, address)));
+        }
+        let error = io::Error::last_os_error();
+        let timed_out = error.raw_os_error() == Some(WAIT_TIMEOUT as i32)
+            || error.raw_os_error() == Some(ERROR_IO_INCOMPLETE as i32);
+        // SAFETY: CancelIoEx requests cancellation but does not wait for it.
+        // Drain this exact request before releasing any borrowed storage.
+        // A packet received concurrently with cancellation still counts.
+        if unsafe {
+            CancelIoEx(handle, &raw const overlapped);
+            GetOverlappedResult(handle, &raw const overlapped, &raw mut len, 1)
+        } != 0
+        {
+            return Ok(Some((len as usize, address)));
+        }
+        let error = io::Error::last_os_error();
+        if timed_out && error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
+            Ok(None)
+        } else {
+            Err(error).context("WinDivert read error")
+        }
+    }
+}
+
 pub struct SocketClose {
     pub pid: u32,
     pub source: std::net::SocketAddr,
@@ -197,6 +300,20 @@ pub struct SocketClose {
 unsafe impl std::marker::Send for Device {}
 unsafe impl Sync for Device {}
 impl Device {
+    pub fn receiver(&self) -> Result<PacketReceiver<'_>> {
+        // SAFETY: Unnamed, noninheritable event with no security attributes.
+        let event = unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error())
+                .context("Could not create WinDivert receive event");
+        }
+        Ok(PacketReceiver {
+            device: self,
+            // SAFETY: CreateEventW returned a unique owned handle.
+            event: unsafe { OwnedHandle::from_raw_handle(event) },
+        })
+    }
+
     pub fn recv_socket_change(&self) -> Result<SocketClose> {
         let mut address = Address::default();
         ensure!(
@@ -214,7 +331,7 @@ impl Device {
         );
         self.driver.decode_socket_close(&address)
     }
-    pub fn recv(&self, buffer: &mut [u8]) -> Result<(usize, Address)> {
+    fn recv(&self, buffer: &mut [u8]) -> Result<(usize, Address)> {
         let mut len = 0;
         let mut addr = Address::default();
         ensure!(
