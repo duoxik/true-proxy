@@ -1,9 +1,13 @@
-True Proxy 0.12.10
+True Proxy 0.12.11
 
-- TCP and UDP packets with an unknown owner wait up to three seconds for Windows to identify the process. When a process is identified, its routing rules apply. On timeout, queued packets go Direct.
-- TCP keeps the Direct route for the connection. UDP can switch to the configured route when a later lookup identifies the owner.
-- The attribution queue holds up to 64 flows, 16 packets per flow, and 2 MiB of packet data. Packets beyond these limits are dropped.
+- Added ShadowNet subscription support for shadow-net.site and its subdomains. Import and Refresh send the same saved, DPAPI-protected device identity and Windows client metadata.
+- Subscription device-limit and missing-HWID responses now show actionable errors. Device identities are restricted to the original HTTPS origin during redirects.
+- Added import of independent VLESS RAW/TCP servers with TLS or REALITY from Xray JSON configurations and configuration arrays, preserving region names and existing credential protection. Input is bounded to 1 MiB and 128 nodes.
+- General now follows the approved layout with a prominent Configuration card, smaller Appearance and Startup cards, and a compact Application updates section.
+- Moved the version and Windows DNS information into the page footer. Removed the About and System DNS cards, the Icon licenses button, its popup and UI-only license state.
 
-Windows x64. WinDivert is bundled in the executable. The interception backend is experimental. Tests use synthetic traffic and local sockets.
+ShadowNet support was tested with synthetic subscription responses. A live device-bound subscription has not been checked. Balancers, proxy chains and other transports remain unsupported.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.10/docs/branding/slint-badge.png)](https://slint.dev)
+Windows x64. WinDivert is bundled in the executable. The interception backend is experimental. Checks ran without intercepting user traffic.
+
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.11/docs/branding/slint-badge.png)](https://slint.dev)

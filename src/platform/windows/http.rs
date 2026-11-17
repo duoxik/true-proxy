@@ -42,11 +42,42 @@ pub fn get(
     limit: u64,
     receive: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<u32> {
-    request(url, Some(binary), limit, receive)
+    request(url, Some(binary), &[], limit, receive)
 }
 
 pub fn get_https(url: &str, limit: u64, receive: impl FnMut(&[u8]) -> Result<()>) -> Result<u32> {
-    request(url, None, limit, receive)
+    request(url, None, &[], limit, receive)
+}
+
+pub fn get_https_with_headers(
+    url: &str,
+    headers: &[(&str, &str)],
+    limit: u64,
+    receive: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<u32> {
+    request(url, None, headers, limit, receive)
+}
+
+fn extra_headers(headers: &[(&str, &str)]) -> Result<String> {
+    ensure!(headers.len() <= 8, "Too many subscription request headers");
+    let mut result = String::new();
+    for (name, value) in headers {
+        ensure!(
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                && value.len() <= 256
+                && value.bytes().all(|byte| (32..=126).contains(&byte)),
+            "Invalid subscription request header"
+        );
+        result.push_str(name);
+        result.push_str(": ");
+        result.push_str(value);
+        result.push_str("\r\n");
+    }
+    Ok(result)
 }
 
 fn checked_url(text: &str) -> Result<url::Url> {
@@ -69,10 +100,17 @@ fn checked_url(text: &str) -> Result<url::Url> {
 fn request(
     url: &str,
     github: Option<bool>,
+    custom_headers: &[(&str, &str)],
     limit: u64,
     mut receive: impl FnMut(&[u8]) -> Result<()>,
 ) -> Result<u32> {
     let started = Instant::now();
+    let extra = extra_headers(custom_headers)?;
+    let identity_origin = if custom_headers.is_empty() {
+        None
+    } else {
+        Some(checked_url(url)?.origin())
+    };
     // SAFETY: NUL-terminated inputs outlive calls; handles are owned and dropped
     // in request -> connection -> session order on every return path.
     let session = owned(unsafe {
@@ -101,6 +139,14 @@ fn request(
         } else {
             None
         };
+        if let Some(origin) = &identity_origin {
+            ensure!(
+                source
+                    .as_ref()
+                    .is_some_and(|source| source.origin() == *origin),
+                "The device-bound subscription redirected to a different origin"
+            );
+        }
         let (host, path, port) = if let Some(source) = &source {
             (
                 source.host_str().context("Missing HTTPS host")?,
@@ -135,7 +181,7 @@ fn request(
                 4,
             )
         })?;
-        let headers = wide(match github {
+        let mut header_text = match github {
             Some(true) => {
                 "Accept: application/octet-stream\r\nX-GitHub-Api-Version: 2026-03-10\r\n"
             }
@@ -143,7 +189,10 @@ fn request(
                 "Accept: application/vnd.github+json\r\nX-GitHub-Api-Version: 2026-03-10\r\n"
             }
             None => "Accept: */*\r\n",
-        });
+        }
+        .to_owned();
+        header_text.push_str(&extra);
+        let headers = wide(&header_text);
         success(unsafe {
             WinHttpSendRequest(
                 request.0,
@@ -156,6 +205,17 @@ fn request(
             )
         })?;
         success(unsafe { WinHttpReceiveResponse(request.0, ptr::null_mut()) })?;
+        if github.is_none() {
+            ensure!(
+                !response_flag(request.0, "x-hwid-max-devices-reached")?
+                    && !response_flag(request.0, "x-hwid-limit")?,
+                "The subscription device limit has been reached. Remove an unused device in your provider account and retry."
+            );
+            ensure!(
+                !response_flag(request.0, "x-hwid-not-supported")?,
+                "This subscription requires a device identity (HWID). Import its original ShadowNet HTTPS link."
+            );
+        }
         let mut status = 0u32;
         let mut size = 4;
         success(unsafe {
@@ -244,4 +304,45 @@ fn request(
         }
     }
     anyhow::bail!("Too many HTTPS redirects")
+}
+
+fn response_flag(request: *mut c_void, name: &str) -> Result<bool> {
+    let mut value = [0u16; 32];
+    let mut length = std::mem::size_of_val(&value) as u32;
+    // SAFETY: both the header name and writable output buffer outlive this call.
+    let found = unsafe {
+        WinHttpQueryHeaders(
+            request,
+            WINHTTP_QUERY_CUSTOM,
+            wide(name).as_ptr(),
+            value.as_mut_ptr().cast(),
+            &mut length,
+            ptr::null_mut(),
+        )
+    };
+    if found == 0 {
+        return Ok(false);
+    }
+    let end = value
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(value.len());
+    Ok(String::from_utf16(&value[..end])?
+        .trim()
+        .eq_ignore_ascii_case("true"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscription_headers_cannot_inject_additional_headers() {
+        assert_eq!(
+            extra_headers(&[("X-HWID", "abc123456789")]).unwrap(),
+            "X-HWID: abc123456789\r\n"
+        );
+        assert!(extra_headers(&[("X-HWID", "abc\r\nInjected: yes")]).is_err());
+        assert!(extra_headers(&[("Bad: header", "abc")]).is_err());
+    }
 }

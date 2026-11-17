@@ -26,8 +26,8 @@ Slint applies the interface color at render time. No icon font or runtime
 download is required.
 
 - Source: https://github.com/lucide-icons/lucide/tree/03eae6069edfc373673bd05d723491f05ba936e3
-- Full copyright and permission notices: `docs/licenses/lucide.txt` and
-  Settings → General → About True Proxy → Icon licenses in the standalone EXE.
+- Full copyright and permission notices: `docs/licenses/lucide.txt`, also embedded
+  in the standalone EXE.
 - Asset aliases, upstream hashes and embedded hashes: `assets/icons/lucide/SOURCE.json`.
 
 ## WinDivert 2.2.2

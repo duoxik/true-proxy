@@ -1,5 +1,5 @@
 import { DashboardView } from "dashboard.slint";
-import { PageHeader, FormCard, SurfaceCard, PanelToolbar, TableHeading, EmptyState, IconLicenseButton, DialogHeader, DialogActions } from "common.slint";
+import { PageHeader, FormCard, SurfaceCard, PanelToolbar, TableHeading, EmptyState, DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
@@ -873,7 +873,6 @@ export component MainWindow inherits Window {
                             }
                             Text { text: root.status; color: Theme.text; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
                         }
-                        Text { text: "v" + root.app-version; color: Theme.muted; font-size: 10px; }
                     }
                 }
             }
@@ -1207,90 +1206,71 @@ export component MainWindow inherits Window {
                             padding-bottom: 14px;
                             if root.settings-section == 2: XrayModuleCard {}
                             if root.settings-section == 2: HpwnrModuleCard {}
-                            if root.settings-section == 0: general-grid := Rectangle {
-                                property <bool> two-columns: self.width >= 740px;
-                                property <length> tile-width: self.two-columns ? (self.width - 16px) / 2 : self.width;
-                                property <length> second-column: self.two-columns ? self.tile-width + 16px : 0px;
-                                property <length> first-row: max(appearance.content-height, startup.content-height);
-                                property <length> second-row: max(updates.content-height, configuration.content-height);
-                                property <length> third-row: max(dns.content-height, about.content-height);
-                                height: self.two-columns ? self.first-row + self.second-row + self.third-row + 32px : about.y + about.height;
-                                vertical-stretch: 0;
-                                appearance := FormCard {
-                                    x: 0px; y: 0px;
-                                    width: general-grid.tile-width;
-                                    height: general-grid.two-columns ? general-grid.first-row : self.content-height;
-                                    title: "Appearance"; icon: "sun"; caption: "Choose a comfortable workspace.";
-                                        HorizontalLayout {
-                                            alignment: start;
-                                            spacing: 8px;
-                                            ActionButton {
-                                                label: "Light"; icon: "sun";
-                                                accessible-label: "Light theme";
-                                                primary: !root.dark-theme;
-                                                height: 40px;
-                                                clicked => { root.choose-theme(false); }
-                                            }
-                                            ActionButton {
-                                                label: "Dark"; icon: "moon";
-                                                accessible-label: "Dark theme";
-                                                primary: root.dark-theme;
-                                                height: 40px;
-                                                clicked => { root.choose-theme(true); }
-                                            }
-                                        }
-                                }
-                                startup := FormCard {
-                                    x: general-grid.second-column;
-                                    y: general-grid.two-columns ? 0px : appearance.y + appearance.height + 16px;
-                                    width: general-grid.tile-width;
-                                    height: general-grid.two-columns ? general-grid.first-row : self.content-height;
-                                    title: "Startup"; icon: "power"; caption: "";
-                                        ThemedCheckBox { text: "Start when I sign in to Windows"; checked <=> root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.set-autostart(self.checked); } }
-                                        Text { text: root.autostart-busy ? "Updating startup settings…" : "Start in the system tray and restore the last routing state."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
-                                }
-                                updates := FormCard {
-                                    x: 0px;
-                                    y: general-grid.two-columns ? general-grid.first-row + 16px : startup.y + startup.height + 16px;
-                                    width: general-grid.tile-width;
-                                    height: general-grid.two-columns ? general-grid.second-row : self.content-height;
-                                    title: "Updates"; icon: "refresh"; caption: "";
-                                        ThemedCheckBox { text: "Check for updates automatically"; checked <=> root.updates-automatic; toggled => { root.set-updates-automatic(self.checked); } }
-                                        if root.update-status != "": Text { text: root.update-status; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
-                                        HorizontalLayout { ActionButton { label: root.update-busy ? "Checking…" : "Check for Updates"; icon: "refresh"; height: 40px; enabled: !root.update-busy; clicked => { root.check-updates(); } } }
-                                        Text { text: "Checks at launch and every 6 hours."; color: Theme.muted; font-size: 11px; }
-                                }
-                                configuration := FormCard {
-                                    x: general-grid.second-column;
-                                    y: general-grid.two-columns ? updates.y : updates.y + updates.height + 16px;
-                                    width: general-grid.tile-width;
-                                    height: general-grid.two-columns ? general-grid.second-row : self.content-height;
-                                    title: "Configuration"; icon: "files"; caption: "";
-                                        Text { text: "Import or export rules and proxies as JSON. Exported JSON includes proxy passwords."; color: Theme.secondary; font-size: 13px; wrap: word-wrap; height: self.preferred-height; }
-                                        HorizontalLayout { spacing: 8px; alignment: start;
-                                            ActionButton { label: "Import"; icon: "download"; height: 40px; enabled: !root.busy; clicked => { root.open-import(); } }
-                                            ActionButton { label: "Export"; icon: "upload"; height: 40px; clicked => { root.export-config(); } }
-                                        }
-                                }
-                                dns := FormCard {
-                                    x: 0px;
-                                    y: general-grid.two-columns ? updates.y + general-grid.second-row + 16px : configuration.y + configuration.height + 16px;
-                                    width: general-grid.tile-width;
-                                    height: general-grid.two-columns ? general-grid.third-row : self.content-height;
-                                    title: "System DNS"; icon: "globe"; caption: "";
-                                        Text { text: "Windows resolves names. DNS on TCP or UDP port 53 goes directly."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
-                                        Text { text: "DoH and DoT follow application routing rules."; color: Theme.muted; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
-                                }
-                                about := FormCard {
-                                    x: general-grid.second-column;
-                                    y: general-grid.two-columns ? dns.y : dns.y + dns.height + 16px;
-                                    width: general-grid.tile-width;
-                                    height: general-grid.two-columns ? general-grid.third-row : self.content-height;
-                                    title: "About True Proxy"; icon: "info";
-                                    HorizontalLayout { spacing: 12px;
-                                        Text { text: "Version " + root.app-version; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                                        IconLicenseButton {}
+                            if root.settings-section == 0: VerticalLayout {
+                                alignment: start;
+                                spacing: 16px;
+                                FormCard {
+                                    title: "Configuration"; icon: "files";
+                                    caption: "Move your proxies and routing rules between devices.";
+                                    HorizontalLayout {
+                                        spacing: 12px;
+                                        Text { text: "Exports include proxy passwords."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; min-width: 0px; }
+                                        ActionButton { label: "Import configuration"; accessible-label: "Import"; icon: "download"; primary: true; height: 40px; enabled: !root.busy; clicked => { root.open-import(); } }
+                                        ActionButton { label: "Export JSON"; accessible-label: "Export"; icon: "upload"; height: 40px; clicked => { root.export-config(); } }
                                     }
+                                }
+                                preferences := Rectangle {
+                                    property <bool> two-columns: self.width >= 740px;
+                                    property <length> appearance-width: self.two-columns ? (self.width - 16px) * 0.54 : self.width;
+                                    property <length> row-height: max(appearance.content-height, startup.content-height);
+                                    height: self.two-columns ? self.row-height : appearance.height + startup.height + 16px;
+                                    vertical-stretch: 0;
+                                    appearance := FormCard {
+                                        x: 0px; y: 0px;
+                                        width: preferences.appearance-width;
+                                        height: preferences.two-columns ? preferences.row-height : self.content-height;
+                                        title: "Appearance"; icon: "sun"; caption: "Choose the application theme.";
+                                        HorizontalLayout {
+                                            alignment: start; spacing: 8px;
+                                            ActionButton { label: "Light"; icon: "sun"; accessible-label: "Light theme"; primary: !root.dark-theme; height: 40px; clicked => { root.choose-theme(false); } }
+                                            ActionButton { label: "Dark"; icon: "moon"; accessible-label: "Dark theme"; primary: root.dark-theme; height: 40px; clicked => { root.choose-theme(true); } }
+                                        }
+                                    }
+                                    startup := FormCard {
+                                        x: preferences.two-columns ? preferences.appearance-width + 16px : 0px;
+                                        y: preferences.two-columns ? 0px : appearance.height + 16px;
+                                        width: preferences.two-columns ? preferences.width - preferences.appearance-width - 16px : preferences.width;
+                                        height: preferences.two-columns ? preferences.row-height : self.content-height;
+                                        title: "Startup"; icon: "power";
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Text { text: "Launch at Windows sign-in"; color: Theme.text; font-size: 12px; wrap: word-wrap; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
+                                            RuleSwitch { label: "Start when I sign in to Windows"; checked: root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.autostart-enabled = !root.autostart-enabled; root.set-autostart(root.autostart-enabled); } }
+                                        }
+                                        Text { text: root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                                    }
+                                }
+                                FormCard {
+                                    title: "Application updates"; icon: "refresh";
+                                    caption: "Check at launch and every 6 hours.";
+                                    action-label: root.update-busy ? "Checking…" : "Check for updates";
+                                    action-accessibility: "Check for Updates";
+                                    action-icon: "refresh";
+                                    action-enabled: !root.update-busy;
+                                    action => { root.check-updates(); }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Text { text: "Automatic update checks"; color: Theme.text; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                                        RuleSwitch { label: "Check for updates automatically"; checked: root.updates-automatic; toggled => { root.updates-automatic = !root.updates-automatic; root.set-updates-automatic(root.updates-automatic); } }
+                                    }
+                                    if root.update-status != "": Text { text: root.update-status; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                                }
+                                Rectangle { height: 1px; background: Theme.border; }
+                                HorizontalLayout {
+                                    height: 28px; spacing: 8px;
+                                    UiIcon { name: "globe"; ink: Theme.muted; width: 16px; height: 16px; }
+                                    Text { text: "DNS is resolved by Windows"; color: Theme.muted; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
+                                    Text { text: "True Proxy v" + root.app-version; color: Theme.muted; font-size: 12px; vertical-alignment: center; }
                                 }
                             }
                         }

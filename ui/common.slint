@@ -1,5 +1,5 @@
-import { IconGlyph, IconLicense } from "icon-assets.slint";
-import { ComboBox, ScrollView } from "std-widgets.slint";
+import { IconGlyph } from "icon-assets.slint";
+import { ComboBox } from "std-widgets.slint";
 
 // Shared theme, models and controls for the tray panel and Connections window.
 export struct ProxyRow { id: string, key: string, name: string, address: string, status: string, location: string, flag-index: int, health: int, udp: bool }
@@ -234,28 +234,6 @@ export component FormCard inherits SurfaceCard {
             }
         }
         @children
-    }
-}
-
-// Full upstream notices are available even in the standalone executable.
-export component IconLicenseButton inherits ActionButton {
-    label: "Icon licenses"; icon: "file";
-    clicked => { licenses.show(); }
-    licenses := PopupWindow {
-        width: 480px; height: 280px;
-        x: root.width - self.width;
-        y: root.absolute-position.y >= 288px ? -self.height - 8px : root.height + 8px;
-        Rectangle { background: Theme.surface; border-radius: Theme.radius-medium; border-width: 1px; border-color: Theme.border;
-            VerticalLayout { padding: 16px; spacing: 10px;
-                HorizontalLayout { height: 30px;
-                    Text { text: "Lucide / Feather licenses"; font-size: 15px; font-weight: 600; color: Theme.text; vertical-alignment: center; }
-                    ActionButton { label: "Close icon licenses"; icon: "close"; icon-only: true; quiet: true; height: 28px; min-width: 28px; max-width: 28px; clicked => { licenses.close(); } }
-                }
-                ScrollView { horizontal-scrollbar-policy: always-off; content-width: self.visible-width; content-height: notice.preferred-height;
-                    notice := Text { text: IconLicense.text; color: Theme.secondary; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
-                }
-            }
-        }
     }
 }
 

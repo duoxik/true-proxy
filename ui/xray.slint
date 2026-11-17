@@ -313,7 +313,7 @@ component XrayProfiles inherits VerticalLayout {
     spacing: 12px;
     XrayCard {
         title: "Import profile"; icon: "link";
-        caption: "Paste a VLESS link, an HTTPS subscription, or a v2RayTun link.";
+        caption: "Paste a VLESS link, an HTTPS subscription, or a v2RayTun link. ShadowNet subscriptions use a saved device identity for this PC.";
         HorizontalLayout {
             spacing: 8px;
             Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun link"; secret: true; field-height: 40px; }

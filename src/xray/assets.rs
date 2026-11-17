@@ -446,12 +446,36 @@ pub fn prune_geo(root: &Path, in_use: Option<&Path>) -> Result<()> {
 }
 
 pub fn get_subscription(url: &str) -> Result<Vec<u8>> {
+    get_subscription_with_hwid(url, None)
+}
+
+pub(super) fn get_subscription_with_hwid(url: &str, hwid: Option<&str>) -> Result<Vec<u8>> {
     const MAX_SUBSCRIPTION: u64 = 1024 * 1024;
     let mut data = Vec::new();
-    let status = get(url, None, MAX_SUBSCRIPTION, |chunk| {
+    let receive = |chunk: &[u8]| {
         data.extend_from_slice(chunk);
         Ok(())
-    })?;
+    };
+    #[cfg(windows)]
+    let status = if let Some(hwid) = hwid {
+        crate::platform::windows::http::get_https_with_headers(
+            url,
+            &[
+                ("X-HWID", hwid),
+                ("X-Device-OS", "Windows"),
+                ("X-Device-Model", "True Proxy"),
+            ],
+            MAX_SUBSCRIPTION,
+            receive,
+        )?
+    } else {
+        get(url, None, MAX_SUBSCRIPTION, receive)?
+    };
+    #[cfg(not(windows))]
+    let status = {
+        let _ = hwid;
+        get(url, None, MAX_SUBSCRIPTION, receive)?
+    };
     ensure!(status == 200, "Subscription returned HTTP {status}");
     ensure!(!data.is_empty(), "The subscription is empty");
     Ok(data)

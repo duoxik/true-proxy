@@ -5,6 +5,8 @@ mod app;
 slint::include_modules!();
 
 fn main() {
+    // Retain upstream notices in the standalone EXE without adding a UI screen.
+    std::hint::black_box(include_str!("../docs/licenses/lucide.txt"));
     // Integration-only parent: never shipped and never opens UI, UAC or WinDivert.
     #[cfg(all(windows, debug_assertions))]
     if std::env::args_os()
@@ -995,7 +997,7 @@ mod ui_tests {
             .unwrap();
         let startup =
             ElementHandle::find_by_accessible_label(&ui, "Start when I sign in to Windows")
-                .find(|element| element.accessible_role() == Some(AccessibleRole::Checkbox))
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Switch))
                 .unwrap();
         let bottom = startup.absolute_position().y + startup.size().height;
         let viewport_bottom = settings.absolute_position().y + settings.size().height;

@@ -16,7 +16,10 @@ use std::{
 };
 use url::Url;
 
+mod json;
+
 const MAX_PROFILES: usize = 128;
+const MAX_IMPORT: usize = 1024 * 1024;
 const MAX_SETTINGS: u64 = 2 * 1024 * 1024;
 const HOST_LOOKUP_CONCURRENCY: usize = 4;
 const HOST_LOOKUP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -184,12 +187,16 @@ impl Settings {
     }
 
     pub fn import_with_assets(&mut self, input: &str, root: &Path) -> Result<BTreeSet<String>> {
-        self.import(&super::hpwnr::resolve(root, input)?)
+        self.import_source(&super::hpwnr::resolve(root, input)?, Some(root))
     }
 
     pub fn import(&mut self, input: &str) -> Result<BTreeSet<String>> {
+        self.import_source(input, None)
+    }
+
+    fn import_source(&mut self, input: &str, root: Option<&Path>) -> Result<BTreeSet<String>> {
         let input = input.trim();
-        ensure!(input.len() <= 256 * 1024, "Xray import exceeds 256 KiB");
+        ensure!(input.len() <= MAX_IMPORT, "Xray import exceeds 1 MiB");
         let input = unwrap_v2raytun(input)?;
         if link_scheme(&input).eq_ignore_ascii_case("https") {
             let url = https_url(&input)?;
@@ -198,9 +205,9 @@ impl Settings {
                     .is_ok_and(|value| value == url.as_str())
             });
             if let Some(existing) = existing {
-                return self.refresh_subscription(&existing.id.clone());
+                return self.refresh_source(&existing.id.clone(), root);
             }
-            let nodes = fetch_subscription(&url)?;
+            let nodes = fetch_subscription(&url, root)?;
             let id = new_id();
             let domains = self.merge_nodes(nodes, Some(&id))?;
             self.subscriptions.push(Subscription {
@@ -218,6 +225,18 @@ impl Settings {
     }
 
     pub fn refresh_subscription(&mut self, id: &str) -> Result<BTreeSet<String>> {
+        self.refresh_source(id, None)
+    }
+
+    pub fn refresh_subscription_with_assets(
+        &mut self,
+        id: &str,
+        root: &Path,
+    ) -> Result<BTreeSet<String>> {
+        self.refresh_source(id, Some(root))
+    }
+
+    fn refresh_source(&mut self, id: &str, root: Option<&Path>) -> Result<BTreeSet<String>> {
         let subscription = self
             .subscriptions
             .iter()
@@ -225,7 +244,7 @@ impl Settings {
             .context("Subscription not found")?;
         let url = crate::platform::unprotect(&subscription.protected_url)
             .context("Could not open the subscription URL")?;
-        let nodes = fetch_subscription(&https_url(&url)?)?;
+        let nodes = fetch_subscription(&https_url(&url)?, root)?;
         self.merge_nodes(nodes, Some(id))
     }
 
@@ -495,10 +514,37 @@ fn split_list(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn fetch_subscription(url: &Url) -> Result<Vec<Node>> {
-    let bytes = assets::get_subscription(url.as_str())
-        .map_err(|_| anyhow::anyhow!("Could not download the subscription"))?;
-    parse_nodes(&bytes)
+fn fetch_subscription(url: &Url, root: Option<&Path>) -> Result<Vec<Node>> {
+    fetch_subscription_using(url, root, assets::get_subscription_with_hwid)
+}
+
+fn fetch_subscription_using(
+    url: &Url,
+    root: Option<&Path>,
+    fetch: impl FnOnce(&str, Option<&str>) -> Result<Vec<u8>>,
+) -> Result<Vec<Node>> {
+    let hwid = if super::shadownet::matches(url) {
+        Some(super::shadownet::device_id(root.context(
+            "ShadowNet import requires the local module directory",
+        )?)?)
+    } else {
+        None
+    };
+    let bytes = fetch(url.as_str(), hwid.as_deref())?;
+    let nodes = parse_nodes(&bytes)?;
+    if hwid.is_some() {
+        ensure!(
+            !nodes.iter().any(|node| {
+                let name = node.name.to_lowercase();
+                name.contains("устройство не определено")
+                    || name.contains("проверьте hwid")
+                    || name.contains("device not detected")
+                    || name.contains("check hwid")
+            }),
+            "ShadowNet did not accept this device. Check the device list and available device slots in your provider account."
+        );
+    }
+    Ok(nodes)
 }
 
 fn link_scheme(input: &str) -> &str {
@@ -623,13 +669,13 @@ fn valid_fingerprint(fingerprint: &str) -> bool {
 }
 
 fn parse_nodes(bytes: &[u8]) -> Result<Vec<Node>> {
-    ensure!(
-        bytes.len() <= 256 * 1024,
-        "Xray subscription exceeds 256 KiB"
-    );
+    ensure!(bytes.len() <= MAX_IMPORT, "Xray subscription exceeds 1 MiB");
     let text = std::str::from_utf8(bytes)
         .context("The subscription must be UTF-8")?
         .trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    if text.starts_with(['{', '[']) {
+        return json::parse_nodes(text);
+    }
     let decoded;
     let text = if text.contains("://") {
         text
@@ -646,6 +692,9 @@ fn parse_nodes(bytes: &[u8]) -> Result<Vec<Node>> {
         .context("Paste a vless:// link or a text/Base64 VLESS subscription")?;
         std::str::from_utf8(&decoded).context("The subscription must be UTF-8")?
     };
+    if text.trim_start().starts_with(['{', '[']) {
+        return json::parse_nodes(text);
+    }
     if text.lines().count() == 1 {
         return parse_node(text.trim()).map(|node| vec![node]);
     }
@@ -779,6 +828,42 @@ mod tests {
     use super::*;
 
     const NODE: &str = "vless://00000000-0000-4000-8000-000000000001@vpn.example.test:443?type=tcp&security=tls&flow=xtls-rprx-vision&sni=cert.example.test&alpn=http%2F1.1&fp=chrome#Demo";
+
+    #[test]
+    fn shadownet_downloads_reuse_one_saved_identity_and_other_sources_do_not_send_it() {
+        let root = std::env::temp_dir().join(format!("true-proxy-subscription-{}", new_id()));
+        let url = https_url("https://sub.shadow-net.site/example").unwrap();
+        let mut saved = String::new();
+        for _ in 0..2 {
+            let nodes = fetch_subscription_using(&url, Some(&root), |source, hwid| {
+                assert_eq!(source, url.as_str());
+                let hwid = hwid.expect("ShadowNet requires HWID");
+                if saved.is_empty() {
+                    saved = hwid.to_owned();
+                } else {
+                    assert_eq!(hwid, saved);
+                }
+                Ok(NODE.as_bytes().to_vec())
+            })
+            .unwrap();
+            assert_eq!(nodes.len(), 1);
+        }
+        let placeholder = NODE.replace("#Demo", "#Check%20HWID");
+        let error = fetch_subscription_using(&url, Some(&root), |_, _| {
+            Ok(placeholder.as_bytes().to_vec())
+        })
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("did not accept this device"));
+        let other = https_url("https://example.test/list").unwrap();
+        fetch_subscription_using(&other, None, |_, hwid| {
+            assert!(hwid.is_none());
+            Ok(NODE.as_bytes().to_vec())
+        })
+        .unwrap();
+        fs::remove_file(root.join("subscription-device.dpapi")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn imports_wrapped_vless_and_keeps_subscription_url_escapes() {

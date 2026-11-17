@@ -323,8 +323,9 @@ impl Controller {
                 })?;
             }
             Command::RefreshSubscription(id) => {
+                let directory = self.directory.clone();
                 self.change(false, |settings| {
-                    let domains = settings.refresh_subscription(&id)?;
+                    let domains = settings.refresh_subscription_with_assets(&id, &directory)?;
                     settings.resolve_hosts(domains);
                     Ok(())
                 })?;
