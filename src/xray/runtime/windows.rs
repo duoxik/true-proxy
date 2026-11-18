@@ -559,7 +559,7 @@ fn well_known_sid(kind: WELL_KNOWN_SID_TYPE, buffer: &mut [u32; SID_WORDS]) -> R
     Ok(length)
 }
 
-fn owns_loopback_listener(pid: u32, port: u16) -> bool {
+pub(super) fn owns_loopback_listener(pid: u32, port: u16) -> bool {
     let mut size = 0;
     // SAFETY: the first call only queries the required table size.
     let status = unsafe {

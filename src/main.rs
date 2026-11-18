@@ -438,6 +438,7 @@ mod ui_tests {
                     "subscription-id",
                     "Subscription node",
                 )])),
+                ..Default::default()
             },
         ])));
         let selected = Rc::new(Cell::new(slint::SharedString::default()));
@@ -466,6 +467,7 @@ mod ui_tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn local_xray_preview_selects_profiles_and_keeps_core_disabled() {
         i_slint_backend_testing::init_no_event_loop();
@@ -482,8 +484,17 @@ mod ui_tests {
         xray.set_section(0);
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         click(&ui, "Activate Backup tunnel");
-        assert_eq!(xray.get_selected_profile().id, "preview-backup");
-        assert!(!xray.get_profiles().row_data(0).unwrap().active);
+        assert_eq!(xray.get_enabled_count(), 2);
+        assert!(
+            xray.get_subscriptions()
+                .row_data(0)
+                .unwrap()
+                .profiles
+                .row_data(0)
+                .unwrap()
+                .active
+        );
+        assert!(xray.get_profiles().row_data(0).unwrap().active);
         click(&ui, "Start Xray");
         assert!(!xray.get_running() && !ui.get_active());
         assert!(xray.get_error().contains("disabled in this UI preview"));
@@ -515,6 +526,7 @@ mod ui_tests {
                     profile("profile-a1", "Node A1"),
                     profile("profile-a2", "Node A2"),
                 ])),
+                ..Default::default()
             },
             XraySubscriptionGroup {
                 id: "source-b".into(),
@@ -523,6 +535,7 @@ mod ui_tests {
                     "profile-b1",
                     "Node B1",
                 )])),
+                ..Default::default()
             },
         ])));
         let refreshed = Rc::new(Cell::new(slint::SharedString::default()));
@@ -569,11 +582,7 @@ mod ui_tests {
         let xray = ui.global::<XrayModule>();
         xray.set_installed(true);
         xray.set_running(true);
-        let edits = Rc::new(Cell::new(0));
-        xray.on_settings_edited({
-            let edits = edits.clone();
-            move || edits.set(edits.get() + 1)
-        });
+        xray.set_manual_port("2081".into());
         let restarts = Rc::new(Cell::new(0));
         xray.on_restart({
             let restarts = restarts.clone();
@@ -586,10 +595,10 @@ mod ui_tests {
                 .next()
                 .is_none()
         );
-        click(&ui, "2081");
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "2".into() });
-        assert_eq!(edits.get(), 1);
+        click(&ui, "Open Profiles");
+        assert_eq!(xray.get_section(), 1);
+        click(&ui, "Manual Profiles default port");
+        assert_eq!(xray.get_port_draft(), "2081");
         assert_eq!(restarts.get(), 0);
         xray.set_pending(true);
         xray.set_settings_saving(true);
@@ -598,6 +607,59 @@ mod ui_tests {
         xray.set_settings_saving(false);
         click(&ui, "Restart");
         assert_eq!(restarts.get(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn xray_port_badge_edits_resets_and_copies_the_effective_port() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        app::preview::populate_xray(&ui);
+        let xray = ui.global::<XrayModule>();
+        let copied = Rc::new(Cell::new(slint::SharedString::default()));
+        xray.on_copy_address({
+            let copied = copied.clone();
+            move |port| copied.set(port)
+        });
+        ui.show().unwrap();
+        click(&ui, "Xray Profiles");
+        click(&ui, "Copy address for Subscription 1");
+        assert_eq!(copied.take().as_str(), "2100");
+        click(&ui, "Edit port for Backup tunnel");
+        click(&ui, "Custom port for Backup tunnel");
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
+        assert!(!xray.get_port_error().is_empty());
+        click(&ui, "Save port");
+        assert!(
+            !xray
+                .get_subscriptions()
+                .row_data(0)
+                .unwrap()
+                .profiles
+                .row_data(0)
+                .unwrap()
+                .custom
+        );
+        click(&ui, "Cancel");
+        click(&ui, "Edit port for Backup tunnel");
+        xray.invoke_update_port("2101".into());
+        click(&ui, "Save port");
+        let backup = || {
+            xray.get_subscriptions()
+                .row_data(0)
+                .unwrap()
+                .profiles
+                .row_data(0)
+                .unwrap()
+        };
+        assert!(backup().custom);
+        assert_eq!(backup().port, "2101");
+        click(&ui, "Edit port for Backup tunnel");
+        click(&ui, "Use inherited");
+        assert!(!backup().custom);
+        assert_eq!(backup().port, "2100");
     }
 
     #[test]

@@ -463,31 +463,57 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         name: "Primary".into(),
         summary: "VLESS · vpn.example.test:443".into(),
         active: true,
+        port: "2081".into(),
+        custom: false,
     }]));
     xray.set_selected_profile(XrayProfileRow {
         id: "primary".into(),
         name: "Primary".into(),
         summary: "VLESS · vpn.example.test:443".into(),
         active: true,
+        port: "2081".into(),
+        custom: false,
     });
     xray.set_subscriptions(model(vec![XraySubscriptionGroup {
         id: "sample-source".into(),
         name: "Subscription 1".into(),
+        port: "2200".into(),
+        active_removed: false,
         profiles: model(vec![
             XrayProfileRow {
                 id: "backup".into(),
                 name: "Backup".into(),
                 summary: "VLESS · backup.example.test:443".into(),
                 active: false,
+                port: "2200".into(),
+                custom: false,
             },
             XrayProfileRow {
                 id: "regional".into(),
                 name: "Regional".into(),
                 summary: "VLESS · regional.example.test:443".into(),
-                active: false,
+                active: true,
+                port: "2201".into(),
+                custom: true,
             },
         ]),
     }]));
+    xray.set_manual_port("2081".into());
+    xray.set_enabled_count(2);
+    xray.set_active_ports(model(vec![
+        XrayPortRow {
+            port: "2081".into(),
+            profile: "Primary".into(),
+            source: "Manual Profiles".into(),
+            status: "Listening".into(),
+        },
+        XrayPortRow {
+            port: "2201".into(),
+            profile: "Regional".into(),
+            source: "Subscription 1".into(),
+            status: "Listening".into(),
+        },
+    ]));
     xray.set_dns("https://resolver.example.test/dns-query".into());
     xray.set_hosts(model(vec![
         XrayHostRow {
@@ -560,9 +586,6 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     {
         xray.set_section(section as i32);
         xray.set_pending(*name == "general");
-        if *name == "general" {
-            xray.set_port("2082".into());
-        }
         save(adapter, &destination.join(format!("xray-{name}.png")))?;
     }
     xray.set_section(1);

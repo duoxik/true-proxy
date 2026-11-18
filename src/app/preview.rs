@@ -6,60 +6,99 @@ use true_proxy::{
 };
 
 /// Explicit fixtures for the isolated local UI preview; never a core process.
+#[cfg(windows)]
 pub(crate) fn populate_xray(ui: &crate::MainWindow) {
-    use crate::{XrayModule, XrayProfileRow, XraySubscriptionGroup};
+    use crate::XrayModule;
     use slint::ComponentHandle;
+    use std::{cell::RefCell, rc::Rc};
+    use true_proxy::xray::profile::Settings;
     let xray = ui.global::<XrayModule>();
-    let primary = XrayProfileRow {
-        id: "preview-primary".into(),
-        name: "Primary tunnel".into(),
-        summary: "VLESS · vpn.example.test:443".into(),
-        active: true,
-    };
+    let settings: Settings = serde_json::from_value(serde_json::json!({
+        "manual_default_port": 2081,
+        "subscriptions": [
+            {"id":"preview-subscription", "protected_url":"", "default_port":2100},
+            {"id":"preview-us", "protected_url":"", "default_port":2200}
+        ],
+        "profiles":[
+            {"id":"preview-primary","name":"Primary tunnel","host":"vpn.example.test","port":443,"protected":"","subscription":null,"enabled":true},
+            {"id":"preview-backup","name":"Backup tunnel","host":"backup.example.test","port":443,"protected":"","subscription":"preview-subscription"},
+            {"id":"preview-us-east","name":"US East","host":"us.example.test","port":443,"protected":"","subscription":"preview-us","custom_port":2201}
+        ]
+    })).expect("valid preview profiles");
+    let settings = Rc::new(RefCell::new(settings));
     xray.set_installed(true);
     xray.set_version("26.10.31".into());
     xray.set_hpwnr_installed(true);
     xray.set_hpwnr_version("1.0.3".into());
-    xray.set_selected_profile(primary.clone());
-    xray.set_profiles(super::model(vec![primary]));
-    xray.set_subscriptions(super::model(vec![XraySubscriptionGroup {
-        id: "preview-subscription".into(),
-        name: "Subscription 1".into(),
-        profiles: super::model(vec![XrayProfileRow {
-            id: "preview-backup".into(),
-            name: "Backup tunnel".into(),
-            summary: "VLESS · backup.example.test:443".into(),
-            active: false,
-        }]),
-    }]));
+    super::xray::show_profiles(ui, &settings.borrow());
+    let model = settings.clone();
     let weak = ui.as_weak();
     xray.on_activate_profile(move |id| {
-        use slint::Model;
         let Some(ui) = weak.upgrade() else { return };
-        let xray = ui.global::<XrayModule>();
-        let mut selected = XrayProfileRow::default();
-        let mut select = |mut row: XrayProfileRow| {
-            row.active = row.id == id;
-            if row.active {
-                selected = row.clone();
+        let mut settings = model.borrow_mut();
+        match settings.toggle_profile(&id) {
+            Ok(previous) => {
+                if let Some(previous) = previous {
+                    super::show_toast(&ui, format!("Replaced {previous}"), false);
+                }
+                super::xray::show_profiles(&ui, &settings);
             }
-            row
-        };
-        let manual = xray.get_profiles().iter().map(&mut select).collect();
-        let groups = xray
-            .get_subscriptions()
-            .iter()
-            .map(|mut group| {
-                group.profiles = super::model(group.profiles.iter().map(&mut select).collect());
-                group
-            })
-            .collect();
-        if selected.id.is_empty() {
-            return;
+            Err(error) => ui
+                .global::<XrayModule>()
+                .set_error(error.to_string().into()),
         }
-        xray.set_profiles(super::model(manual));
-        xray.set_subscriptions(super::model(groups));
-        xray.set_selected_profile(selected);
+    });
+    let model = settings.clone();
+    xray.on_validate_port(move |owner, profile, value| {
+        let edit = super::xray::PortEdit {
+            owner: owner.to_string(),
+            profile,
+            value: value.to_string(),
+        };
+        edit.apply(&mut model.borrow().clone())
+            .err()
+            .map_or_else(String::new, |error| error.to_string())
+            .into()
+    });
+    let weak = ui.as_weak();
+    let model = settings.clone();
+    xray.on_save_port(move |owner, profile, value| {
+        let Some(ui) = weak.upgrade() else { return };
+        let edit = super::xray::PortEdit {
+            owner: owner.to_string(),
+            profile,
+            value: value.to_string(),
+        };
+        let mut settings = model.borrow_mut();
+        let result = edit.apply(&mut settings);
+        let xray = ui.global::<XrayModule>();
+        if result.is_ok() {
+            super::xray::show_profiles(&ui, &settings);
+        }
+        xray.invoke_finish_port_edit(
+            result
+                .err()
+                .map_or_else(String::new, |error| error.to_string())
+                .into(),
+        );
+    });
+    let weak = ui.as_weak();
+    xray.on_remove_profile(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            let mut settings = settings.borrow_mut();
+            settings.remove_profile(&id);
+            super::xray::show_profiles(&ui, &settings);
+        }
+    });
+    let weak = ui.as_weak();
+    xray.on_copy_address(move |port| {
+        if let Some(ui) = weak.upgrade() {
+            super::show_toast(
+                &ui,
+                format!("127.0.0.1:{port} · Clipboard disabled in preview"),
+                false,
+            );
+        }
     });
     let weak = ui.as_weak();
     xray.on_toggle(move || {
@@ -116,6 +155,9 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
         }
     });
 }
+
+#[cfg(not(windows))]
+pub(crate) fn populate_xray(_ui: &crate::MainWindow) {}
 
 pub(super) fn populate_logs(stats: &Statistics) {
     use LogLevel::{Error, Info, Verbose};
