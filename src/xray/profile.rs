@@ -75,6 +75,8 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     subscriptions: Vec<Subscription>,
     pub dns: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_exit_profile_id: Option<String>,
     pub hosts: BTreeMap<String, IpAddr>,
     pub direct_ips: Vec<String>,
     pub direct_domains: Vec<String>,
@@ -96,6 +98,7 @@ impl Default for Settings {
             profiles: Vec::new(),
             subscriptions: Vec::new(),
             dns: Vec::new(),
+            dns_exit_profile_id: None,
             hosts: BTreeMap::new(),
             direct_ips: vec!["geoip:ru".into()],
             direct_domains: vec!["geosite:category-ru".into()],
@@ -206,6 +209,32 @@ impl Settings {
         self.enabled_profiles()
             .next()
             .context("Turn on a VLESS profile first")
+    }
+
+    pub fn dns_exit_error(&self) -> Option<String> {
+        if self.dns.is_empty() {
+            return None;
+        }
+        self.dns_exit_warning()
+    }
+
+    /// Keep a disabled or removed choice on disk so another profile cannot take over DNS.
+    pub fn dns_exit_warning(&self) -> Option<String> {
+        let Some(id) = &self.dns_exit_profile_id else {
+            return (!self.dns.is_empty()).then(|| {
+                "Custom Tunnel DNS needs an exit profile. Choose one in X-RAY → General.".into()
+            });
+        };
+        match self.profiles.iter().find(|profile| &profile.id == id) {
+            Some(profile) if profile.enabled => None,
+            Some(profile) => Some(format!(
+                "The DNS exit profile “{}” is disabled. Enable it or choose another in X-RAY → General.",
+                profile.name
+            )),
+            None => {
+                Some("The DNS exit profile was removed. Choose another in X-RAY → General.".into())
+            }
+        }
     }
 
     pub fn import_with_assets(&mut self, input: &str, root: &Path) -> Result<BTreeSet<String>> {
@@ -516,6 +545,10 @@ pub fn parse_dns(text: &str) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let servers = split_list(text);
+    ensure!(
+        !servers.is_empty() || text.trim().is_empty(),
+        "Enter a DNS resolver or Default."
+    );
     validate_dns_servers(&servers)?;
     Ok(servers)
 }
@@ -1040,6 +1073,34 @@ mod tests {
     }
 
     #[test]
+    fn custom_dns_never_inherits_a_replacement_profile() {
+        let mut settings = Settings::default();
+        let replacement = NODE.replace("vpn.example.test", "us.example.test");
+        add_source(&mut settings, "A", 2100, &format!("{NODE}\n{replacement}"));
+        let original = settings.selected().unwrap().id.clone();
+        settings.dns = vec!["192.0.2.53".into()];
+        assert!(settings.dns_exit_error().is_some());
+
+        settings.dns_exit_profile_id = Some(original.clone());
+        assert!(settings.dns_exit_error().is_none());
+        let other = settings.profiles[1].id.clone();
+        settings.toggle_profile(&other).unwrap();
+        assert!(settings.dns_exit_error().unwrap().contains("disabled"));
+        let json = serde_json::to_vec(&settings).unwrap();
+        let mut restored: Settings = serde_json::from_slice(&json).unwrap();
+        assert_eq!(restored.dns_exit_profile_id.as_ref(), Some(&original));
+        restored.toggle_profile(&original).unwrap();
+        assert!(restored.dns_exit_error().is_none());
+
+        restored.remove_profile(&original);
+        assert!(restored.dns_exit_error().unwrap().contains("removed"));
+        assert_eq!(restored.dns_exit_profile_id.as_ref(), Some(&original));
+        restored.dns.clear();
+        assert!(restored.dns_exit_error().is_none());
+        assert!(restored.dns_exit_warning().unwrap().contains("removed"));
+    }
+
+    #[test]
     fn two_groups_inherit_ports_and_switch_only_the_conflicting_profile() {
         let mut settings = Settings::default();
         let second_node = NODE
@@ -1116,7 +1177,7 @@ mod tests {
             add_source(&mut fixture, "A", 2100, NODE);
             add_source(&mut fixture, "B", 2200, NODE);
             let old = json!({
-                "socks_port": 2082, "enabled": true,
+                "socks_port": 2082, "enabled": true, "dns": ["192.0.2.53"],
                 "active": active.then(|| fixture.profiles[1].id.clone()),
                 "profiles": fixture.profiles.iter().map(|profile| json!({
                     "id": profile.id, "name": profile.name, "host": profile.host,
@@ -1131,6 +1192,8 @@ mod tests {
                 2082
             );
             assert_eq!(migrated.enabled_profiles().count(), usize::from(active));
+            assert_eq!(migrated.dns_exit_profile_id, None);
+            assert!(migrated.dns_exit_error().is_some());
             assert!(migrated.enabled);
             assert_eq!(migrated.reserved_ports().len(), 3);
             let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -1192,6 +1255,7 @@ mod tests {
         ];
         assert_eq!(parse_dns(&resolvers.join(", ")).unwrap(), resolvers);
         for invalid in [
+            ", ,",
             "tcp://",
             "tcp://resolver.example:0",
             "tcp://resolver.example:65536",

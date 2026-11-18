@@ -425,7 +425,9 @@ export component DialogActions inherits Rectangle {
 export component ThemedComboBox inherits Rectangle {
     in property <[string]> model;
     in property <bool> enabled: true;
+    in property <string> label;
     in-out property <int> current-index: 0;
+    callback selected(int);
     border-radius: Theme.radius-small;
     background: root.enabled ? Theme.field : Theme.disabled;
     clip: true;
@@ -441,6 +443,8 @@ export component ThemedComboBox inherits Rectangle {
         model: root.model;
         enabled: root.enabled;
         current-index <=> root.current-index;
+        accessible-label: root.label;
+        selected => { root.selected(self.current-index); }
     }
 }
 

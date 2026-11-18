@@ -33,6 +33,32 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     super::xray::show_profiles(ui, &settings.borrow());
     let model = settings.clone();
     let weak = ui.as_weak();
+    xray.on_settings_edited(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        match super::xray::parse_dns_draft(xray.get_dns().as_str()) {
+            Ok(dns) => {
+                let mut settings = model.borrow_mut();
+                settings.dns = dns;
+                xray.set_settings_error("".into());
+                super::xray::show_profiles(&ui, &settings);
+            }
+            Err(error) => xray.set_settings_error(error.to_string().into()),
+        }
+    });
+    let model = settings.clone();
+    let weak = ui.as_weak();
+    xray.on_save_dns_exit(move |id| {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut settings = model.borrow_mut();
+        let error = super::xray::set_dns_exit(&mut settings, id.into())
+            .err()
+            .map_or_else(String::new, |error| error.to_string());
+        super::xray::show_profiles(&ui, &settings);
+        ui.global::<XrayModule>().set_error(error.into());
+    });
+    let model = settings.clone();
+    let weak = ui.as_weak();
     xray.on_activate_profile(move |id| {
         let Some(ui) = weak.upgrade() else { return };
         let mut settings = model.borrow_mut();

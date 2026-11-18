@@ -611,6 +611,76 @@ mod ui_tests {
 
     #[cfg(windows)]
     #[test]
+    fn xray_dns_exit_requires_a_selection_and_tracks_profile_availability() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        app::preview::populate_xray(&ui);
+        let xray = ui.global::<XrayModule>();
+        let restarts = Rc::new(Cell::new(0));
+        xray.on_restart({
+            let restarts = restarts.clone();
+            move || restarts.set(restarts.get() + 1)
+        });
+        ui.show().unwrap();
+        click(&ui, "Xray General");
+        assert!(xray.get_dns_exit_error().is_empty());
+        assert_eq!(xray.get_dns_exit_profiles().row_count(), 2);
+        xray.invoke_activate_profile("preview-backup".into());
+        xray.set_dns("1.1.1.1".into());
+        xray.invoke_settings_edited();
+        assert!(!xray.get_dns_exit_error().is_empty());
+        assert_eq!(xray.get_dns_exit_profiles().row_count(), 3);
+
+        let dropdown = ElementHandle::find_by_accessible_label(&ui, "DNS exits through")
+            .find(|element| element.accessible_value().is_some())
+            .expect("DNS exit selector");
+        assert_eq!(dropdown.accessible_value().as_deref(), Some("Not selected"));
+        dropdown.mock_single_click(PointerEventButton::Left);
+        assert_eq!(dropdown.accessible_expanded(), Some(true));
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        assert!(xray.get_dns_exit_profile_id().is_empty());
+        dropdown.mock_single_click(PointerEventButton::Left);
+        ElementHandle::find_by_accessible_label(&ui, "Backup tunnel · :2100")
+            .next()
+            .expect("Enabled backup profile")
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(xray.get_dns_exit_profile_id(), "preview-backup");
+        assert_eq!(xray.get_dns_exit_index(), 2);
+        assert!(xray.get_dns_exit_error().is_empty());
+
+        xray.invoke_activate_profile("preview-backup".into());
+        assert!(xray.get_dns_exit_error().contains("disabled"));
+        assert_eq!(xray.get_dns_exit_index(), 0);
+        assert_eq!(xray.get_dns_exit_profile_id(), "preview-backup");
+        xray.set_dns("Default".into());
+        xray.invoke_settings_edited();
+        assert!(xray.get_dns_exit_warning().contains("disabled"));
+        assert!(xray.get_dns_exit_error().is_empty());
+        xray.set_dns("1.1.1.1".into());
+        xray.invoke_settings_edited();
+        xray.invoke_activate_profile("preview-backup".into());
+        assert_eq!(xray.get_dns_exit_index(), 2);
+        assert!(xray.get_dns_exit_error().is_empty());
+        xray.invoke_remove_profile("preview-backup".into());
+        assert!(xray.get_dns_exit_error().contains("removed"));
+
+        xray.set_running(true);
+        xray.set_pending(true);
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 0);
+        xray.set_dns("Default".into());
+        xray.invoke_settings_edited();
+        assert!(xray.get_dns_exit_error().is_empty());
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn xray_port_badge_edits_resets_and_copies_the_effective_port() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();

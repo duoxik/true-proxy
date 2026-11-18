@@ -42,6 +42,7 @@ pub struct Listener {
 pub struct Settings<'a> {
     pub listeners: &'a [Listener],
     pub dns_servers: &'a [String],
+    pub dns_exit_profile_id: Option<&'a str>,
     pub direct_domains: &'a [String],
     pub direct_ips: &'a [String],
     pub geo_directory: &'a Path,
@@ -461,13 +462,14 @@ fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
     }
     let mut routes = Vec::new();
     if custom_dns {
+        let exit_id = settings
+            .dns_exit_profile_id
+            .context("Choose a DNS exit profile in X-RAY → General.")?;
         let dns_index = settings
             .listeners
             .iter()
-            .enumerate()
-            .min_by_key(|(_, listener)| listener.port)
-            .expect("listeners are nonempty")
-            .0;
+            .position(|listener| listener.profile_id == exit_id)
+            .context("The DNS exit profile is unavailable. Choose another in X-RAY → General.")?;
         let mut dns_outbound = outbounds[dns_index].clone();
         dns_outbound["tag"] = json!(DNS_TUNNEL);
         // A DNS resolver hostname is resolved by the VPN server. Resolving it
@@ -770,6 +772,7 @@ mod tests {
         let settings = Settings {
             listeners: &listeners,
             dns_servers: &["tcp://192.0.2.53:53".into()],
+            dns_exit_profile_id: Some(&profile.id),
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: Path::new("."),
@@ -812,6 +815,7 @@ mod tests {
         };
         let settings = Settings {
             listeners: std::slice::from_ref(&listener),
+            dns_exit_profile_id: Some("node"),
             dns_servers: &[
                 "https://dns.example/dns-query".into(),
                 "tcp://192.0.2.53:8853".into(),
@@ -866,6 +870,7 @@ mod tests {
         let settings = Settings {
             listeners: &listeners,
             dns_servers: &[],
+            dns_exit_profile_id: None,
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: Path::new("."),
@@ -894,14 +899,22 @@ mod tests {
         let activity = Activity::default();
         activity.receive("from udp:127.0.0.1:1 accepted udp:example.test:443 [in-us -> out-us]");
         assert_eq!(activity.stats().proxied, 1);
-        let settings = Settings {
+        let mut settings = Settings {
             dns_servers: &["192.0.2.53".into()],
             direct_domains: &["geosite:category-ru".into()],
             ..settings
         };
+        assert!(configuration(&settings).is_err());
+        settings.dns_exit_profile_id = Some("missing");
+        assert!(configuration(&settings).is_err());
+        settings.dns_exit_profile_id = Some("us");
         let (config, _) = configuration(&settings).unwrap();
         assert_eq!(config["outbounds"][2]["tag"], DNS_TUNNEL);
-        assert_eq!(config["outbounds"][2]["settings"]["address"], "192.0.2.3");
+        assert_eq!(
+            config["outbounds"][2]["settings"],
+            config["outbounds"][0]["settings"]
+        );
+        assert_eq!(config["outbounds"][2]["settings"]["address"], "192.0.2.4");
         let rules = config["routing"]["rules"].as_array().unwrap();
         assert_eq!(rules[0]["outboundTag"], DNS_TUNNEL);
         assert_eq!(rules[1]["outboundTag"], DIRECT);
@@ -1032,13 +1045,17 @@ mod tests {
         };
         let reserve = || TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let sockets = [reserve(), reserve()];
-        let ports = sockets
+        let mut ports = sockets
             .each_ref()
             .map(|socket| socket.local_addr().unwrap().port());
+        ports.sort_unstable();
         let servers = [reserve(), reserve()];
         for server in &servers {
             server.set_nonblocking(true).unwrap();
         }
+        let resolver = reserve();
+        resolver.set_nonblocking(true).unwrap();
+        let resolver_address = resolver.local_addr().unwrap();
         let profile = json!({
             "protocol": "vless",
             "settings": {"id": "fixture", "encryption": "none", "flow": "xtls-rprx-vision"},
@@ -1058,7 +1075,8 @@ mod tests {
         drop(sockets);
         let settings = Settings {
             listeners: &listeners,
-            dns_servers: &["tcp://192.0.2.53:8853".into()],
+            dns_servers: &[format!("tcp://{resolver_address}")],
+            dns_exit_profile_id: Some("local-1"),
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: installed.executable.parent().unwrap(),
@@ -1087,8 +1105,7 @@ mod tests {
             Some((bypass.generation(), false))
         );
         assert_eq!(activity.stats().accepted, 0);
-        for (port, server) in ports.into_iter().zip(&servers) {
-            assert!(runtime.owns_listener(port));
+        let open_socks = |port| {
             let mut socks = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
             socks
                 .set_read_timeout(Some(Duration::from_secs(2)))
@@ -1098,20 +1115,20 @@ mod tests {
             socks.read_exact(&mut method).unwrap();
             assert_eq!(method, [5, 0]);
             socks
-                .write_all(&[5, 1, 0, 1, 192, 0, 2, 9, 1, 187])
-                .unwrap();
-            socks.write_all(b"test payload").unwrap();
+        };
+        let accept_tls = |server: &TcpListener| {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 match server.accept() {
                     Ok((socket, _)) => {
+                        socket.set_nonblocking(false).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
                         let mut header = [0; 1];
                         (&socket).read_exact(&mut header).unwrap();
                         assert_eq!(header, [0x16], "expected a TLS handshake");
-                        break;
+                        return socket;
                     }
                     Err(error)
                         if error.kind() == io::ErrorKind::WouldBlock
@@ -1119,10 +1136,21 @@ mod tests {
                     {
                         thread::sleep(Duration::from_millis(10));
                     }
-                    Err(error) => panic!("port {port} did not reach its own upstream: {error}"),
+                    Err(error) => panic!("expected traffic on {:?}: {error}", server.local_addr()),
                 }
             }
-        }
+        };
+        let connections = [0, 1].map(|index| {
+            let port = ports[index];
+            assert!(runtime.owns_listener(port));
+            let mut socks = open_socks(port);
+            socks
+                .write_all(&[5, 1, 0, 1, 192, 0, 2, 9, 1, 187])
+                .unwrap();
+            socks.write_all(b"test payload").unwrap();
+            // Leave the handshake pending so retries cannot satisfy the DNS assertion.
+            (socks, accept_tls(&servers[index]))
+        });
         let until = Instant::now() + Duration::from_secs(2);
         while activity.stats().accepted < 2 && Instant::now() < until {
             thread::sleep(Duration::from_millis(10));
@@ -1133,7 +1161,38 @@ mod tests {
         assert_eq!(events[0].route, "VLESS");
         assert_eq!(events[0].protocol, "TCP");
         assert_eq!(activity.stats().proxied, 2);
+
+        let mut socks = open_socks(ports[0]);
+        let domain = b"dns-egress.test";
+        let mut request = vec![5, 1, 0, 3, domain.len() as u8];
+        request.extend_from_slice(domain);
+        request.extend_from_slice(&443_u16.to_be_bytes());
+        socks.write_all(&request).unwrap();
+        socks.write_all(b"test payload").unwrap();
+        let dns_socket = accept_tls(&servers[1]);
+        assert!(
+            matches!(servers[0].accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        assert!(
+            matches!(resolver.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        let expected_route =
+            format!("accepted tcp:{resolver_address} [{DNS_INBOUND} -> {DNS_TUNNEL}]");
+        let until = Instant::now() + Duration::from_secs(2);
+        while !activity
+            .logs()
+            .iter()
+            .any(|line| line.message.contains(&expected_route))
+        {
+            assert!(
+                Instant::now() < until,
+                "missing DNS route to {resolver_address}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
         runtime.stop();
+        drop((connections, socks, dns_socket));
         assert!(!runtime.running().unwrap());
         assert_eq!(bypass.generation(), 0);
         for port in ports {

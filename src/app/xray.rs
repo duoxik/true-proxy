@@ -35,6 +35,7 @@ enum Command {
     Remove(String),
     RefreshHosts,
     SaveDraft(i32, SettingsDraft),
+    SaveDnsExit(String),
     SavePort(PortEdit),
     RefreshGeo,
     LoadGeoTags,
@@ -72,12 +73,7 @@ impl SettingsDraft {
 
     fn apply(self, settings: &mut Settings) -> Result<()> {
         let mut error = None;
-        let dns = if self.dns.trim().is_empty() {
-            Err(anyhow::anyhow!("Enter a DNS resolver or Default."))
-        } else {
-            profile::parse_dns(&self.dns)
-        };
-        update_field(&mut settings.dns, dns, &mut error);
+        update_field(&mut settings.dns, parse_dns_draft(&self.dns), &mut error);
         update_field(
             &mut settings.geoip_url,
             profile::https_url(&self.geoip)
@@ -107,6 +103,11 @@ impl SettingsDraft {
         settings.direct_domains = self.domains;
         error.map_or(Ok(()), Err)
     }
+}
+
+pub(super) fn parse_dns_draft(input: &str) -> Result<Vec<String>> {
+    ensure!(!input.trim().is_empty(), "Enter a DNS resolver or Default.");
+    profile::parse_dns(input)
 }
 
 fn update_field<T>(target: &mut T, input: Result<T>, error: &mut Option<anyhow::Error>) {
@@ -175,6 +176,7 @@ impl PortEdit {
 
 fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
     applied.dns == saved.dns
+        && (applied.dns.is_empty() || applied.dns_exit_profile_id == saved.dns_exit_profile_id)
         && applied.direct_ips == saved.direct_ips
         && applied.direct_domains == saved.direct_domains
         && applied.geo_refreshed_at == saved.geo_refreshed_at
@@ -187,6 +189,22 @@ fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
                     && applied.effective_port(old) == saved.effective_port(new)
             })
         })
+}
+
+fn check_dns_exit(settings: &Settings) -> Result<()> {
+    if let Some(error) = settings.dns_exit_error() {
+        anyhow::bail!(error);
+    }
+    Ok(())
+}
+
+pub(super) fn set_dns_exit(settings: &mut Settings, id: String) -> Result<()> {
+    ensure!(
+        id.is_empty() || settings.enabled_profiles().any(|profile| profile.id == id),
+        "Choose an enabled profile for DNS exits through."
+    );
+    settings.dns_exit_profile_id = (!id.is_empty()).then_some(id);
+    Ok(())
 }
 
 struct Controller {
@@ -357,6 +375,7 @@ impl Controller {
             Command::Toggle => self.set_running(self.runtime.is_none())?,
             Command::Restart => {
                 ensure!(self.runtime.is_some(), "Xray is already stopped.");
+                check_dns_exit(&self.settings)?;
                 for profile in self.settings.enabled_profiles() {
                     self.check_port(self.settings.effective_port(profile))?;
                     self.settings.upstream_ip(profile).context(
@@ -418,6 +437,9 @@ impl Controller {
                 );
             }
             Command::SaveDraft(_, draft) => self.save_draft(draft)?,
+            Command::SaveDnsExit(id) => {
+                self.change(false, |settings| set_dns_exit(settings, id))?
+            }
             Command::SavePort(edit) => {
                 let mut next = self.settings.clone();
                 let port = edit.apply(&mut next)?;
@@ -484,6 +506,7 @@ impl Controller {
             self.stop();
             return self.remember_enabled(false);
         }
+        check_dns_exit(&self.settings)?;
         if let Err(error) = self.start() {
             self.failed_ports = port_rows(&self.settings, "Error");
             return Err(self.remember_failure(error));
@@ -550,6 +573,7 @@ impl Controller {
         let settings = runtime::Settings {
             listeners: &listeners,
             dns_servers: &self.settings.dns,
+            dns_exit_profile_id: self.settings.dns_exit_profile_id.as_deref(),
             direct_domains: &self.settings.direct_domains,
             direct_ips: &self.settings.direct_ips,
             geo_directory: &geo_directory,
@@ -833,6 +857,32 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
             })
             .collect(),
     ));
+    let mut names = vec!["Not selected".into()];
+    let mut ids = vec![SharedString::default()];
+    for profile in settings.enabled_profiles() {
+        names.push(format!("{} · :{}", profile.name, settings.effective_port(profile)).into());
+        ids.push(profile.id.as_str().into());
+    }
+    xray.set_dns_exit_profiles(model(names));
+    xray.set_dns_exit_profile_ids(model(ids));
+    xray.set_dns_exit_profile_id(
+        settings
+            .dns_exit_profile_id
+            .as_deref()
+            .unwrap_or_default()
+            .into(),
+    );
+    xray.set_dns_exit_index(dns_exit_index(&xray));
+    xray.set_dns_exit_error(settings.dns_exit_error().unwrap_or_default().into());
+    xray.set_dns_exit_warning(settings.dns_exit_warning().unwrap_or_default().into());
+}
+
+fn dns_exit_index(xray: &XrayModule<'_>) -> i32 {
+    let selected = xray.get_dns_exit_profile_id();
+    xray.get_dns_exit_profile_ids()
+        .iter()
+        .position(|id| id == selected)
+        .unwrap_or_default() as i32
 }
 
 fn wire_import(ui: &MainWindow, send: Rc<dyn Fn(Command)>) {
@@ -957,9 +1007,10 @@ fn spawn_worker(
                 let (result, command_done, manages_core, hpwnr, revision, port_edit) =
                     match receiver.recv_timeout(interval) {
                         Ok(command) => {
-                            if matches!(command, Command::Restart)
+                            if (matches!(command, Command::Restart)
                                 || matches!(command, Command::Toggle)
-                                    && controller.runtime.is_none()
+                                    && controller.runtime.is_none())
+                                && controller.settings.dns_exit_error().is_none()
                             {
                                 announce_start(&controller.settings);
                             }
@@ -1035,7 +1086,10 @@ pub(super) fn wire(
     let geo_catalog = SharedGeoCatalog::default();
     let controller = Controller::load(directory, bypass, activity.clone(), geo_catalog.clone())?;
     let installed = controller.installed.is_some();
-    let restoring = installed && controller.settings.enabled && !paused;
+    let restoring = installed
+        && controller.settings.enabled
+        && !paused
+        && controller.settings.dns_exit_error().is_none();
     let started = Arc::new(std::sync::Mutex::new(None));
     View::new(&controller).apply(ui, true);
     let xray = ui.global::<XrayModule>();
@@ -1126,6 +1180,18 @@ pub(super) fn wire(
     bind!(on_install_update, Command::InstallUpdate);
     bind!(on_toggle, Command::Toggle);
     bind!(on_restart, Command::Restart);
+    let weak = ui.as_weak();
+    let save = send.clone();
+    xray.on_save_dns_exit(move |id| {
+        let Some(ui) = weak.upgrade() else { return };
+        let xray = ui.global::<XrayModule>();
+        if id != xray.get_dns_exit_profile_id() {
+            save(Command::SaveDnsExit(id.into()));
+            if !xray.get_busy() {
+                xray.set_dns_exit_index(dns_exit_index(&xray));
+            }
+        }
+    });
     bind!(on_refresh_hosts, Command::RefreshHosts);
     bind!(on_refresh_geo, Command::RefreshGeo);
     bind!(on_install_hpwnr, Command::InstallHpwnr(None));
@@ -1515,6 +1581,43 @@ mod tests {
         assert!(settings.dns.is_empty());
         assert_eq!(settings.direct_ips, ["geoip:private"]);
         assert_eq!(settings.geo_refresh_hours, 48);
+    }
+
+    #[test]
+    fn changing_dns_exit_persists_the_profile_id_and_leaves_the_applied_config_pending() {
+        let directory =
+            std::env::temp_dir().join(format!("true-proxy-dns-exit-{}", super::super::id()));
+        let mut controller = Controller::load(
+            directory.clone(),
+            Arc::new(Bypass::default()),
+            Arc::new(Activity::default()),
+            SharedGeoCatalog::default(),
+        )
+        .unwrap();
+        for host in ["192.0.2.1", "192.0.2.2"] {
+            controller.settings.import(&format!(
+                "vless://00000000-0000-4000-8000-000000000001@{host}:443?security=tls&type=tcp#Tunnel"
+            )).unwrap();
+        }
+        let first = controller.settings.profiles[0].id.clone();
+        let second = controller.settings.profiles[1].id.clone();
+        controller
+            .settings
+            .set_custom_port(&second, Some(2201))
+            .unwrap();
+        controller.settings.toggle_profile(&second).unwrap();
+        controller.settings.dns.push("1.1.1.1".into());
+        set_dns_exit(&mut controller.settings, first.clone()).unwrap();
+        controller.applied = Some(controller.settings.clone());
+
+        controller
+            .perform(Command::SaveDnsExit(second.clone()))
+            .unwrap();
+        let saved = Settings::load(&controller.settings_path).unwrap();
+        assert_eq!(saved.dns_exit_profile_id.as_ref(), Some(&second));
+        assert_eq!(controller.applied.unwrap().dns_exit_profile_id, Some(first));
+        assert!(controller.pending);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
