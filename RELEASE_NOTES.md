@@ -1,13 +1,14 @@
-True Proxy 0.12.11
+True Proxy 0.12.12
 
-- Added ShadowNet subscription support for shadow-net.site and its subdomains. Import and Refresh send the same saved, DPAPI-protected device identity and Windows client metadata.
-- Subscription device-limit and missing-HWID responses now show actionable errors. Device identities are restricted to the original HTTPS origin during redirects.
-- Added import of independent VLESS RAW/TCP servers with TLS or REALITY from Xray JSON configurations and configuration arrays, preserving region names and existing credential protection. Input is bounded to 1 MiB and 128 nodes.
-- General now follows the approved layout with a prominent Configuration card, smaller Appearance and Startup cards, and a compact Application updates section.
-- Moved the version and Windows DNS information into the page footer. Removed the About and System DNS cards, the Icon licenses button, its popup and UI-only license state.
+- Run several Xray profiles at once. Create local SOCKS5 ports in **X-RAY → Ports** and assign profiles in **Profiles**. Switching profiles affects only the selected port. Use **Restart** to apply the change.
+- Add each local address to **Proxies** manually, then assign it to apps in **Rules**. Renaming a port keeps its profile bindings. If you change its number, update that address in Proxies.
+- Ports shows which listeners are open and why a port could not open. If an active profile disappears during a subscription refresh, the subscription shows **Active profile removed** so you can choose its replacement.
+- Profile port menus use the app's light and dark themes. Keyboard focus rings have been removed across the interface.
 
-ShadowNet support was tested with synthetic subscription responses. A live device-bound subscription has not been checked. Balancers, proxy chains and other transports remain unsupported.
+**Upgrading from 0.12.11.** Your existing Xray listener becomes the Default port and keeps its number. Profiles, subscriptions and the active profile are preserved. If you use custom Tunnel DNS, select an enabled profile in **X-RAY → DNS → DNS exits through** before starting Xray.
+
+On first use, this version saves Xray settings in the named-port format. If you plan to return to 0.12.11, back up `%LOCALAPPDATA%\TrueProxy\xray\settings.json` before upgrading. The older version cannot read the new format.
 
 Windows x64. WinDivert is bundled in the executable. The interception backend is experimental. Checks ran without intercepting user traffic.
 
-[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.11/docs/branding/slint-badge.png)](https://slint.dev)
+[![Made with Slint](https://raw.githubusercontent.com/duoxik/true-proxy/v0.12.12/docs/branding/slint-badge.png)](https://slint.dev)
