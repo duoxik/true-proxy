@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { Theme, SurfaceCard, PanelToolbar, SegmentButton, UiIcon } from "common.slint";
+import { Theme, SurfaceCard, PanelToolbar, SegmentButton, Badge, UiIcon } from "common.slint";
 
 export global TechnicalLogs {
     in property <string> text;
@@ -14,8 +14,6 @@ export global TechnicalLogs {
     callback set-recording(bool);
     callback clear;
 }
-
-component LogFilterButton inherits SegmentButton {}
 
 component LogFilterGroup inherits Rectangle {
     width: filters.preferred-width;
@@ -84,23 +82,24 @@ export component LogStreamView inherits SurfaceCard {
                 font-weight: 600;
                 vertical-alignment: center;
             }
-            Text {
-                text: root.visible-count == root.total
-                    ? "latest " + root.total + " lines"
-                    : root.visible-count + " of " + root.total + " lines";
-                color: Theme.muted;
-                font-family: "Consolas";
-                font-size: 11px;
-                horizontal-alignment: right;
-                vertical-alignment: center;
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: count.natural-width;
+                count := Badge {
+                    y: (parent.height - self.height) / 2;
+                    label: root.visible-count == root.total
+                        ? "latest " + root.total + " lines"
+                        : root.visible-count + " of " + root.total + " lines";
+                    numeric: true; font-size: 11px; side-padding: 6px;
+                }
             }
-            LogFilterButton {
+            SegmentButton {
                 y: (parent.height - self.height) / 2;
                 label: "Clear";
                 resting-color: Theme.field;
                 clicked => { log-text.clear-selection(); root.clear(); }
             }
-            LogFilterButton {
+            SegmentButton {
                 y: (parent.height - self.height) / 2;
                 label: root.recording ? "Pause" : "Start";
                 selected: root.recording;
@@ -117,12 +116,12 @@ export component LogStreamView inherits SurfaceCard {
             spacing: 8px;
             LogFilterGroup {
                 y: (parent.height - self.height) / 2;
-                LogFilterButton {
+                SegmentButton {
                     label: "Normal";
                     selected: root.verbosity == 0;
                     clicked => { root.verbosity = 0; root.filter(); }
                 }
-                LogFilterButton {
+                SegmentButton {
                     label: "Verbose";
                     selected: root.verbosity == 1;
                     clicked => { root.verbosity = 1; root.filter(); }
@@ -130,12 +129,12 @@ export component LogStreamView inherits SurfaceCard {
             }
             LogFilterGroup {
                 y: (parent.height - self.height) / 2;
-                LogFilterButton {
+                SegmentButton {
                     label: "All";
                     selected: !root.errors-only;
                     clicked => { root.errors-only = false; root.filter(); }
                 }
-                LogFilterButton {
+                SegmentButton {
                     label: "Error";
                     selected: root.errors-only;
                     clicked => { root.errors-only = true; root.filter(); }
@@ -143,17 +142,17 @@ export component LogStreamView inherits SurfaceCard {
             }
             LogFilterGroup {
                 y: (parent.height - self.height) / 2;
-                LogFilterButton {
+                SegmentButton {
                     label: "All sources";
                     selected: root.source == 0;
                     clicked => { root.source = 0; root.filter(); }
                 }
-                LogFilterButton {
+                SegmentButton {
                     label: root.backend-label;
                     selected: root.source == 1;
                     clicked => { root.source = 1; root.filter(); }
                 }
-                LogFilterButton {
+                SegmentButton {
                     label: root.connections-label;
                     selected: root.source == 2;
                     accessible-label: "Log source Connections";
@@ -161,7 +160,7 @@ export component LogStreamView inherits SurfaceCard {
                 }
             }
             Rectangle { horizontal-stretch: 1; }
-            LogFilterButton {
+            SegmentButton {
                 y: (parent.height - self.height) / 2;
                 label: root.follow ? "Follow: On" : "Follow: Off";
                 selected: root.follow;
@@ -195,7 +194,7 @@ export component LogStreamView inherits SurfaceCard {
                 read-only: true;
                 single-line: false;
                 wrap: word-wrap;
-                font-family: "Consolas";
+                font-family: Theme.numeric-font;
                 font-size: 12px;
                 line-height-factor: 1.35;
                 color: Theme.text;

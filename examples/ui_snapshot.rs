@@ -121,6 +121,16 @@ fn save(adapter: &MemoryWindow, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn save_settled_notice(adapter: &MemoryWindow, destination: &Path) -> Result<()> {
+    // Render through the entrance or exit animation and debounced backdrop capture.
+    for _ in 0..3 {
+        slint::platform::update_timers_and_animations();
+        adapter.window.take_snapshot()?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    save(adapter, destination)
+}
+
 fn filter(key: &str, label: &str, checked: bool) -> ConnectionFilterOption {
     ConnectionFilterOption {
         key: key.into(),
@@ -183,8 +193,12 @@ fn main() -> Result<()> {
         }
         path
     };
-    ui.set_download_path(chart(80.0).into());
-    ui.set_upload_path(chart(9.0).into());
+    let download = chart(80.0);
+    let upload = chart(9.0);
+    ui.set_download_area(format!("{download}L600 100 L0 100 Z").into());
+    ui.set_upload_area(format!("{upload}L600 100 L0 100 Z").into());
+    ui.set_download_path(download.into());
+    ui.set_upload_path(upload.into());
     ui.set_proxy_names(model(vec!["VPN".into(), "Work".into()]));
     ui.set_proxies(model(vec![
         ProxyRow {
@@ -379,8 +393,14 @@ fn main() -> Result<()> {
     save(&main_adapter, &destination.join("routes-dark.png"))?;
     ui.set_page(0);
     save(&main_adapter, &destination.join("dashboard-dark.png"))?;
+    ui.set_routing_pending(true);
+    save_settled_notice(
+        &main_adapter,
+        &destination.join("dashboard-pending-dark.png"),
+    )?;
+    ui.set_routing_pending(false);
     ui.window().set_size(slint::LogicalSize::new(960., 640.));
-    save(
+    save_settled_notice(
         &main_adapter,
         &destination.join("dashboard-dark-compact.png"),
     )?;
@@ -445,16 +465,7 @@ fn main() -> Result<()> {
 
 #[cfg(windows)]
 fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) -> Result<()> {
-    // Let the software renderer lay out the new material, finish its entrance
-    // and process the debounced backdrop capture before recording each sample.
-    let save_notice = |name: &str| -> Result<()> {
-        for _ in 0..3 {
-            slint::platform::update_timers_and_animations();
-            adapter.window.take_snapshot()?;
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        save(adapter, &destination.join(name))
-    };
+    let save_notice = |name: &str| save_settled_notice(adapter, &destination.join(name));
     ui.set_page(4);
     ui.set_settings_section(2);
     save(adapter, &destination.join("xray-modules.png"))?;
@@ -644,7 +655,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     save_notice("notifications-light.png")?;
     ui.set_dark_theme(true);
     save_notice("notifications-dark.png")?;
-    ui.set_update_version("0.12.13".into());
+    ui.set_update_version("0.12.14".into());
     ui.set_update_text("Install the new version and reopen True Proxy.".into());
     ui.set_update_available(true);
     ui.set_notice("Work did not respond to the last check.".into());
@@ -680,7 +691,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     xray.set_hpwnr_version("".into());
     ui.set_page(0);
     ui.set_update_available(true);
-    ui.set_update_version("0.12.13".into());
+    ui.set_update_version("0.12.14".into());
     ui.set_update_text(
         "Install and restart automatically. Active proxy connections will close briefly.".into(),
     );

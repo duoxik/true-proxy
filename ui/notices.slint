@@ -10,6 +10,7 @@ export struct NoticeEntry {
     action-label: string,
     action-enabled: bool,
     secondary-label: string,
+    dismissible: bool,
 }
 
 export global NoticeBackdrop {
@@ -25,10 +26,22 @@ struct BackdropRegion { x: length, y: length, width: length, height: length, dar
 
 component NoticeSurface inherits Rectangle {
     in property <bool> active: true;
-    in property <bool> outlined;
+    in property <bool> warning;
     // Sample at the resting position throughout the card's entrance animation.
     in property <length> offset-y;
     accessible-role: none;
+    // The software backend has no blurred box shadows. Two faint outer
+    // edges lift the panel without tinting the sampled area underneath.
+    Rectangle {
+        x: -3px; y: -1px; width: root.width + 6px; height: root.height + 5px;
+        border-radius: Theme.radius-medium + 3px; border-width: 2px;
+        border-color: Theme.dark ? #00000020 : #0f172a08;
+    }
+    Rectangle {
+        x: -1px; y: 0px; width: root.width + 2px; height: root.height + 2px;
+        border-radius: Theme.radius-medium + 1px; border-width: 1px;
+        border-color: Theme.dark ? #00000055 : #0f172a10;
+    }
     if NoticeBackdrop.blur > 0 && NoticeBackdrop.transparency > 0: blurred := Image {
         width: parent.width;
         height: parent.height;
@@ -51,9 +64,55 @@ component NoticeSurface inherits Rectangle {
     }
     Rectangle {
         border-radius: Theme.radius-medium;
-        border-width: root.outlined ? 1px : 0px;
-        border-color: Theme.text.with-alpha(0.08);
+        border-width: 1px;
+        border-color: root.warning ? Theme.warning-border : Theme.strong-border;
         background: Theme.notice-surface.with-alpha(1.0 - clamp(NoticeBackdrop.transparency, 0, 100) / 100.0);
+    }
+    if root.warning: Rectangle { border-radius: Theme.radius-medium; background: Theme.warning-surface; }
+}
+
+component NoticeIcon inherits Rectangle {
+    in property <string> icon;
+    in property <color> ink;
+    in property <bool> working;
+    width: 34px; height: 34px; border-radius: 8px;
+    border-width: 1px; border-color: Theme.notice-divider;
+    background: Theme.dark ? #ffffff0f : Theme.subtle;
+    if root.working && !Theme.reduce-motion: Spinner {
+        indeterminate: true; width: 18px; height: 18px; accessible-role: none;
+    }
+    if !root.working || Theme.reduce-motion: UiIcon {
+        name: root.icon; ink: root.ink == Theme.accent ? Theme.accent-text : root.ink;
+        width: 16px; height: 16px;
+    }
+}
+
+component NoticeClose inherits ActionButton {
+    icon: "close"; icon-only: true; quiet: true;
+    min-width: 26px; max-width: 26px; height: 26px;
+    border-radius: 6px; icon-ink: Theme.muted;
+}
+
+export component InlineNotice inherits Rectangle {
+    in property <string> message;
+    in property <bool> error;
+    in property <length> height-limit;
+    private property <length> natural-height: max(40px, message-text.preferred-height + 16px);
+    min-width: 0px;
+    height: root.height-limit > 0px ? min(root.height-limit, root.natural-height) : root.natural-height;
+    vertical-stretch: 0;
+    background: root.error ? Theme.danger-soft : Theme.warning-surface;
+    border-radius: Theme.radius-small; border-width: 1px;
+    border-color: root.error ? Theme.danger.with-alpha(0.24) : Theme.warning-border;
+    UiIcon {
+        name: "info"; x: 12px; y: (parent.height - self.height) / 2;
+        width: 16px; height: 16px; ink: root.error ? Theme.danger : Theme.warning-icon;
+    }
+    message-text := Text {
+        x: 36px; y: 8px; width: max(0px, parent.width - self.x - 12px); height: parent.height - 16px;
+        text: root.message; color: root.error ? Theme.danger : Theme.warning-detail;
+        font-size: 12px; wrap: word-wrap; overflow: elide; vertical-alignment: center;
+        accessible-live-region: polite;
     }
 }
 
@@ -64,7 +123,7 @@ component NoticeDot inherits Rectangle {
     height: 14px;
     border-radius: self.width / 2;
     background: root.ink.with-alpha(root.pulse ? 0.6 : 0.21);
-    animate background { duration: 180ms; easing: ease-out; }
+    animate background { duration: Theme.reduce-motion ? 0ms : 180ms; easing: ease-out; }
     Rectangle {
         width: 7px;
         height: 7px;
@@ -97,14 +156,15 @@ export component FloatingNotice inherits Rectangle {
     in property <string> message;
     in property <string> icon;
     in property <color> ink: Theme.accent;
-    in property <color> icon-surface: Theme.accent-soft;
     in property <bool> working;
+    in property <bool> warning;
     in property <string> action-label;
     in property <bool> action-enabled: true;
     in property <string> secondary-label;
     in property <bool> can-hide: true;
     in property <string> list-title: root.title;
     in property <string> list-action-label: root.action-label;
+    in property <bool> list-dismissible;
     in property <int> change-revision;
     in-out property <bool> collapsed;
     out property <bool> pulsing;
@@ -117,6 +177,7 @@ export component FloatingNotice inherits Rectangle {
         action-label: root.list-action-label,
         action-enabled: root.action-enabled && !root.working,
         secondary-label: root.secondary-label,
+        dismissible: root.list-dismissible,
     };
     callback action;
     callback secondary-action;
@@ -124,7 +185,7 @@ export component FloatingNotice inherits Rectangle {
 
     private property <bool> show-card: root.in-scope && root.active && !root.collapsed;
     private property <length> card-offset: root.show-card || Theme.reduce-motion ? 0px : 12px;
-    animate card-offset { duration: 200ms; easing: ease-out; }
+    animate card-offset { duration: Theme.reduce-motion ? 0ms : 200ms; easing: ease-out; }
     height: root.show-card ? card.height + 8px : 0px;
 
     changed active => {
@@ -156,12 +217,12 @@ export component FloatingNotice inherits Rectangle {
         y: parent.height - self.height + root.card-offset;
         opacity: root.show-card ? 1 : 0;
         visible: root.in-scope && (root.show-card || self.opacity > 0);
-        animate opacity { duration: 200ms; easing: ease-out; }
+        animate opacity { duration: Theme.reduce-motion ? 0ms : 200ms; easing: ease-out; }
         accessible-role: groupbox;
         accessible-label: root.title == "" ? root.message : root.title + (root.message == "" ? "" : ". " + root.message);
         accessible-live-region: polite;
 
-        if card.visible: NoticeSurface { active: root.show-card; offset-y: root.card-offset; }
+        if card.visible: NoticeSurface { active: root.show-card; warning: root.warning; offset-y: root.card-offset; }
         TouchArea { enabled: root.show-card; }
         card-keys := FocusScope {
             width: parent.width;
@@ -177,26 +238,11 @@ export component FloatingNotice inherits Rectangle {
                 return reject;
             }
             card-layout := HorizontalLayout {
-                padding: 10px;
-                spacing: 10px;
+                padding-left: 14px; padding-right: 14px; padding-top: 12px; padding-bottom: 12px;
+                spacing: 12px;
                 cross-axis-alignment: center;
-                if root.icon != "": Rectangle {
-                    width: 34px;
-                    height: 34px;
-                    border-radius: Theme.radius-small;
-                    background: root.icon-surface;
-                    if root.working && root.show-card && !Theme.reduce-motion: Spinner {
-                        indeterminate: true;
-                        width: 18px;
-                        height: 18px;
-                        accessible-role: none;
-                    }
-                    if !root.working || Theme.reduce-motion || !root.show-card: UiIcon {
-                        name: root.icon;
-                        ink: root.ink;
-                        width: 16px;
-                        height: 16px;
-                    }
+                if root.icon != "": NoticeIcon {
+                    icon: root.icon; ink: root.ink; working: root.working && root.show-card;
                 }
                 VerticalLayout {
                     min-width: 0px;
@@ -205,15 +251,15 @@ export component FloatingNotice inherits Rectangle {
                     if root.title != "": Text {
                         text: root.title;
                         color: Theme.text;
-                        font-size: 14px;
-                        font-weight: 700;
+                        font-size: 13px;
+                        font-weight: 600;
                         wrap: word-wrap;
                         accessible-role: none;
                     }
                     if root.message != "": Text {
                         text: root.message;
-                        color: Theme.secondary;
-                        font-size: 12px;
+                        color: root.warning ? Theme.warning-detail : root.title == "" ? Theme.text : Theme.secondary;
+                        font-size: root.title == "" ? 13px : 12px;
                         wrap: word-wrap;
                         max-height: 64px;
                         overflow: elide;
@@ -222,24 +268,22 @@ export component FloatingNotice inherits Rectangle {
                 }
                 if root.secondary-label != "": ActionButton {
                     label: root.secondary-label;
-                    height: 34px;
+                    height: 30px; label-size: 12px; border-radius: 7px;
                     enabled: root.show-card;
                     clicked => { root.secondary-action(); }
                 }
                 if root.action-label != "": ActionButton {
                     label: root.action-label;
-                    primary: true;
-                    height: 34px;
+                    primary: !root.warning;
+                    primary-fill: Theme.accent;
+                    ink: !self.enabled ? Theme.disabled-text : root.warning ? Theme.button-text : Theme.switch-on-thumb;
+                    label-size: 12px; label-weight: 600;
+                    height: 30px; border-radius: 7px;
                     enabled: root.show-card && root.action-enabled && !root.working;
-                    ink: self.enabled ? Theme.primary-text : Theme.secondary;
-                    primary-fill: root.ink;
+                    outline: root.warning ? Theme.warning-border : Theme.strong-border;
                     clicked => { root.action(); }
                 }
-                hide := ActionButton {
-                    icon: "close";
-                    icon-only: true;
-                    quiet: true;
-                    height: 34px;
+                hide := NoticeClose {
                     visible: root.can-hide;
                     enabled: root.show-card && root.can-hide;
                     accessible-label: "Hide in notifications";
@@ -254,29 +298,17 @@ export component FloatingNotice inherits Rectangle {
 component NoticeListRow inherits Rectangle {
     in property <NoticeEntry> entry;
     callback action(bool);
-    height: root.entry.hidden ? max(68px, row.preferred-height) : 0px;
+    height: root.entry.hidden ? row.preferred-height : 0px;
     visible: root.entry.hidden;
+    border-radius: 8px;
+    background: row-touch.has-hover ? Theme.hover : transparent;
+    row-touch := TouchArea { }
     row := HorizontalLayout {
         width: root.width;
-        height: root.height;
-        padding-left: 16px;
-        padding-right: 16px;
-        padding-top: 12px;
-        padding-bottom: 12px;
+        padding: 10px;
         spacing: 12px;
-        cross-axis-alignment: center;
-        Rectangle {
-            width: 32px;
-            height: 32px;
-            border-radius: 8px;
-            background: root.entry.ink.with-alpha(0.08);
-            UiIcon {
-                name: root.entry.icon;
-                ink: root.entry.ink;
-                width: 16px;
-                height: 16px;
-            }
-        }
+        cross-axis-alignment: start;
+        NoticeIcon { icon: root.entry.icon; ink: root.entry.ink; }
         VerticalLayout {
             min-width: 0px;
             horizontal-stretch: 1;
@@ -284,8 +316,8 @@ component NoticeListRow inherits Rectangle {
             notice-title := Text {
                 text: root.entry.title;
                 color: Theme.text;
-                font-weight: 600;
-                font-size: 14px;
+                font-weight: 500;
+                font-size: 13px;
                 min-width: 0px;
                 wrap: word-wrap;
             }
@@ -297,21 +329,27 @@ component NoticeListRow inherits Rectangle {
                 wrap: word-wrap;
                 overflow: elide;
             }
+            if (!root.entry.dismissible && root.entry.action-label != "") || root.entry.secondary-label != "": HorizontalLayout {
+                alignment: start; spacing: 8px; padding-top: 8px;
+                if !root.entry.dismissible && root.entry.action-label != "": ActionButton {
+                    enabled: root.entry.action-enabled;
+                    label: root.entry.action-label;
+                    accessible-label: self.label + " · " + root.entry.title;
+                    label-size: 12px; height: 28px; border-radius: 7px;
+                    fill: Theme.hover; outline: Theme.strong-border;
+                    clicked => { root.action(false); }
+                }
+                if root.entry.secondary-label != "": ActionButton {
+                    label: root.entry.secondary-label;
+                    accessible-label: self.label + " · " + root.entry.title;
+                    label-size: 12px; height: 28px; quiet: true; ink: Theme.secondary;
+                    clicked => { root.action(true); }
+                }
+            }
         }
-        if root.entry.secondary-label != "": ActionButton {
-            label: root.entry.secondary-label;
-            accessible-label: self.label + " · " + root.entry.title;
-            quiet: true;
-            ink: Theme.secondary;
-            height: 32px;
-            clicked => { root.action(true); }
-        }
-        if root.entry.action-label != "": ActionButton {
+        if root.entry.dismissible: NoticeClose {
+            accessible-label: root.entry.action-label + " · " + root.entry.title;
             enabled: root.entry.action-enabled;
-            label: root.entry.action-label;
-            accessible-label: self.label + " · " + root.entry.title;
-            height: 32px;
-            border-radius: 8px;
             clicked => { root.action(false); }
         }
     }
@@ -329,7 +367,7 @@ export component NoticeCenter inherits ActionButton {
     width: 36px;
     height: 36px;
     quiet: true;
-    icon-ink: root.has-hidden ? root.indicator-ink : Theme.secondary;
+    icon-ink: root.has-hidden ? (root.indicator-ink == Theme.accent ? Theme.accent-text : root.indicator-ink) : Theme.secondary;
     accessible-description: root.has-hidden ? "Hidden notifications available" : "No hidden notifications";
     accessible-expanded: root.opened;
     clicked => { if root.opened { root.close(); } else { root.opened = true; } }
@@ -354,16 +392,18 @@ export component NoticePanel inherits Rectangle {
     in property <[NoticeEntry]> app-entries;
     in property <[NoticeEntry]> module-entries;
     in property <bool> has-hidden;
+    in property <bool> can-clear-all;
     callback entry-action(bool, int, bool);
+    callback clear-all;
     callback close;
-    width: 592px;
-    height: min(414px, 54px + entries.preferred-height);
+    width: 420px;
+    height: min(414px, 53px + entries.preferred-height);
     opacity: NoticeBackdrop.capturing ? 0 : 1;
     accessible-role: groupbox;
     accessible-label: "Hidden notifications";
     init => { panel-keys.focus(); }
 
-    NoticeSurface { outlined: true; }
+    NoticeSurface { }
     TouchArea {}
     panel-keys := FocusScope {
         key-pressed(event) => {
@@ -372,27 +412,28 @@ export component NoticePanel inherits Rectangle {
         }
         VerticalLayout {
             padding: 1px;
-            padding-bottom: 5px;
             HorizontalLayout {
-                height: 48px;
-                padding-left: 16px;
-                padding-right: 8px;
+                height: 50px;
+                padding-left: 14px; padding-right: 14px; spacing: 4px;
                 cross-axis-alignment: center;
                 Text {
                     text: "Notifications";
                     color: Theme.text;
-                    font-size: 15px;
+                    font-size: 14px;
                     font-weight: 600;
                     horizontal-stretch: 1;
                 }
-                close-button := ActionButton {
+                if root.can-clear-all: ActionButton {
+                    label: "Clear all"; quiet: true; label-size: 12px; ink: Theme.secondary;
+                    height: 26px; border-radius: 6px;
+                    clicked => { panel-keys.focus(); root.clear-all(); }
+                }
+                close-button := NoticeClose {
                     label: "Close notifications";
-                    icon: "close"; icon-only: true; quiet: true;
-                    icon-ink: Theme.secondary;
-                    height: 32px;
                     clicked => { root.close(); }
                 }
             }
+            Rectangle { height: 1px; background: Theme.notice-divider; }
             notice-scroll := ScrollView {
                 min-height: 0px;
                 horizontal-scrollbar-policy: always-off;
@@ -400,12 +441,13 @@ export component NoticePanel inherits Rectangle {
                 content-height: entries.preferred-height;
                 entries := VerticalLayout {
                     width: notice-scroll.visible-width;
+                    padding: 8px;
                     alignment: start;
                     spacing: 0px;
                     if !root.has-hidden: Text {
-                        height: 40px;
+                        height: 60px;
                         text: "No hidden notifications";
-                        color: Theme.secondary;
+                        color: Theme.muted; font-size: 13px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }

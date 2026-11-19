@@ -140,7 +140,8 @@ fn notice_preserves_layout_focus_and_scope() {
         .unwrap();
     let action = control(&ui, LIST_RESTART);
     assert!(title.size().width >= 260.);
-    assert!(action.absolute_position().x >= title.absolute_position().x + title.size().width);
+    assert!(action.absolute_position().y >= title.absolute_position().y + title.size().height);
+    assert!((action.absolute_position().x - title.absolute_position().x).abs() <= 1.);
     assert!(find(&ui, RESTART).is_none());
     key(&ui, Key::Escape);
     tick(250);
@@ -290,11 +291,32 @@ fn notice_shows_restart_outcomes_and_scopes_other_notices() {
     tick(250);
     assert!(find(&ui, "Restart · Restart routing to apply changes").is_some());
     assert!(find(&ui, "Install and Restart · True Proxy 99.0 is available").is_some());
+    assert!(find(&ui, "Clear all").is_none());
     click(&ui, "Dismiss · True Proxy");
     assert!(ui.get_notice().is_empty());
+    assert!(find(&ui, "Clear all").is_none());
     click(&ui, "Close notifications");
     ui.set_page(4);
     tick(250);
     assert!(find(&ui, "Restart").is_none());
     assert!(find(&ui, "Install and Restart").is_none());
+}
+
+#[test]
+fn clear_all_removes_a_dismissible_message_and_leaves_the_empty_center_open() {
+    let ui = window();
+    ui.set_page(2);
+    ui.set_notice("Sample general notification".into());
+    tick(250);
+    click(&ui, HIDE);
+    tick(250);
+    click(&ui, "Notifications");
+
+    assert!(find(&ui, "Dismiss · True Proxy").is_some());
+    click(&ui, "Clear all");
+    tick(250);
+    assert!(ui.get_notice().is_empty());
+    assert!(find(&ui, "No hidden notifications").is_some());
+    assert!(find(&ui, "Clear all").is_none());
+    assert!(find(&ui, "Close notifications").is_some());
 }

@@ -144,7 +144,61 @@ mod tests {
     }
 
     #[test]
-    fn restart_banner_keeps_running_routes_until_explicit_restart_with_latest_profile() {
+    fn dashboard_restart_toast_moves_to_the_notification_center_until_acknowledged() {
+        let ui = window();
+        ui.set_page(0);
+        ui.set_reduce_motion(true);
+        let profile = Profile::new();
+        acknowledge(&ui, &profile.state, true);
+        let (sender, commands) = mpsc::sync_channel(1);
+        wire(&ui, profile.state.clone(), sender);
+        profile
+            .save(&ui, |config| {
+                config.rules.push(blocked_rule());
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(ui.get_floating_notices_visible());
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Restart").count(),
+            1
+        );
+        for page in [4, 6] {
+            ui.set_page(page);
+            assert!(!ui.get_floating_notices_visible());
+            assert!(ui.get_routing_pending());
+        }
+        ui.set_page(0);
+        click(&ui, "Hide in notifications");
+        assert!(!ui.get_floating_notices_visible());
+        assert!(ui.get_routing_pending());
+        assert!(commands.try_recv().is_err());
+        ui.set_page(2);
+        ui.set_page(0);
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Restart")
+                .next()
+                .is_none()
+        );
+        click(&ui, "Notifications");
+        click(&ui, "Restart · Restart routing to apply changes");
+        assert!(matches!(commands.try_recv(), Ok(Command::Start(_))));
+        assert!(ui.get_busy() && ui.get_routing_pending());
+        acknowledge(&ui, &profile.state, true);
+        assert!(!ui.get_routing_pending());
+        assert!(
+            ElementHandle::find_by_accessible_label(
+                &ui,
+                "Restart · Restart routing to apply changes"
+            )
+            .next()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn restart_notice_keeps_running_routes_until_explicit_restart_with_latest_profile() {
         let ui = window();
         let profile = Profile::new();
         acknowledge(&ui, &profile.state, true);

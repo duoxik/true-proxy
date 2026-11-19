@@ -113,8 +113,8 @@ pub(super) fn apply_native_theme(ui: &MainWindow) {
             DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DwmSetWindowAttribute,
         };
         let color = if ui.get_dark_theme() {
-            let sidebar = ui.get_caption_color();
-            u32::from_le_bytes([sidebar.red(), sidebar.green(), sidebar.blue(), 0])
+            let caption = ui.get_caption_color();
+            u32::from_le_bytes([caption.red(), caption.green(), caption.blue(), 0])
         } else {
             DWMWA_COLOR_DEFAULT
         };
@@ -348,6 +348,54 @@ mod tests {
     use super::*;
     use i_slint_backend_testing::{AccessibleRole, ElementHandle};
     use slint::platform::{Key as SlintKey, PointerEventButton};
+
+    #[test]
+    fn general_settings_actions_accept_first_click_in_wide_and_stacked_layouts() {
+        i_slint_backend_testing::init_no_event_loop();
+        for (width, height) in [(1240., 780.), (960., 640.)] {
+            let ui = MainWindow::new().unwrap();
+            ui.window().set_size(slint::LogicalSize::new(width, height));
+            ui.set_page(4);
+            ui.set_autostart_enabled(false);
+            ui.set_updates_automatic(false);
+
+            let checks = Rc::new(Cell::new(0));
+            let called = checks.clone();
+            ui.on_check_updates(move || called.set(called.get() + 1));
+            let startup = Rc::new(Cell::new(None));
+            let called = startup.clone();
+            ui.on_set_autostart(move |enabled| called.set(Some(enabled)));
+            let automatic = Rc::new(Cell::new(None));
+            let called = automatic.clone();
+            ui.on_set_updates_automatic(move |enabled| called.set(Some(enabled)));
+            ui.show().unwrap();
+
+            let scroll = ElementHandle::find_by_element_id(&ui, "MainWindow::settings-scroll")
+                .next()
+                .unwrap();
+            let click = |label: &str| {
+                let control = ElementHandle::find_by_accessible_label(&ui, label)
+                    .next()
+                    .unwrap();
+                let below = control.absolute_position().y + control.size().height
+                    - scroll.absolute_position().y
+                    - scroll.size().height;
+                if below > 0. {
+                    scroll.scroll(0., -below - 16.);
+                }
+                control.mock_single_click(PointerEventButton::Left);
+            };
+            click("Start when I sign in to Windows");
+            assert_eq!(startup.get(), Some(true));
+            assert!(ui.get_autostart_enabled());
+            click("Check for Updates");
+            assert_eq!(checks.get(), 1);
+            click("Check for updates automatically");
+            assert_eq!(automatic.get(), Some(true));
+            assert!(ui.get_updates_automatic());
+            ui.hide().unwrap();
+        }
+    }
 
     #[test]
     fn theme_and_notice_settings_migrate_and_survive_a_new_window() {

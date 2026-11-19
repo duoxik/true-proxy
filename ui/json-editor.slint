@@ -34,7 +34,7 @@ export component JsonEditor inherits Rectangle {
     public function paste() { input.select-all(); input.paste(); input.focus(); }
     // Cursor geometry includes fractional leading; a rounded Text.preferred-height
     // would accumulate drift on subsequent lines, especially with DPI scaling.
-    metrics := TextInput { x: 0px; y: 0px; width: 100px; height: 100px; visible: false; text: "M\nM\nM"; single-line: false; font-family: "Consolas"; font-size: 13px;
+    metrics := TextInput { x: 0px; y: 0px; width: 100px; height: 100px; visible: false; text: "M\nM\nM"; single-line: false; font-family: Theme.numeric-font; font-size: 13px;
         cursor-position-changed(cpos) => {
             if root.second-probe { root.line-height = max(1px, cpos.y - root.probe-y); }
             else { root.probe-y = cpos.y; }
@@ -48,13 +48,13 @@ export component JsonEditor inherits Rectangle {
             visible: root.colored;
             x: 12px; y: 12px + line.number * root.line-height;
             width: input.width; height: root.line-height;
-            text: line.text; default-font-family: "Consolas"; default-font-size: 13px;
+            text: line.text; default-font-family: Theme.numeric-font; default-font-size: 13px;
             default-color: Theme.text; accessible-role: none;
         }
         input := TextInput {
             x: 12px; y: 12px; width: scroll.content-width - 28px;
             height: max(self.preferred-height, scroll.visible-height - 28px);
-            text <=> root.text; font-family: "Consolas"; font-size: 13px;
+            text <=> root.text; font-family: Theme.numeric-font; font-size: 13px;
             color: root.colored ? transparent : Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text;
             wrap: no-wrap; single-line: false; page-height: scroll.visible-height;
             accessible-label: "Configuration JSON";
@@ -75,7 +75,7 @@ export component JsonEditor inherits Rectangle {
         }
         if root.colored && input.has-focus: Rectangle {
             x: input.x + root.caret-x; y: input.y + root.caret-y; width: 1px;
-            height: input.font-metrics.ascent - input.font-metrics.descent; background: Theme.accent;
+            height: input.font-metrics.ascent - input.font-metrics.descent; background: Theme.accent-text;
         }
     }
 }

@@ -1,15 +1,31 @@
 import { ScrollView } from "std-widgets.slint";
-import { Theme, SurfaceCard, SessionCard, SectionHeading, MetricCard, ActionButton, UiIcon, RuleSwitch, ProxyRow, RuleRow } from "common.slint";
+import { Theme, SurfaceCard, SessionCard, SectionHeading, MetricCard, ActionButton, UiIcon, IconTile, RuleSwitch, Badge, NumericText, ProxyRow, RuleRow } from "common.slint";
 
-component TrafficLegend inherits HorizontalLayout {
+export struct TrafficReading {
+    valid: bool, position: float, seconds-ago: int, download: string, upload: string,
+}
+
+component TrafficLegend inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <color> ink;
+    height: 27px;
+    preferred-width: legend.preferred-width;
+    min-width: 0px;
     horizontal-stretch: 0;
-    spacing: 8px;
-    Rectangle { width: 11px; Rectangle { y: (parent.height - self.height) / 2; width: 11px; height: 11px; border-radius: 3px; background: root.ink; } }
-    Text { text: root.label; color: Theme.text; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
-    Text { text: root.value; color: Theme.secondary; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 0; }
+    border-radius: 8px; border-width: 1px; border-color: Theme.border;
+    background: Theme.subtle;
+    legend := HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 7px; cross-axis-alignment: center;
+        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: root.ink; }
+        Text { text: root.label; color: Theme.text; font-size: 12px; font-weight: 500; }
+        NumericText { text: root.value; color: Theme.secondary; font-size: 11.5px; min-width: 0px; overflow: elide; }
+    }
+}
+
+component PlotPath inherits Path {
+    width: 100%; height: 100%;
+    viewbox-width: 600; viewbox-height: 100; fit: fill;
 }
 
 component SummaryRule inherits Rectangle {
@@ -18,63 +34,100 @@ component SummaryRule inherits Rectangle {
     in property <bool> checked;
     in property <bool> locked;
     in property <bool> busy;
+    in property <bool> compact;
     callback toggled;
-    height: 38px;
-    Rectangle { y: 0px; height: 1px; background: Theme.border; }
+    height: 42px;
+    Rectangle { y: 0px; height: 1px; background: Theme.divider; }
     HorizontalLayout {
-        padding-left: 6px; padding-right: 4px; spacing: 10px;
-        Text { text: root.name; accessible-label: root.locked ? root.name + " · Fixed route: " + root.route : root.name; color: Theme.text; font-size: 13px; font-weight: 600; width: 90px; overflow: elide; vertical-alignment: center; }
+        padding-left: root.compact ? 15px : 24px;
+        padding-right: self.padding-left;
+        spacing: 10px; cross-axis-alignment: center;
+        Text {
+            text: root.name; accessible-label: root.locked ? root.name + " · Fixed route: " + root.route : root.name;
+            color: Theme.text; font-size: 13.5px; font-weight: 500; width: 84px; overflow: elide;
+        }
         Rectangle {
-            width: 144px;
-            SurfaceCard {
-                y: (parent.height - self.height) / 2;
-                height: 26px; border-radius: 13px; background: Theme.neutral-badge;
-                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
-                    Rectangle { width: 15px; UiIcon { name: root.route == "Direct" ? "external" : root.route == "Block" ? "block" : "server"; ink: Theme.text; width: 15px; height: 15px; y: (parent.height - self.height) / 2; } }
-                    Text { text: root.route; color: Theme.text; font-size: 12px; min-width: 0px; overflow: elide; vertical-alignment: center; }
-                }
+            horizontal-stretch: 1; min-width: 0px; height: 30px;
+            Badge {
+                x: 0px; y: (parent.height - self.height) / 2;
+                width: min(parent.width, self.natural-width); height: 26px;
+                label: root.route; icon: root.route == "Direct" ? "direct" : root.route == "Block" ? "block" : "server";
             }
         }
-        Rectangle { horizontal-stretch: 1; }
-        Rectangle { width: 44px;
-            if root.locked: UiIcon { name: "lock"; x: 13px; y: (parent.height - self.height) / 2; }
-            if !root.locked: RuleSwitch { label: "Rule " + root.name; checked: root.checked; enabled: !root.busy; toggled => { root.toggled(); } }
+        Rectangle { width: 42px; height: 38px;
+            if root.locked: UiIcon { name: "lock"; ink: Theme.muted; width: 15px; height: 15px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+            if !root.locked: RuleSwitch { label: "Rule " + root.name; compact: true; checked: root.checked; enabled: !root.busy; y: (parent.height - self.height) / 2; toggled => { root.toggled(); } }
         }
     }
 }
 
 component ProxySummary inherits Rectangle {
     in property <ProxyRow> proxy;
-    height: 138px;
-    VerticalLayout {
-        padding-top: 8px; padding-bottom: 8px; spacing: 18px;
-        HorizontalLayout {
-            spacing: 16px;
-            Rectangle { width: 48px; height: 48px; border-radius: 12px; background: Theme.neutral-badge;
-                UiIcon { name: "server"; ink: Theme.text; x: 12px; y: 12px; width: 24px; height: 24px; }
+    in property <length> inset;
+    HorizontalLayout {
+        y: 0px; width: parent.width; height: parent.height - footer.height;
+        padding-left: root.inset; padding-right: root.inset; spacing: 14px;
+        cross-axis-alignment: center;
+        IconTile { name: "server"; ink: Theme.text; width: 48px; height: 48px; icon-size: 20px; }
+        VerticalLayout {
+            min-width: 0px; horizontal-stretch: 1; alignment: center; spacing: 6px;
+            HorizontalLayout {
+                alignment: start; spacing: 9px; cross-axis-alignment: center;
+                Text { text: root.proxy.name; font-size: 16px; font-weight: 600; color: Theme.text; min-width: 0px; overflow: elide; }
+                Badge { label: "SOCKS5"; numeric: true; height: 19px; font-size: 10.5px; border-radius: 5px; }
             }
-            VerticalLayout { spacing: 4px; alignment: center; min-width: 0px;
-                Text { text: root.proxy.name; color: Theme.text; font-size: 18px; font-weight: 600; min-width: 0px; overflow: elide; }
-                HorizontalLayout { spacing: 10px; alignment: start;
-                    Text { text: "SOCKS5"; color: Theme.secondary; font-size: 12px; }
-                    Text { text: root.proxy.address; color: Theme.text; font-size: 13px; min-width: 0px; overflow: elide; }
+            Rectangle {
+                height: 25px;
+                address := TextInput { visible: false; read-only: true; text: root.proxy.address; font-family: Theme.numeric-font; font-size: 12px; accessible-role: none; }
+                ActionButton {
+                    x: 0px;
+                    label: root.proxy.address; numeric: true; icon: "files"; trailing-icon: true; icon-ink: Theme.muted;
+                    accessible-label: "Copy endpoint " + root.proxy.address;
+                    height: 25px;
+                    width: min(parent.width, address.preferred-width + 44px);
+                    ink: Theme.secondary; border-radius: 6px;
+                    clicked => { address.select-all(); address.copy(); }
                 }
             }
         }
+    }
+    footer := Rectangle {
+        y: parent.height - self.height; height: 65px; background: Theme.subtle;
+        border-bottom-left-radius: Theme.radius-large; border-bottom-right-radius: Theme.radius-large;
+        Rectangle { y: 0px; height: 1px; background: Theme.divider; }
         HorizontalLayout {
-            spacing: 12px;
-            Rectangle { preferred-width: 0px; horizontal-stretch: 1; height: 34px;
-                HorizontalLayout { alignment: start; spacing: 6px;
-                    Text { text: "Latency"; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
-                    Text { text: root.proxy.health == 3 ? "-1 ms" : root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "Not tested"; color: root.proxy.health == 3 ? Theme.danger : root.proxy.health == 2 ? Theme.success : Theme.secondary; font-size: 12px; font-weight: 600; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-stretch: 0; }
+            VerticalLayout {
+                preferred-width: 0px; horizontal-stretch: 1;
+                padding-left: root.inset; padding-right: 10px; alignment: center; spacing: 3px;
+                Text { text: "Latency"; font-size: 11.5px; color: Theme.muted; }
+                HorizontalLayout {
+                    alignment: start; cross-axis-alignment: center; spacing: 6px;
+                    if root.proxy.health == 2: Rectangle {
+                        width: 14px; height: 13px;
+                        for i in 3: Rectangle { x: i * 5px; y: parent.height - self.height; width: 3px; height: 5px + 4px * i; border-radius: 1px; background: Theme.chart-upload; }
+                    }
+                    NumericText {
+                        text: root.proxy.health == 3 ? "Unavailable" : root.proxy.health == 2 && root.proxy.status != "" ? root.proxy.status : "Not tested";
+                        accessible-description: root.proxy.status;
+                        color: root.proxy.health == 3 ? Theme.danger : root.proxy.health == 2 ? Theme.accent-text : Theme.secondary;
+                        font-size: 13px; font-weight: 500; min-width: 0px; overflow: elide;
+                    }
                 }
             }
-            Rectangle { preferred-width: 0px; horizontal-stretch: 1; height: 34px;
-                HorizontalLayout { spacing: 8px;
-                    if root.proxy.flag-index > 0: Rectangle { width: 24px;
-                        Image { width: 24px; height: 15px; y: (parent.height - self.height) / 2; source: @image-url("../assets/country-flags.png"); source-clip-x: Math.mod(root.proxy.flag-index - 1, 16) * 32; source-clip-y: Math.floor((root.proxy.flag-index - 1) / 16) * 20; source-clip-width: 32; source-clip-height: 20; }
+            Rectangle { width: 1px; background: Theme.divider; }
+            VerticalLayout {
+                preferred-width: 0px; horizontal-stretch: 1;
+                padding-left: root.inset; padding-right: 10px; alignment: center; spacing: 3px;
+                Text { text: "Location"; font-size: 11.5px; color: Theme.muted; }
+                HorizontalLayout {
+                    alignment: start; cross-axis-alignment: center; spacing: 7px;
+                    if root.proxy.flag-index > 0: Image {
+                        width: 18px; height: 12px; source: @image-url("../assets/country-flags.png");
+                        source-clip-x: Math.mod(root.proxy.flag-index - 1, 16) * 32;
+                        source-clip-y: Math.floor((root.proxy.flag-index - 1) / 16) * 20;
+                        source-clip-width: 32; source-clip-height: 20;
                     }
-                    Text { text: root.proxy.location == "" ? "Location unknown" : root.proxy.location; color: Theme.secondary; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; }
+                    Text { text: root.proxy.location == "" ? "Unknown" : root.proxy.location; font-size: 13.5px; font-weight: 500; color: Theme.text; min-width: 0px; overflow: elide; }
                 }
             }
         }
@@ -85,6 +138,7 @@ export component DashboardView inherits ScrollView {
     in property <length> notice-clearance;
     in property <bool> active;
     in property <bool> busy;
+    in property <bool> error;
     in property <string> status;
     in property <string> uptime;
     in property <string> connection-count;
@@ -98,78 +152,114 @@ export component DashboardView inherits ScrollView {
     in property <string> download-rate;
     in property <string> upload-path;
     in property <string> download-path;
+    in property <string> upload-area;
+    in property <string> download-area;
     in property <[string]> traffic-scale;
+    pure callback inspect-traffic(int) -> TrafficReading;
     callback open-proxies;
     callback open-rules;
     callback toggle-rule(string);
     horizontal-scrollbar-policy: always-off;
     content-width: self.visible-width;
     content-height: max(self.visible-height, content.preferred-height);
+    private property <bool> compact: self.visible-width < 760px;
+    private property <length> inset: root.compact ? 16px : 24px;
     content := VerticalLayout {
-        alignment: start; spacing: 20px; padding-right: 3px; padding-bottom: 16px + root.notice-clearance;
+        alignment: start; spacing: 16px; padding-bottom: 8px + root.notice-clearance;
         HorizontalLayout {
-            height: 70px; spacing: 20px;
-            SessionCard { active: root.active; status: root.status; uptime: root.uptime; }
-            MetricCard { value: root.connection-count; label: "Active connections"; }
-            MetricCard { value: root.proxies.length; label: root.proxies.length == 1 ? "Proxy configured" : "Proxies configured"; }
-            MetricCard { value: root.enabled-rule-count + " / " + root.rules.length; label: "Rules enabled"; }
+            height: root.visible-height < 550px ? 84px : 104px; spacing: root.visible-width < 760px ? 10px : 16px;
+            SessionCard { expanded: true; compact: root.compact; active: root.active; error: root.error; status: root.status; uptime: root.uptime; }
+            MetricCard { compact: root.compact; icon: "activity"; value: root.connection-count; label: "Active connections"; }
+            MetricCard { compact: root.compact; icon: "server"; value: root.proxies.length; label: root.proxies.length == 1 ? "Proxy configured" : "Proxies configured"; }
+            MetricCard { compact: root.compact; icon: "rules"; value: root.enabled-rule-count; suffix: "/ " + root.rules.length; label: "Rules enabled"; }
         }
         SurfaceCard {
-            height: 202px;
+            height: clamp(root.visible-height - 374px, 177px, 304px);
             VerticalLayout {
-                padding: 18px; spacing: 16px;
-                HorizontalLayout { height: 25px; spacing: 24px;
-                    Text { text: "Traffic"; color: Theme.text; font-size: 20px; font-weight: 600; horizontal-stretch: 1; }
+                padding-left: root.inset; padding-right: root.inset;
+                padding-top: 17px; padding-bottom: 17px; spacing: 16px;
+                HorizontalLayout {
+                    height: 27px; spacing: 9px; cross-axis-alignment: center;
+                    Text { text: "Traffic"; color: Theme.text; font-size: 15px; font-weight: 600; }
+                    if !root.active && !root.error && !root.busy: Badge { label: "Paused"; height: 19px; border-radius: 5px; }
+                    Rectangle { horizontal-stretch: 1; }
                     TrafficLegend { label: "Download"; value: root.downloaded + " · " + root.download-rate; ink: Theme.chart-download; }
                     TrafficLegend { label: "Upload"; value: root.uploaded + " · " + root.upload-rate; ink: Theme.chart-upload; }
                 }
-                HorizontalLayout { spacing: 12px;
+                HorizontalLayout {
+                    spacing: 10px;
                     Rectangle {
                         width: max(scale-top.preferred-width, scale-upper.preferred-width, scale-lower.preferred-width, scale-zero.preferred-width);
-                        scale-top := Text { text: root.traffic-scale[0]; font-size: 10px; visible: false; accessible-role: none; }
-                        scale-upper := Text { text: root.traffic-scale[1]; font-size: 10px; visible: false; accessible-role: none; }
-                        scale-lower := Text { text: root.traffic-scale[2]; font-size: 10px; visible: false; accessible-role: none; }
-                        scale-zero := Text { text: root.traffic-scale[3]; font-size: 10px; visible: false; accessible-role: none; }
-                        for label[i] in root.traffic-scale: Text {
-                            text: label; color: Theme.muted; font-size: 10px;
-                            height: 14px; width: parent.width;
-                            y: i * (parent.height - self.height) / 3;
-                            horizontal-alignment: left; vertical-alignment: center;
+                        scale-top := NumericText { text: root.traffic-scale[0]; font-size: 11px; visible: false; accessible-role: none; }
+                        scale-upper := NumericText { text: root.traffic-scale[1]; font-size: 11px; visible: false; accessible-role: none; }
+                        scale-lower := NumericText { text: root.traffic-scale[2]; font-size: 11px; visible: false; accessible-role: none; }
+                        scale-zero := NumericText { text: root.traffic-scale[3]; font-size: 11px; visible: false; accessible-role: none; }
+                        for label[i] in root.traffic-scale: NumericText {
+                            text: label; color: Theme.muted; font-size: 11px; height: 14px; width: parent.width;
+                            y: i * (parent.height - self.height) / 3; horizontal-alignment: right; vertical-alignment: center;
                         }
                     }
                     Rectangle {
                         plot := Rectangle {
-                            y: 7px; height: parent.height - 14px;
-                            clip: true;
-                            for i in 4: Rectangle { y: i * (parent.height - 1px) / 3; height: 1px; background: Theme.border; opacity: 0.45; }
-                            for i in 9: Rectangle { x: i * (parent.width - 1px) / 8; width: 1px; background: Theme.border; opacity: 0.25; }
-                            Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.download-path; stroke: Theme.chart-download; stroke-width: 1.5px; }
-                            Path { width: parent.width; height: parent.height; viewbox-width: 600; viewbox-height: 100; fit: fill; commands: root.upload-path; stroke: Theme.chart-upload; stroke-width: 1.5px; }
+                            y: 7px; height: parent.height - 14px; clip: true;
+                            PlotPath { commands: root.download-area; fill: Theme.chart-download.with-alpha(0.22); }
+                            PlotPath { commands: root.upload-area; fill: Theme.chart-upload.with-alpha(0.20); }
+                            // The software renderer supports gradient rectangles and solid path fills.
+                            Rectangle { background: @linear-gradient(180deg, Theme.surface.with-alpha(0), Theme.surface); }
+                            for i in 4: Rectangle { y: i * (parent.height - 1px) / 3; height: 1px; background: Theme.divider; }
+                            PlotPath { commands: root.download-path; stroke: Theme.chart-download; stroke-width: 1.8px; }
+                            PlotPath { commands: root.upload-path; stroke: Theme.chart-upload; stroke-width: 1.8px; }
                             if root.download-path == "": Text { text: "Traffic will appear as connections transfer data"; color: Theme.muted; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                            hover := TouchArea { mouse-cursor: crosshair; }
+                            if hover.has-hover && root.download-path != "": inspector := Rectangle {
+                                private property <TrafficReading> reading: root.inspect-traffic(
+                                    root.download-path == "" || root.upload-path == "" ? -1 : round((1 - hover.mouse-x / max(1px, plot.width)) * 120)
+                                );
+                                if self.reading.valid: Rectangle {
+                                    line := Rectangle { x: clamp(parent.width * inspector.reading.position, 0px, parent.width - 1px); width: 1px; background: Theme.strong-border; }
+                                    Rectangle {
+                                        width: 170px; height: 66px; y: 4px;
+                                        x: line.x + self.width + 12px <= parent.width ? line.x + 10px : max(0px, line.x - self.width - 10px);
+                                        background: Theme.icon-surface; border-radius: 8px; border-width: 1px; border-color: Theme.strong-border;
+                                        VerticalLayout { padding-left: 10px; padding-right: 10px; alignment: center; spacing: 2px;
+                                            NumericText { text: inspector.reading.seconds-ago == 0 ? "Now" : inspector.reading.seconds-ago + "s ago"; font-size: 10.5px; color: Theme.muted; }
+                                            HorizontalLayout { Text { text: "Download"; font-size: 11.5px; color: Theme.chart-download; } NumericText { text: inspector.reading.download; font-size: 11.5px; color: Theme.text; horizontal-alignment: right; } }
+                                            HorizontalLayout { Text { text: "Upload"; font-size: 11.5px; color: Theme.chart-upload; } NumericText { text: inspector.reading.upload; font-size: 11.5px; color: Theme.text; horizontal-alignment: right; } }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         HorizontalLayout {
-            spacing: 24px;
+            height: 223px; spacing: root.visible-width < 760px ? 14px : 20px;
             SurfaceCard {
-                preferred-width: 0px; horizontal-stretch: 0.9; height: 222px;
-                VerticalLayout { padding: 16px; spacing: 12px; alignment: start;
-                    SectionHeading { title: "Proxy"; action-accessibility: "View Proxies"; open => { root.open-proxies(); } }
-                    if root.proxies.length > 0: ProxySummary { proxy: root.proxies[0]; }
-                    if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; height: 138px; vertical-alignment: center; }
+                preferred-width: 0px; horizontal-stretch: 0.9;
+                VerticalLayout {
+                    HorizontalLayout { padding-left: root.inset; padding-right: root.inset - 6px; padding-top: 12px; padding-bottom: 6px; vertical-stretch: 0;
+                        SectionHeading { title: "Proxy"; action-accessibility: "View Proxies"; open => { root.open-proxies(); } }
+                    }
+                    if root.proxies.length > 0: ProxySummary {
+                        vertical-stretch: 1; clip: true; border-radius: Theme.radius-large;
+                        inset: root.inset - 1px; proxy: root.proxies[0];
+                    }
+                    if root.proxies.length == 0: Text { text: "No SOCKS5 proxies configured"; color: Theme.muted; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
             SurfaceCard {
-                preferred-width: 0px; horizontal-stretch: 1.1; height: 222px;
-                VerticalLayout { padding: 16px; spacing: 0px; alignment: start;
-                    SectionHeading { title: "Routing rules"; action-accessibility: "View Rules"; open => { root.open-rules(); } }
-                    Rectangle { height: 8px; }
-                    SummaryRule { name: "Local"; route: "Direct"; locked: true; }
-                    if root.rules.length > 0: SummaryRule { name: root.rules[0].name; route: root.rules[0].route; checked: root.rules[0].enabled; busy: root.busy; toggled => { root.toggle-rule(root.rules[0].id); } }
-                    if root.rules.length > 1: SummaryRule { name: root.rules[1].name; route: root.rules[1].route; checked: root.rules[1].enabled; busy: root.busy; toggled => { root.toggle-rule(root.rules[1].id); } }
-                    SummaryRule { name: "Fallback"; route: root.fallback-label; locked: true; }
+                preferred-width: 0px; horizontal-stretch: 1.1;
+                VerticalLayout {
+                    alignment: start;
+                    HorizontalLayout { padding-left: root.inset; padding-right: root.inset - 6px; padding-top: 12px; padding-bottom: 10px;
+                        SectionHeading { title: "Routing rules"; action-accessibility: "View Rules"; open => { root.open-rules(); } }
+                    }
+                    SummaryRule { compact: root.compact; name: "Local"; route: "Direct"; locked: true; }
+                    if root.rules.length > 0: SummaryRule { compact: root.compact; name: root.rules[0].name; route: root.rules[0].route; checked: root.rules[0].enabled; busy: root.busy; toggled => { root.toggle-rule(root.rules[0].id); } }
+                    if root.rules.length > 1: SummaryRule { compact: root.compact; name: root.rules[1].name; route: root.rules[1].route; checked: root.rules[1].enabled; busy: root.busy; toggled => { root.toggle-rule(root.rules[1].id); } }
+                    SummaryRule { compact: root.compact; name: "Fallback"; route: root.fallback-label; locked: true; }
                 }
             }
         }

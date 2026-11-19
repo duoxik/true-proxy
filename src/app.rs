@@ -241,6 +241,8 @@ fn wire_window_statistics(
     let log_view = logs::wire(ui, statistics.clone(), log_preferences, preview_connections);
     let timer = Rc::new(slint::Timer::default());
     let dashboard_traffic = Rc::new(traffic::DashboardTraffic::default());
+    let chart = dashboard_traffic.clone();
+    ui.on_inspect_traffic(move |seconds| chart.reading(seconds));
     {
         let weak = ui.as_weak();
         let timer = timer.clone();
@@ -375,6 +377,7 @@ fn update_status(
         if let Some(ui) = ui.upgrade() {
             ui.set_active(active);
             ui.set_busy(busy);
+            ui.set_routing_error(error);
             ui.set_status(message.clone().into());
             ui.invoke_sync_tray(active, message.clone().into());
             if error {
@@ -1312,7 +1315,7 @@ pub fn run() -> Result<()> {
             Some("appearance" | "proxy-notices" | "notification-center")
         ) {
             ui.set_update_available(true);
-            ui.set_update_version("0.12.13".into());
+            ui.set_update_version("0.12.14".into());
             ui.set_update_text("Install the new version and reopen True Proxy.".into());
             if preview_name != Some("appearance") {
                 ui.set_active(true);
@@ -1503,7 +1506,7 @@ fn smoke_ui(
                     ui.invoke_edit_rule(ui.get_rules().row_data(0).unwrap().id);
                     ui.set_form_name("Browser via VPN · edited".into());
                     ui.invoke_save_rule();
-                    ensure!(ui.get_dialog() == 0 && ui.get_routing_pending(), "Missing restart banner for saved rules");
+                    ensure!(ui.get_dialog() == 0 && ui.get_routing_pending(), "Missing restart notification for saved rules");
                     ui.set_notice("UI preview: interception disabled".into());
                     snapshot(&ui, &dir.join("05b-pending-rules.png"))?;
                     ui.set_active(false);

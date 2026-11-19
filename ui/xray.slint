@@ -1,7 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, NumericText, Badge, IconTile, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
-import { FloatingNotice, NoticeBackdrop, NoticeShelf, NoticeEntry } from "notices.slint";
+import { FloatingNotice, InlineNotice, NoticeBackdrop, NoticeShelf, NoticeEntry } from "notices.slint";
 
 export struct XrayProfileRow { id: string, name: string, summary: string, active: bool, port-index: int }
 export struct XraySubscriptionGroup { id: string, name: string, profiles: [XrayProfileRow], active-removed: bool }
@@ -131,28 +131,7 @@ component XrayNote inherits Text {
     height: self.preferred-height;
 }
 
-component XrayCard inherits FormCard {}
-
-component XrayNotice inherits Rectangle {
-    in property <string> message;
-    in property <bool> error;
-    in property <string> action-label;
-    callback action;
-    min-width: 0px;
-    height: notice.preferred-height;
-    vertical-stretch: 0;
-    border-radius: Theme.radius-small;
-    background: root.error ? Theme.danger-soft : Theme.accent-soft;
-    notice := HorizontalLayout {
-        padding: 10px;
-        spacing: 8px;
-        cross-axis-alignment: center;
-        XrayNote { text: root.message; color: root.error ? Theme.danger : Theme.text; horizontal-stretch: 1; }
-        if root.action-label != "": TextLink { label: root.action-label; clicked => { root.action(); } }
-    }
-}
-
-export component XrayModuleCard inherits XrayCard {
+export component XrayModuleCard inherits FormCard {
     title: "Xray-core"; icon: "boxes";
     version: XrayModule.version;
     action-label: XrayModule.installed ? "Check for Updates" : "";
@@ -186,10 +165,10 @@ export component XrayModuleCard inherits XrayCard {
     if XrayModule.running && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: XrayNote {
         text: "Stop Xray to install the update.";
     }
-    if XrayModule.module-error != "": XrayNotice { message: XrayModule.module-error; error: true; }
+    if XrayModule.module-error != "": InlineNotice { message: XrayModule.module-error; error: true; }
 }
 
-export component HpwnrModuleCard inherits XrayCard {
+export component HpwnrModuleCard inherits FormCard {
     title: "hpwnr"; icon: "lock";
     version: XrayModule.hpwnr-version;
     action-label: XrayModule.hpwnr-installed ? "Check for Updates" : "";
@@ -210,7 +189,7 @@ export component HpwnrModuleCard inherits XrayCard {
         }
     }
     if XrayModule.hpwnr-update-status != "": XrayNote { text: XrayModule.hpwnr-update-status; }
-    if XrayModule.hpwnr-error != "": XrayNotice { message: XrayModule.hpwnr-error; error: true; }
+    if XrayModule.hpwnr-error != "": InlineNotice { message: XrayModule.hpwnr-error; error: true; }
 }
 
 component PortField inherits Rectangle {
@@ -238,6 +217,7 @@ component PortField inherits Rectangle {
         x: 10px; width: parent.width - 20px; height: parent.height;
         accessible-label: root.label;
         text: root.display-value;
+        font-family: root.number-field ? Theme.numeric-font : Theme.font-family;
         single-line: true; font-size: 13px; color: Theme.text;
         vertical-alignment: center;
         selection-background-color: Theme.selection; selection-foreground-color: Theme.text;
@@ -272,7 +252,7 @@ component ProfilePortChoice inherits Rectangle {
     accessible-action-default => { root.choose(); }
     HorizontalLayout {
         padding-left: 10px; padding-right: 9px; spacing: 8px; cross-axis-alignment: center;
-        Text {
+        NumericText {
             text: root.label; color: Theme.text; font-size: 13px;
             min-width: 0px; horizontal-stretch: 1; overflow: elide; accessible-role: none;
         }
@@ -320,7 +300,7 @@ component ProfilePortSelector inherits Rectangle {
                 font-size: 13px; font-weight: root.enabled && !root.port.is-default ? 600 : 400;
                 min-width: 0px; overflow: elide; accessible-role: none;
             }
-            Text {
+            NumericText {
                 text: root.port.number == "" ? "" : "· " + root.port.number;
                 color: root.detail-ink; font-size: 13px; accessible-role: none;
             }
@@ -336,9 +316,9 @@ component ProfilePortSelector inherits Rectangle {
         width: 208px;
         height: min(root.preferred-menu-height, root.opens-above ? root.space-above : root.space-below);
         close-policy: close-on-click-outside;
-        Rectangle {
-            background: Theme.surface; border-radius: Theme.radius-small;
-            border-width: 1px; border-color: Theme.dark ? Theme.switch-off : Theme.border;
+        SurfaceCard {
+            border-radius: Theme.radius-small;
+            border-color: Theme.dark ? Theme.switch-off : Theme.border;
             port-menu-scroll := ScrollView {
                 x: 5px; y: 5px; width: parent.width - 10px; height: parent.height - 10px;
                 horizontal-scrollbar-policy: always-off;
@@ -365,7 +345,7 @@ component ProfilePortSelector inherits Rectangle {
     }
 }
 
-component XrayProfileItem inherits Rectangle {
+component XrayProfileItem inherits SurfaceCard {
     in property <length> viewport-bottom;
     in property <XrayProfileRow> profile;
     in property <bool> compact;
@@ -388,11 +368,11 @@ component XrayProfileItem inherits Rectangle {
         VerticalLayout {
             alignment: center; min-width: 0px; horizontal-stretch: 1; spacing: 3px;
             Text { text: root.profile.name; color: Theme.text; font-size: 13px; font-weight: 600; min-width: 0px; overflow: elide; }
-            Text { text: root.profile.summary; color: Theme.muted; font-size: 11px; min-width: 0px; overflow: elide; }
+            NumericText { text: root.profile.summary; color: Theme.muted; font-size: 11px; min-width: 0px; overflow: elide; }
         }
         if root.compact: Text {
             text: root.profile.active ? "Selected" : "Available";
-            color: root.profile.active ? Theme.accent : Theme.muted;
+            color: root.profile.active ? Theme.accent-text : Theme.muted;
             font-size: 11px; horizontal-stretch: 0;
         }
         if !root.compact: ProfilePortSelector { profile: root.profile; viewport-bottom: root.viewport-bottom; }
@@ -412,12 +392,13 @@ component XrayProfileItem inherits Rectangle {
 }
 
 component XrayDetail inherits HorizontalLayout {
+    in property <bool> numeric;
     in property <string> label;
     in property <string> value;
     height: 24px;
     spacing: 12px;
     Text { text: root.label; color: Theme.secondary; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-    Text { text: root.value; color: Theme.text; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-alignment: right; }
+    Text { text: root.value; font-family: root.numeric ? Theme.numeric-font : Theme.font-family; color: Theme.text; font-size: 12px; vertical-alignment: center; min-width: 0px; overflow: elide; horizontal-alignment: right; }
 }
 
 component XrayDashboard inherits VerticalLayout {
@@ -446,17 +427,18 @@ component XrayDashboard inherits VerticalLayout {
                 SectionHeading { title: "Enabled profiles"; action-label: "Change"; action-accessibility: "Change selected profile"; open => { root.open-profiles(); } }
                 HorizontalLayout { height: 66px; spacing: 16px;
                     Rectangle { width: 48px;
-                        Rectangle { height: 48px; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.neutral-badge;
-                            UiIcon { name: "server"; ink: Theme.accent; x: 12px; y: 12px; width: 24px; height: 24px; }
+                        IconTile {
+                            name: "server"; ink: Theme.accent-text; icon-size: 24px;
+                            width: 48px; height: 48px; y: (parent.height - self.height) / 2;
                         }
                     }
                     VerticalLayout { spacing: 4px; alignment: center; min-width: 0px;
-                        Text { text: XrayModule.enabled-count > 1 ? XrayModule.enabled-count + " profiles enabled" : XrayModule.selected-profile.id == "" ? "No profile enabled" : XrayModule.selected-profile.name; color: Theme.text; font-size: 20px; font-weight: 600; min-width: 0px; overflow: elide; }
-                        Text { text: XrayModule.enabled-count > 1 ? "One profile per local port." : XrayModule.selected-profile.id == "" ? "Choose a profile to configure the tunnel." : XrayModule.selected-profile.summary; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; }
+                        Text { font-family: XrayModule.enabled-count > 1 ? Theme.numeric-font : Theme.font-family; text: XrayModule.enabled-count > 1 ? XrayModule.enabled-count + " profiles enabled" : XrayModule.selected-profile.id == "" ? "No profile enabled" : XrayModule.selected-profile.name; color: Theme.text; font-size: 20px; font-weight: 600; min-width: 0px; overflow: elide; }
+                        Text { font-family: XrayModule.enabled-count == 1 && XrayModule.selected-profile.id != "" ? Theme.numeric-font : Theme.font-family; text: XrayModule.enabled-count > 1 ? "One profile per local port." : XrayModule.selected-profile.id == "" ? "Choose a profile to configure the tunnel." : XrayModule.selected-profile.summary; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; }
                     }
                 }
                 Rectangle { height: 1px; background: Theme.border; }
-                XrayDetail { label: "Xray-core"; value: XrayModule.version == "" ? "Not installed" : XrayModule.version; }
+                XrayDetail { label: "Xray-core"; numeric: XrayModule.version != ""; value: XrayModule.version == "" ? "Not installed" : XrayModule.version; }
                 XrayDetail { label: "Configuration"; value: XrayModule.settings-error != "" ? "Review settings" : XrayModule.pending ? "Pending restart" : XrayModule.selected-profile.id == "" ? "Choose a profile" : XrayModule.running ? "Applied" : "Saved"; }
             }
         }
@@ -465,12 +447,12 @@ component XrayDashboard inherits VerticalLayout {
             VerticalLayout { padding: 18px; spacing: 10px; alignment: start;
                 SectionHeading { title: "Local SOCKS5"; action-label: "Settings"; action-accessibility: "Local SOCKS settings"; open => { root.open-general(); } }
                 VerticalLayout { height: 66px; alignment: center; spacing: 8px;
-                    Text { text: XrayModule.listener-summary; color: Theme.text; font-size: 23px; font-weight: 600; height: 36px; vertical-alignment: center; min-width: 0px; overflow: elide; }
+                    Text { font-family: XrayModule.listening-numbers.length > 0 ? Theme.numeric-font : Theme.font-family; text: XrayModule.listener-summary; color: Theme.text; font-size: 23px; font-weight: 600; height: 36px; vertical-alignment: center; min-width: 0px; overflow: elide; }
                     Text { text: "Local SOCKS5 addresses and listener status."; color: Theme.secondary; font-size: 12px; height: 16px; min-width: 0px; overflow: elide; }
                 }
                 Rectangle { height: 1px; background: Theme.border; }
                 XrayDetail { label: "Listener"; value: XrayModule.running ? "Running" : "Stopped"; }
-                XrayDetail { label: "Tunnel DNS"; value: XrayModule.dns; }
+                XrayDetail { label: "Tunnel DNS"; numeric: XrayModule.dns != "Default"; value: XrayModule.dns; }
             }
         }
     }
@@ -493,7 +475,7 @@ component XrayDashboard inherits VerticalLayout {
     }
 }
 
-component ProfileContainer inherits XrayCard {
+component ProfileContainer inherits FormCard {
     in property <length> viewport-bottom;
     in property <string> owner;
     in property <string> group-name;
@@ -513,7 +495,7 @@ component ProfileContainer inherits XrayCard {
             clicked => { XrayModule.refresh-subscription(root.owner); }
         }
     }
-    if root.active-removed: XrayNotice { message: "Active profile removed"; error: true; }
+    if root.active-removed: InlineNotice { message: "Active profile removed"; error: true; }
     if root.rows.length == 0: XrayNote { text: root.owner == "" ? "No manually imported profiles." : "No profiles in this subscription."; }
     for row in root.rows: XrayProfileItem {
         profile: row; reveal-id: root.reveal-id; viewport-bottom: root.viewport-bottom;
@@ -527,7 +509,7 @@ component XrayProfiles inherits VerticalLayout {
     callback reveal-position(length);
     alignment: start;
     spacing: 12px;
-    XrayCard {
+    FormCard {
         HorizontalLayout {
             spacing: 8px;
             Rectangle { width: 32px; UiIcon { name: "link"; y: (parent.height - self.height) / 2; } }
@@ -542,14 +524,14 @@ component XrayProfiles inherits VerticalLayout {
             }
         }
         if XrayModule.profile-input.starts-with("https://"): XrayNote { text: "ShadowNet subscriptions use a saved device identity for this PC."; }
-        if XrayModule.hpwnr-required: XrayNotice { message: "This encrypted link requires hpwnr. Install the module and continue importing?"; }
+        if XrayModule.hpwnr-required: InlineNotice { message: "This encrypted link requires hpwnr. Install the module and continue importing?"; }
         if XrayModule.hpwnr-required: HorizontalLayout { spacing: 8px; alignment: start;
             ActionButton { label: "Install and Import"; icon: "download"; primary: true; enabled: !XrayModule.busy; clicked => { XrayModule.confirm-hpwnr(); } }
             ActionButton { label: "Cancel"; enabled: !XrayModule.busy; clicked => { XrayModule.cancel-hpwnr(); } }
         }
-        if XrayModule.hpwnr-error != "": XrayNotice { message: XrayModule.hpwnr-error; error: true; }
+        if XrayModule.hpwnr-error != "": InlineNotice { message: XrayModule.hpwnr-error; error: true; }
     }
-    if XrayModule.subscriptions.length == 0: XrayCard {
+    if XrayModule.subscriptions.length == 0: FormCard {
         title: "Subscriptions"; icon: "refresh";
         XrayNote { text: "No subscriptions imported."; }
     }
@@ -627,12 +609,12 @@ component PortTableLine inherits VerticalLayout {
                 spacing: 6px; alignment: start; cross-axis-alignment: center;
                 Rectangle {
                     width: 8px; height: 8px; border-radius: 4px; border-width: 1px;
-                    border-color: root.port.status == "Listening" ? Theme.accent : root.port.status == "Error" ? Theme.danger : Theme.muted;
+                    border-color: root.port.status == "Listening" ? Theme.accent-text : root.port.status == "Error" ? Theme.danger : Theme.muted;
                     background: root.port.status == "Listening" || root.port.status == "Error" ? self.border-color : transparent;
                 }
                 PortCellText {
                     text: root.port.status;
-                    color: root.port.status == "Listening" ? Theme.accent : root.port.status == "Error" ? Theme.danger : Theme.secondary;
+                    color: root.port.status == "Listening" ? Theme.accent-text : root.port.status == "Error" ? Theme.danger : Theme.secondary;
                 }
             }
         }
@@ -640,6 +622,7 @@ component PortTableLine inherits VerticalLayout {
             min-width: 65px; preferred-width: 65px; horizontal-stretch: 0.65; height: 36px;
             PortCellText {
                 x: 0px; width: parent.width;
+                font-family: root.heading ? Theme.font-family : Theme.numeric-font;
                 text: root.heading ? "Used by" : root.port.used-count + (root.port.used-count == 1 ? " profile" : " profiles");
                 color: root.heading ? Theme.secondary : Theme.text;
             }
@@ -666,6 +649,7 @@ component PortTableLine inherits VerticalLayout {
             open(id) => { root.open-profile(id); }
         }
         PortCellText {
+            font-family: root.port.used-count > root.port.users.length ? Theme.numeric-font : Theme.font-family;
             text: (root.port.used-count > root.port.users.length ? "and " + (root.port.used-count - root.port.users.length) + " more. " : "")
                 + (root.port.used-count == 1 ? "Unbind it first, then delete." : "Unbind them first, then delete.");
             color: Theme.danger;
@@ -675,7 +659,7 @@ component PortTableLine inherits VerticalLayout {
     Rectangle { height: 1px; background: Theme.border; }
 }
 
-component XrayPorts inherits XrayCard {
+component XrayPorts inherits FormCard {
     callback open-profile(string);
     title: "Ports"; icon: "network";
     caption: XrayModule.default-port-label == "" ? "New profiles use the default port." : "New profiles use";
@@ -692,6 +676,7 @@ component XrayPorts inherits XrayCard {
         }
     }
     XrayNote {
+        font-family: Theme.numeric-font;
         text: "Next free port: " + XrayModule.next-free-port + ". Changing a port number keeps profiles bound, but Proxies that use the old number must be updated by hand.";
     }
 }
@@ -699,11 +684,11 @@ component XrayPorts inherits XrayCard {
 component XrayDns inherits VerticalLayout {
     alignment: start;
     spacing: 12px;
-    XrayCard {
+    FormCard {
         title: "Tunnel DNS"; icon: "globe";
         caption: "Use Default or enter resolver IPs, TCP DNS URLs, or HTTPS DoH URLs separated by commas.";
         Field {
-            label: "Resolver";
+            label: "Resolver"; numeric: true;
             value <=> XrayModule.dns;
             placeholder: "Default, tcp://1.1.1.1:53, or https://resolver.example/dns-query";
             field-height: 40px;
@@ -711,7 +696,7 @@ component XrayDns inherits VerticalLayout {
         }
         XrayNote { text: "This PC queries a custom resolver directly when a client sends a domain to a local SOCKS5 port. Intercepted connections already have an IP address."; }
     }
-    XrayCard {
+    FormCard {
         title: "VPN server hosts"; icon: "server";
         action-label: "Refresh"; action-icon: "refresh";
         action-enabled: !XrayModule.busy && XrayModule.hosts.length > 0;
@@ -729,7 +714,7 @@ component XrayDns inherits VerticalLayout {
             spacing: 8px;
             height: 30px;
             Text { text: entry.host; color: Theme.text; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
-            Text { text: entry.address; color: Theme.secondary; font-family: "Consolas"; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+            NumericText { text: entry.address; color: Theme.secondary; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
         }
     }
 }
@@ -747,7 +732,7 @@ component XrayGeoChip inherits Rectangle {
         width: parent.width - 34px;
         text: root.tag;
         font-size: 12px;
-        color: Theme.accent;
+        color: Theme.accent-text;
         vertical-alignment: center;
         overflow: elide;
     }
@@ -821,12 +806,9 @@ component XrayGeoPicker inherits VerticalLayout {
             if !XrayModule.busy && root.query != "" { XrayModule.select-geo-tag(root.geosite, root.query); }
         }
     }
-    if root.query != "" && root.suggestions.length > 0: Rectangle {
+    if root.query != "" && root.suggestions.length > 0: SurfaceCard {
         height: options.preferred-height;
         border-radius: Theme.radius-small;
-        border-width: 1px;
-        border-color: Theme.border;
-        background: Theme.surface;
         options := VerticalLayout {
             padding: 4px;
             for value in root.suggestions: XrayGeoSuggestion {
@@ -857,7 +839,7 @@ component XrayGeoPicker inherits VerticalLayout {
     }
 }
 
-component XrayFallbacks inherits XrayCard {
+component XrayFallbacks inherits FormCard {
     title: "Direct routes"; icon: "route";
     caption: "Xray sends matching traffic directly. Select an entry or press Enter to add a custom tag.";
     HorizontalLayout {
@@ -876,7 +858,7 @@ component XrayFallbacks inherits XrayCard {
     }
     Field { label: "GeoIP database source"; placeholder: "HTTPS download URL"; value <=> XrayModule.geo-ip-url; edited => { XrayModule.settings-edited(); } }
     Field { label: "Geosite database source"; placeholder: "HTTPS download URL"; value <=> XrayModule.geo-site-url; edited => { XrayModule.settings-edited(); } }
-    Field { label: "Refresh interval in hours"; placeholder: "0 for manual updates"; value <=> XrayModule.geo-refresh-hours; edited => { XrayModule.settings-edited(); } }
+    Field { label: "Refresh interval in hours"; numeric: true; placeholder: "0 for manual updates"; value <=> XrayModule.geo-refresh-hours; edited => { XrayModule.settings-edited(); } }
     if XrayModule.geo-status != "": XrayNote { text: XrayModule.geo-status; }
     HorizontalLayout {
         alignment: start;
@@ -891,6 +873,8 @@ component XrayFallbacks inherits XrayCard {
 
 component XrayEventCell inherits Text {
     in property <bool> heading;
+    in property <bool> numeric;
+    font-family: !root.heading && root.numeric ? Theme.numeric-font : Theme.font-family;
     min-width: 0px;
     overflow: elide;
     vertical-alignment: center;
@@ -910,7 +894,7 @@ component XrayEventLine inherits Rectangle {
         padding-left: 14px;
         padding-right: 14px;
         spacing: 8px;
-        XrayEventCell { heading: root.heading; width: 73px; text: root.heading ? "TIME" : root.entry.time; }
+        XrayEventCell { heading: root.heading; numeric: true; width: 73px; text: root.heading ? "TIME" : root.entry.time; }
         XrayEventCell { heading: root.heading; width: 58px; text: root.heading ? "PROTOCOL" : root.entry.protocol; }
         VerticalLayout {
             min-width: 0px;
@@ -918,14 +902,14 @@ component XrayEventLine inherits Rectangle {
             horizontal-stretch: 3;
             alignment: center;
             spacing: 2px;
-            XrayEventCell { heading: root.heading; text: root.heading ? "TARGET" : root.entry.destination; }
+            XrayEventCell { heading: root.heading; numeric: true; text: root.heading ? "TARGET" : root.entry.destination; }
             if root.show-domain: XrayEventCell {
                 text: "DNS · " + root.entry.observed-domain;
                 color: Theme.muted;
                 font-size: 11px;
             }
         }
-        XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; text: root.heading ? "SOURCE" : root.entry.source; }
+        XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; numeric: true; text: root.heading ? "SOURCE" : root.entry.source; }
         XrayEventCell { heading: root.heading; width: 76px; text: root.heading ? "ROUTE" : root.entry.route; }
         XrayEventCell { heading: root.heading; preferred-width: 0px; horizontal-stretch: 2; text: root.heading ? "RESULT" : root.entry.detail; }
     }
@@ -941,7 +925,14 @@ component XrayConnections inherits SurfaceCard {
         padding: 1px;
         PanelToolbar {
             Text { text: "Connections"; color: Theme.text; font-weight: 600; font-size: 18px; vertical-alignment: center; }
-            Text { text: "" + XrayModule.connections.length + " / " + XrayModule.connection-total; color: Theme.muted; font-size: 11px; vertical-alignment: center; }
+            Rectangle {
+                width: count.natural-width;
+                count := Badge {
+                    y: (parent.height - self.height) / 2;
+                    label: XrayModule.connections.length + " / " + XrayModule.connection-total;
+                    numeric: true; font-size: 11px; side-padding: 6px;
+                }
+            }
             Rectangle { horizontal-stretch: 1; }
             Rectangle {
                 width: 190px;
@@ -1096,7 +1087,6 @@ export component XrayNotices inherits NoticeShelf {
         message: root.toast;
         icon: root.toast-error ? "info" : "check";
         ink: root.toast-error ? Theme.danger : Theme.accent;
-        icon-surface: root.toast-error ? Theme.danger-soft : Theme.accent-soft;
         can-hide: false;
     }
     status-notice := FloatingNotice {
@@ -1107,7 +1097,6 @@ export component XrayNotices inherits NoticeShelf {
         message: XrayModule.error != "" ? XrayModule.error : XrayModule.status;
         icon: "info";
         ink: XrayModule.error != "" ? Theme.danger : Theme.accent;
-        icon-surface: XrayModule.error != "" ? Theme.danger-soft : Theme.accent-soft;
         hidden => { root.hidden(); }
     }
     settings-notice := FloatingNotice {
@@ -1117,7 +1106,6 @@ export component XrayNotices inherits NoticeShelf {
         message: XrayModule.settings-error;
         icon: "info";
         ink: Theme.danger;
-        icon-surface: Theme.danger-soft;
         hidden => { root.hidden(); }
     }
     restart-notice := FloatingNotice {
@@ -1130,7 +1118,6 @@ export component XrayNotices inherits NoticeShelf {
             : root.restarted || root.restarting ? "" : "Xray pauses briefly and its proxy connections close.";
         icon: root.restarted ? "check" : "refresh";
         ink: XrayModule.restart-ink;
-        icon-surface: root.failed ? Theme.danger-soft : Theme.accent-soft;
         working: root.restarting;
         can-hide: !root.restarting && !root.restarted;
         action-label: root.restarted ? "" : root.failed ? "Retry" : "Restart";

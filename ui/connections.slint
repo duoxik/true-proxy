@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, SurfaceCard, EmptyState, PanelToolbar, TableHeading, MetricCard, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+import { PageHeader, SurfaceCard, EmptyState, PanelToolbar, TableHeading, MetricCard, NumericText, Badge, IconTile, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
 
 
 
@@ -30,13 +30,13 @@ component ConnectionFilterMenu inherits Rectangle {
         spacing: 5px;
         Text { text: root.title; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; accessible-role: none; }
         Rectangle {
-            width: max(22px, summary-text.preferred-width + 9px);
-            Rectangle {
+            width: filter-badge.width;
+            filter-badge := Badge {
+                width: max(22px, self.natural-width); height: 18px; side-padding: 4.5px;
                 y: (parent.height - self.height) / 2;
-                height: 18px;
-                border-radius: 9px;
-                background: Theme.accent-soft;
-                summary-text := Text { text: root.summary; color: Theme.accent; font-size: 10px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; }
+                label: root.summary; numeric: root.summary.is-float(); font-size: 10px;
+                ink: Theme.accent-text; fill: Theme.accent-soft; outline: Theme.accent-border;
+                accessible-role: none;
             }
         }
         Rectangle {
@@ -67,11 +67,8 @@ component ConnectionFilterMenu inherits Rectangle {
                 if event.text == Key.Escape { menu.close(); return accept; }
                 return reject;
             }
-            Rectangle {
+            SurfaceCard {
                 border-radius: Theme.radius-small;
-                border-width: 1px;
-                border-color: Theme.border;
-                background: Theme.surface;
                 filter-options := ScrollView {
                     x: 6px; y: 6px;
                     width: parent.width - 12px;
@@ -102,6 +99,7 @@ component JournalCell inherits VerticalLayout {
     in property <bool> emphasized;
     in property <bool> numeric;
     in property <bool> monospace;
+    in property <bool> monospace-detail;
     in property <color> ink: Theme.text;
     in property <color> detail-ink: Theme.muted;
     min-width: 0px;
@@ -114,12 +112,13 @@ component JournalCell inherits VerticalLayout {
         color: root.heading ? Theme.secondary : root.ink;
         font-size: root.heading ? 10px : 12px;
         font-weight: root.heading || root.emphasized ? 600 : 400;
-        font-family: !root.heading && root.monospace ? "Consolas" : "Segoe UI";
+        font-family: !root.heading && root.monospace ? Theme.numeric-font : Theme.font-family;
         horizontal-alignment: root.numeric ? right : left;
         overflow: elide;
     }
     if root.detail != "": Text {
         text: root.detail;
+        font-family: root.monospace-detail ? Theme.numeric-font : Theme.font-family;
         min-width: 0px;
         color: root.detail-ink;
         font-size: 10px;
@@ -173,7 +172,6 @@ component JournalLine inherits HorizontalLayout {
                 width: 24px;
                 height: 24px;
                 border-radius: Theme.radius-small;
-                background: root.has-application-icon ? transparent : Theme.accent-soft;
                 if root.has-application-icon: Image {
                     x: 2px;
                     y: 2px;
@@ -183,27 +181,23 @@ component JournalLine inherits HorizontalLayout {
                     image-fit: contain;
                     accessible-role: none;
                 }
-                if !root.has-application-icon: UiIcon {
-                    x: 5px;
-                    y: 5px;
-                    width: 14px;
-                    height: 14px;
-                    name: "app";
-                    ink: Theme.accent;
+                if !root.has-application-icon: IconTile {
+                    name: "app"; ink: Theme.accent-text; icon-size: 14px;
+                    width: 24px; height: 24px; background: Theme.accent-soft;
                 }
             }
         }
         if !root.group && !root.heading: Rectangle { width: 16px; }
-        JournalCell { label: root.application; detail: root.source; heading: root.heading; emphasized: true; horizontal-stretch: 1; }
+        JournalCell { label: root.application; detail: root.source; monospace-detail: true; heading: root.heading; emphasized: true; horizontal-stretch: 1; }
     }
-    JournalCell { preferred-width: 0px; label: root.destination; detail: root.target-detail; heading: root.heading; monospace: !root.group; ink: root.group ? Theme.secondary : Theme.text; horizontal-stretch: 1.35; }
+    JournalCell { preferred-width: 0px; label: root.destination; detail: root.target-detail; monospace-detail: true; heading: root.heading; monospace: true; ink: root.group ? Theme.secondary : Theme.text; horizontal-stretch: 1.35; }
     JournalCell { width: 76px; label: root.started; heading: root.heading; monospace: true; ink: Theme.secondary; }
     JournalCell {
         width: 68px;
         label: root.elapsed != "" ? root.elapsed : root.status;
         detail: root.elapsed != "" ? root.status : "";
         heading: root.heading;
-        monospace: root.elapsed != "";
+        monospace: root.group || root.elapsed != "";
         ink: root.group ? root.status-ink : Theme.secondary;
         detail-ink: root.status-ink;
     }
@@ -264,7 +258,7 @@ component JournalGroup inherits Rectangle {
                     started: entry.started;
                     elapsed: entry.elapsed;
                     status: entry.status;
-                    status-ink: entry.state == 1 ? Theme.success : entry.state == 0 ? Theme.accent : entry.state == 2 ? Theme.warning : (entry.state == 4 || entry.state == 5) ? Theme.danger : Theme.secondary;
+                    status-ink: entry.state == 1 ? Theme.success : entry.state == 0 ? Theme.accent-text : entry.state == 2 ? Theme.warning : (entry.state == 4 || entry.state == 5) ? Theme.danger : Theme.secondary;
                     sent: "—";
                     received: "—";
                 }
@@ -326,13 +320,12 @@ export component ConnectionsView inherits VerticalLayout {
 
                 Text { text: "Connections"; color: Theme.text; font-size: 18px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
                 Rectangle {
-                    width: max(25px, count-label.preferred-width + 12px);
-                    Rectangle {
+                    width: count.width;
+                    count := Badge {
+                        width: max(25px, self.natural-width); height: 22px; side-padding: 6px;
                         y: (parent.height - self.height) / 2;
-                        height: 22px;
-                        border-radius: 11px;
-                        background: Theme.accent-soft;
-                        count-label := Text { text: "" + ConnectionMonitor.filtered-event-count; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        label: "" + ConnectionMonitor.filtered-event-count; numeric: true; font-size: 11px;
+                        ink: Theme.accent-text; fill: Theme.accent-soft; outline: Theme.accent-border;
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
@@ -422,7 +415,7 @@ export component ConnectionsView inherits VerticalLayout {
         font-size: 11px;
         wrap: word-wrap;
     }
-    if ConnectionMonitor.connection-omitted > 0: Text {
+    if ConnectionMonitor.connection-omitted > 0: NumericText {
         text: "Tracking limit: 4,096 concurrent connections. Omitted: " + ConnectionMonitor.connection-omitted;
         color: Theme.warning;
         font-size: 11px;

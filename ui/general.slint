@@ -1,0 +1,334 @@
+import { ActionButton, Badge, FormCard, NumericText, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { Slider } from "std-widgets.slint";
+
+// Each swatch previews its own theme even when the surrounding window changes theme.
+component ThemeChoice inherits Rectangle {
+    in property <bool> dark;
+    in property <bool> selected;
+    callback choose;
+    private property <color> preview-bg: dark ? #09090b : #f4f5f7;
+    private property <color> preview-sidebar: dark ? #0e0e11 : #ffffff;
+    private property <color> preview-card: dark ? #141418 : #ffffff;
+    private property <color> preview-border: dark ? #ffffff19 : #00000015;
+    private property <color> preview-dim: dark ? #3f3f46 : #d4d4d8;
+    private property <color> preview-ink: dark ? #e4e4e7 : #27272a;
+
+    min-width: 0px;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    height: 124px;
+    border-radius: 11px;
+    border-width: root.selected || focus.has-focus ? 2px : 1px;
+    border-color: focus.has-focus ? Theme.text : root.selected ? Theme.accent : touch.has-hover ? Theme.strong-border : Theme.border;
+    background: touch.has-hover ? Theme.surface-hover : Theme.subtle;
+    accessible-role: button;
+    accessible-label: root.dark ? "Dark theme" : "Light theme";
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.choose(); }
+    forward-focus: focus;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+        sample := Rectangle {
+            height: 76px;
+            clip: true;
+            border-radius: 7px;
+            border-width: 1px;
+            border-color: root.preview-border;
+            background: root.preview-bg;
+            side := Rectangle {
+                x: 1px; y: 1px; width: sample.width * 0.28; height: sample.height - 2px;
+                background: root.preview-sidebar;
+                Rectangle { x: parent.width - 1px; width: 1px; background: root.preview-border; }
+                Rectangle { x: 6px; y: 6px; width: parent.width - 12px; height: 5px; border-radius: 3px; background: root.preview-dim; }
+                Rectangle { x: 6px; y: 17px; width: (parent.width - 12px) * 0.8; height: 5px; border-radius: 3px; background: root.preview-dim; }
+                Rectangle {
+                    x: 6px; y: parent.height - 16px; width: parent.width - 12px; height: 10px; border-radius: 3px;
+                    background: Theme.accent.with-alpha(0.22); border-width: 1px; border-color: Theme.accent.with-alpha(0.4);
+                }
+            }
+            detail := Rectangle {
+                x: side.x + side.width + 7px; y: 8px; width: sample.width - self.x - 8px; height: sample.height - 16px;
+                Rectangle { x: 0px; y: 0px; width: min(40px, parent.width * 0.5); height: 5px; border-radius: 3px; background: root.preview-ink; }
+                Rectangle { x: parent.width - 10px; y: 0px; width: 10px; height: 5px; border-radius: 3px; background: Theme.accent; }
+                Rectangle {
+                    x: 0px; y: 11px; width: detail.width; height: detail.height - 11px;
+                    background: root.preview-card; border-radius: 4px; border-width: 1px; border-color: root.preview-border;
+                    Rectangle { x: 5px; y: 5px; width: (parent.width - 10px) * 0.66; height: 4px; border-radius: 2px; background: root.preview-dim; }
+                    Rectangle { x: parent.width - 35px; y: parent.height - 12px; width: 15px; height: 7px; border-radius: 2px; background: root.preview-ink; }
+                    Rectangle { x: parent.width - 17px; y: parent.height - 12px; width: 12px; height: 7px; border-radius: 2px; background: root.preview-dim; }
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 20px; spacing: 6px; cross-axis-alignment: center;
+            UiIcon { name: root.dark ? "moon" : "sun"; width: 14px; height: 14px; }
+            Text { text: root.dark ? "Dark" : "Light"; color: Theme.text; font-size: 13px; font-weight: 500; horizontal-stretch: 1; vertical-alignment: center; accessible-role: none; }
+            Rectangle {
+                width: 16px; height: 16px; border-radius: 8px;
+                border-width: 1px; border-color: root.selected ? Theme.accent : Theme.strong-border;
+                background: root.selected ? Theme.accent : transparent;
+                if root.selected: UiIcon { x: 3px; y: 3px; name: "check"; width: 10px; height: 10px; ink: Theme.switch-on-thumb; }
+            }
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.choose(); } }
+    focus := FocusScope {
+        width: 0px;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == Key.Space { root.choose(); return accept; }
+            return reject;
+        }
+    }
+}
+
+component AppearanceSlider inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> unit;
+    in property <int> maximum;
+    in-out property <int> amount;
+    callback committed;
+    height: 32px;
+    spacing: 8px;
+    cross-axis-alignment: center;
+    changed amount => { control.value = root.amount; }
+
+    function commit(next: float) {
+        root.amount = round(clamp(next, 0, root.maximum));
+        control.value = root.amount;
+        root.committed();
+    }
+    Text {
+        text: root.label;
+        width: 152px;
+        color: Theme.text;
+        font-size: 13px;
+        accessible-role: none;
+    }
+    Rectangle {
+        min-width: 48px;
+        horizontal-stretch: 1;
+        height: 28px;
+        control := Slider {
+            width: parent.width;
+            height: parent.height;
+            minimum: 0;
+            maximum: root.maximum;
+            step: 1;
+            value: root.amount;
+            accessible-label: root.label;
+            accessible-value-step: 1;
+            changed(next) => { root.amount = round(next); }
+            released(next) => { root.commit(next); }
+            accessible-action-set-value(next) => { if next.is-float() { root.commit(next.to-float()); } }
+            accessible-action-increment => { root.commit(root.amount + 1); }
+            accessible-action-decrement => { root.commit(root.amount - 1); }
+        }
+        // Keep the native slider's hit target, keyboard handling and accessibility.
+        Rectangle {
+            background: Theme.surface;
+            rail := Rectangle {
+                x: 10px;
+                width: parent.width - 20px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.switch-off;
+                Rectangle {
+                    x: 0px;
+                    width: parent.width * root.amount / root.maximum;
+                    border-radius: parent.border-radius;
+                    background: Theme.accent;
+                }
+            }
+            Rectangle {
+                width: 18px; height: self.width;
+                x: rail.x + rail.width * root.amount / root.maximum - self.width / 2;
+                border-radius: self.width / 2;
+                border-width: 1px;
+                border-color: control.has-focus ? Theme.accent : Theme.border;
+                background: Theme.surface;
+                Rectangle { width: 10px; height: self.width; border-radius: self.width / 2; background: Theme.accent; }
+            }
+        }
+    }
+    NumericText {
+        text: root.amount + root.unit;
+        width: 42px;
+        horizontal-alignment: right;
+        color: Theme.secondary;
+        font-size: 13px;
+        accessible-role: none;
+    }
+}
+
+component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.divider;
+}
+
+export component GeneralSettings inherits VerticalLayout {
+    in property <bool> dark-theme;
+    in property <bool> busy;
+    in property <bool> local-test;
+    in property <bool> autostart-enabled;
+    in property <bool> autostart-busy;
+    in property <bool> updates-automatic;
+    in property <bool> update-busy;
+    in property <string> update-status;
+    in property <string> app-version;
+    in-out property <int> notice-transparency;
+    in-out property <int> notice-blur;
+    callback choose-theme(bool);
+    callback set-autostart(bool);
+    callback set-updates-automatic(bool);
+    callback check-updates;
+    callback save-notice-appearance;
+    callback open-import;
+    callback export-config;
+    alignment: start;
+    spacing: 24px;
+
+    FormCard {
+        title: "Configuration"; icon: "files";
+        caption: "Move your proxies and routing rules between devices.";
+        inset-body: false;
+        VerticalLayout {
+            Divider {}
+            config-actions := Rectangle {
+                private property <bool> stacked: self.width < warning.width + buttons.width + 64px;
+                height: stacked ? 110px : 70px;
+                background: Theme.subtle;
+                border-bottom-left-radius: Theme.radius-large - 1px;
+                border-bottom-right-radius: Theme.radius-large - 1px;
+                warning := Badge {
+                    label: "Exports include proxy passwords."; icon: "lock";
+                    fill: Theme.warning-surface; outline: Theme.warning-border; ink: Theme.warning-detail; icon-ink: Theme.warning-icon;
+                    height: 32px; border-radius: 8px; font-size: 12.5px;
+                    x: Theme.panel-padding; y: config-actions.stacked ? 14px : (parent.height - self.height) / 2;
+                }
+                buttons := HorizontalLayout {
+                    width: self.preferred-width; height: 36px;
+                    spacing: 10px;
+                    x: config-actions.stacked ? Theme.panel-padding : parent.width - self.width - Theme.panel-padding;
+                    y: config-actions.stacked ? 58px : (parent.height - self.height) / 2;
+                    ActionButton { label: "Import configuration"; accessible-label: "Import"; icon: "download"; primary: true; height: 36px; enabled: !root.busy; clicked => { root.open-import(); } }
+                    ActionButton { label: "Export JSON"; accessible-label: "Export"; icon: "upload"; height: 36px; clicked => { root.export-config(); } }
+                }
+            }
+        }
+    }
+
+    preferences := Rectangle {
+        private property <bool> columns: self.width >= 710px;
+        private property <length> column-width: self.columns ? (self.width - 24px) / 2 : self.width;
+        private property <length> row-height: max(appearance.content-height, startup.content-height);
+        height: self.columns ? self.row-height : appearance.height + startup.height + 24px;
+        vertical-stretch: 0;
+        appearance := FormCard {
+            x: 0px; y: 0px; width: preferences.column-width;
+            height: preferences.columns ? preferences.row-height : self.content-height;
+            title: "Appearance"; icon: "sun"; caption: "Choose the application theme.";
+            inset-body: false;
+            VerticalLayout {
+                Divider {}
+                VerticalLayout {
+                    padding-top: 16px; padding-bottom: 14px; padding-left: Theme.panel-padding; padding-right: Theme.panel-padding;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 14px;
+                        ThemeChoice { dark: false; selected: !root.dark-theme; choose => { root.choose-theme(false); } }
+                        ThemeChoice { dark: true; selected: root.dark-theme; choose => { root.choose-theme(true); } }
+                    }
+                    VerticalLayout {
+                        AppearanceSlider {
+                            label: "Notification transparency"; unit: "%"; maximum: 100;
+                            amount <=> root.notice-transparency;
+                            committed => { root.save-notice-appearance(); }
+                        }
+                        AppearanceSlider {
+                            label: "Background blur"; unit: " px"; maximum: 24;
+                            amount <=> root.notice-blur;
+                            committed => { root.save-notice-appearance(); }
+                        }
+                    }
+                }
+            }
+        }
+        startup := FormCard {
+            x: preferences.columns ? preferences.column-width + 24px : 0px;
+            y: preferences.columns ? 0px : appearance.height + 24px;
+            width: preferences.column-width;
+            height: preferences.columns ? preferences.row-height : self.content-height;
+            title: "Startup"; icon: "power"; caption: "Manage launch behavior on sign-in.";
+            inset-body: false;
+            VerticalLayout {
+                Divider {}
+                Rectangle {
+                    height: startup-row.preferred-height + 40px;
+                    startup-row := HorizontalLayout {
+                        x: Theme.panel-padding; width: parent.width - 2 * Theme.panel-padding; height: self.preferred-height;
+                        y: 20px + (startup.height - startup.content-height) / 2;
+                        spacing: 16px; cross-axis-alignment: start;
+                        VerticalLayout {
+                            spacing: 4px; min-width: 0px; horizontal-stretch: 1;
+                            Text { text: "Launch at Windows sign-in"; color: Theme.text; font-size: 14px; font-weight: 500; wrap: word-wrap; }
+                            Text {
+                                text: root.local-test ? "Windows startup is managed by the installed app." : root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing automatically.";
+                                color: Theme.secondary; font-size: 13px; wrap: word-wrap;
+                            }
+                        }
+                        RuleSwitch {
+                            label: "Start when I sign in to Windows"; checked: root.autostart-enabled;
+                            enabled: !root.autostart-busy && !root.local-test;
+                            toggled => { root.set-autostart(!root.autostart-enabled); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    FormCard {
+        title: "Application updates"; icon: "refresh";
+        caption: "Check at launch and every 6 hours.";
+        inset-body: false; outlined-action: true;
+        action-label: root.update-busy ? "Checking…" : "Check for updates";
+        action-accessibility: "Check for Updates"; action-icon: "refresh";
+        action-enabled: !root.update-busy; action => { root.check-updates(); }
+        VerticalLayout {
+            Divider {}
+            HorizontalLayout {
+                height: 60px; padding-left: Theme.panel-padding; padding-right: Theme.panel-padding;
+                spacing: 16px; cross-axis-alignment: center;
+                Text { text: "Automatic update checks"; color: Theme.text; font-size: 14px; font-weight: 500; vertical-alignment: center; horizontal-stretch: 1; }
+                RuleSwitch { label: "Check for updates automatically"; checked: root.updates-automatic; toggled => { root.set-updates-automatic(!root.updates-automatic); } }
+            }
+            if root.update-status != "": VerticalLayout {
+                Divider {}
+                Rectangle {
+                    height: status-row.preferred-height;
+                    background: Theme.subtle;
+                    border-bottom-left-radius: Theme.radius-large - 1px; border-bottom-right-radius: Theme.radius-large - 1px;
+                    status-row := HorizontalLayout {
+                        padding-left: Theme.panel-padding; padding-right: Theme.panel-padding; padding-top: 12px; padding-bottom: 12px;
+                        spacing: 8px; cross-axis-alignment: center;
+                        UiIcon { name: "clock"; width: 14px; height: 14px; ink: Theme.muted; }
+                        Text { text: root.update-status; font-size: 12.5px; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
+                    }
+                }
+            }
+        }
+    }
+    VerticalLayout {
+        spacing: 16px;
+        Divider {}
+        HorizontalLayout {
+            spacing: 8px; cross-axis-alignment: center;
+            UiIcon { name: "globe"; width: 16px; height: 16px; ink: Theme.muted; }
+            Text { text: "DNS is resolved by Windows"; color: Theme.muted; font-size: 12.5px; horizontal-stretch: 1; }
+            NumericText { text: "True Proxy v" + root.app-version; color: Theme.muted; font-size: 12px; }
+        }
+    }
+}

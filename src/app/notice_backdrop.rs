@@ -115,7 +115,7 @@ mod tests {
     #[test]
     fn blur_uses_the_halo_and_preserves_rounded_corners_at_high_dpi() {
         let mut source = SharedPixelBuffer::<Rgba8Pixel>::new(160, 120);
-        for row in source.make_mut_slice().chunks_exact_mut(160) {
+        for row in source.make_mut_slice().as_chunks_mut::<160>().0 {
             row[..40].fill(Rgba8Pixel::new(255, 255, 255, 255));
         }
         let origin = PhysicalPosition::new(40, -2);

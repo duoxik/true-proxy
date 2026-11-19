@@ -12,47 +12,81 @@ export struct ConnectionFilterOption { key: string, label: string, checked: bool
 export global Theme {
     in property <bool> dark: true;
     in property <bool> reduce-motion;
-    out property <color> background: dark ? #0d0d0d : #f1f3f5;
-    out property <color> background-refresh: dark ? #0e0e0e : #f1f3f6;
-    out property <color> sidebar: dark ? #0b0b0b : #ffffff;
-    out property <color> surface: dark ? #101010 : #ffffff;
-    out property <color> surface-hover: dark ? #292a2d : #f7f5ff;
-    out property <color> pressed: dark ? #383a3e : #ede7ff;
-    out property <color> field: dark ? #151515 : #f7f8f9;
-    out property <color> border: dark ? #252525 : #e0e3e7;
-    out property <color> notice-surface: dark ? #101010 : #f5f5f5;
-    out property <color> text: dark ? #f1f1f2 : #141d2d;
-    out property <color> secondary: dark ? #aaacb1 : #4f5c6c;
-    out property <color> muted: dark ? #888a90 : #687585;
-    out property <color> accent: dark ? #c4f52b : #7846db;
-    out property <color> accent-hover: dark ? #e3fc7c : #6235bf;
-    out property <color> accent-soft: dark ? #292e14 : #f3efff;
-    out property <color> primary: dark ? self.accent : #8354ea;
-    out property <color> primary-hover: dark ? self.accent-hover : #7546d9;
-    out property <color> primary-pressed: dark ? #bedf35 : #6739c9;
-    out property <color> primary-text: dark ? #0d0e10 : #ffffff;
-    out property <color> disabled: dark ? #252629 : #eff1f4;
-    out property <color> disabled-text: dark ? #888a90 : #758191;
+    out property <color> background: dark ? #09090b : #f6f7f9;
+    // A one-channel change requests a native surface refresh on restore.
+    out property <color> background-refresh: dark ? #09090c : #f6f7fa;
+    out property <color> titlebar: dark ? self.background : #ffffff;
+    out property <color> sidebar: dark ? #0c0c0e : #ffffff;
+    out property <color> surface: dark ? #111114 : #ffffff;
+    out property <color> surface-hover: dark ? #141418 : #fafafb;
+    out property <color> elevated: dark ? #18181c : #ffffff;
+    out property <color> icon-surface: dark ? #1a1a1e : #f1f2f5;
+    out property <color> field: dark ? self.elevated : #f6f7f9;
+    out property <color> subtle: dark ? #ffffff07 : #0f172a06;
+    out property <color> hover: dark ? #ffffff0d : #0f172a0b;
+    out property <color> pressed: dark ? #29292e : #e9eaec;
+    out property <color> border: dark ? #ffffff0f : #0f172a14;
+    out property <color> divider: dark ? #ffffff0e : #0f172a0f;
+    out property <color> strong-border: dark ? #ffffff1c : #0f172a24;
+    out property <color> highlight: dark ? #ffffff0a : #ffffffe6;
+    out property <color> shadow: dark ? #00000066 : #0f172a0a;
+    out property <color> notice-surface: dark ? #121214 : #ffffff;
+    out property <color> notice-divider: dark ? #ffffff14 : #0f172a14;
+    out property <color> text: dark ? #f4f4f5 : #111827;
+    out property <color> secondary: dark ? #a1a1aa : #52525b;
+    out property <color> muted: #71717a;
+    out property <color> section-text: dark ? #63636b : #8a8a93;
+    out property <color> accent: #bef264;
+    out property <color> accent-hover: #a3e635;
+    out property <color> accent-text: dark ? self.accent : #4d7c0f;
+    out property <color> accent-soft: self.accent.with-alpha(dark ? 0.10 : 0.13);
+    out property <color> accent-border: dark ? self.accent.with-alpha(0.24) : #65a30d4d;
+    out property <color> primary: dark ? #f4f4f5 : #18181b;
+    out property <color> primary-hover: dark ? #ffffff : #27272a;
+    out property <color> primary-pressed: dark ? #e4e4e7 : #3f3f46;
+    out property <color> primary-text: dark ? #09090b : #ffffff;
+    out property <color> button: dark ? #18181b : #ffffff;
+    out property <color> button-hover: dark ? #222227 : #f4f4f5;
+    out property <color> button-text: dark ? #e4e4e7 : #27272a;
+    out property <color> disabled: dark ? #252529 : #eff1f4;
+    out property <color> disabled-text: dark ? #888891 : #71717a;
     out property <color> success: dark ? #83dba3 : #167b45;
-    out property <color> warning: dark ? #f0c676 : #8c5808;
-    out property <color> warning-surface: dark ? #3a2c1b : #fff7e5;
+    out property <color> warning: dark ? #fcd34d : #92400e;
+    out property <color> warning-surface: dark ? #f59e0b14 : #f59e0b17;
+    out property <color> warning-border: dark ? #f59e0b38 : #d9770638;
+    out property <color> warning-icon: dark ? #f59e0b : #d97706;
+    out property <color> warning-detail: dark ? #e5b96a : #92400e;
     out property <color> danger: dark ? #f18a96 : #b72b40;
-    out property <color> switch-off: dark ? #383a3e : #cbd0d6;
-    out property <color> switch-off-thumb: dark ? #e6e7e9 : #ffffff;
-    out property <color> switch-on-thumb: #ffffff;
-    out property <color> selection: dark ? #383a3e : #e9ddff;
-    out property <color> neutral-badge: dark ? #252629 : #eff1f4;
+    out property <color> switch-off: dark ? #27272a : #d4d4d8;
+    out property <color> switch-off-thumb: #ffffff;
+    out property <color> switch-on-thumb: #09090b;
+    out property <color> selection: dark ? #384328 : #e2efc9;
+    out property <color> neutral-badge: self.subtle;
     out property <color> overlay: dark ? #000000a8 : #19212e82;
-    out property <color> success-soft: dark ? #1d3327 : #ebf9f0;
+    out property <color> success-soft: self.success.with-alpha(0.10);
     out property <color> danger-soft: dark ? #382427 : #fff1f2;
-    out property <color> blue: dark ? #8bb5ff : #2864ca;
-    out property <color> chart-download: dark ? #659dff : #2864ca;
-    out property <color> chart-upload: dark ? #8df574 : #167b45;
+    out property <color> blue: dark ? #60a5fa : #2563b9;
+    out property <color> chart-download: self.blue;
+    out property <color> chart-upload: dark ? self.accent : #65a30d;
+    out property <string> font-family: "Segoe UI";
+    out property <string> numeric-font: "Consolas";
+    out property <length> page-title-size: 26px;
+    out property <length> card-title-size: 15px;
+    out property <length> body-size: 13px;
+    out property <length> card-padding: 20px;
+    out property <length> panel-padding: 24px;
+    out property <length> card-gap: 16px;
     out property <length> radius-small: 10px;
-    out property <length> radius-medium: 14px;
-    out property <length> radius-large: 18px;
+    out property <length> radius-medium: 12px;
+    out property <length> radius-large: 14px;
     // Fluent scrollbars overlay the viewport; reserve the same space in toolbars.
     out property <length> scroll-gutter: 15px;
+}
+
+// Slint's native Text has no OpenType feature selector. Windows supplies this
+// fixed-pitch face locally for timers, counters, endpoints and other values.
+export component NumericText inherits Text {
+    font-family: Theme.numeric-font;
 }
 
 // Shared page building blocks. Content remains native Slint throughout.
@@ -62,7 +96,19 @@ export component SurfaceCard inherits Rectangle {
     border-radius: Theme.radius-large;
     border-width: 1px;
     border-color: Theme.border;
+    // The software renderer does not draw box shadows. These static 1px
+    // edges retain the reference's top highlight and contact shadow.
+    Rectangle {
+        x: root.border-radius; y: root.height;
+        width: max(0px, root.width - 2 * self.x); height: 1px;
+        background: Theme.shadow;
+    }
     @children
+    Rectangle {
+        x: root.border-radius; y: 1px;
+        width: max(0px, root.width - 2 * self.x); height: 1px;
+        background: Theme.highlight;
+    }
 }
 
 export component PanelToolbar inherits HorizontalLayout {
@@ -78,33 +124,6 @@ export component TableHeading inherits Rectangle {
     height: 36px;
     background: Theme.field;
     @children
-}
-
-export component SessionCard inherits SurfaceCard {
-    in property <string> status;
-    in property <string> uptime;
-    in property <bool> active;
-    in property <bool> error;
-    preferred-width: 0px;
-    horizontal-stretch: 1.8;
-    HorizontalLayout { padding: 16px; spacing: 10px;
-        Rectangle { width: 12px; Rectangle { width: 12px; height: 12px; y: (parent.height - self.height) / 2; border-radius: 6px; background: root.error ? Theme.danger : root.active ? Theme.accent : Theme.warning; } }
-        Text { text: root.status; color: Theme.text; font-size: 15px; font-weight: 600; min-width: 0px; wrap: word-wrap; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-        Text { text: "Session  " + root.uptime; color: Theme.secondary; font-size: 11px; vertical-alignment: center; }
-    }
-}
-
-export component MetricCard inherits SurfaceCard {
-    in property <string> value;
-    in property <string> label;
-    preferred-width: 0px;
-    horizontal-stretch: 1;
-    VerticalLayout {
-        padding-left: 18px; padding-right: 18px;
-        padding-top: 10px; padding-bottom: 10px; spacing: 2px; alignment: center;
-        Text { text: root.value; color: Theme.text; font-size: 24px; font-weight: 600; min-width: 0px; overflow: elide; height: 28px; vertical-alignment: center; }
-        Text { text: root.label; color: Theme.secondary; font-size: 12px; min-width: 0px; overflow: elide; height: 16px; vertical-alignment: center; }
-    }
 }
 
 // Shared Lucide outline icons. The product mark remains our own vector.
@@ -125,8 +144,113 @@ export component UiIcon inherits Rectangle {
     }
 }
 
-// A single shell for settings, profile and module panels on every page.
+export component IconTile inherits Rectangle {
+    in property <string> name;
+    in property <color> ink: Theme.secondary;
+    in property <length> icon-size: 18px;
+    width: 36px; height: 36px;
+    background: Theme.icon-surface; border-radius: Theme.radius-small;
+    border-color: Theme.border; border-width: 1px;
+    UiIcon {
+        name: root.name; ink: root.ink; width: root.icon-size; height: root.icon-size;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+    }
+}
 
+export component Badge inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> dot;
+    in property <bool> numeric;
+    in property <length> font-size: 12px;
+    in property <length> side-padding: 9px;
+    in property <color> fill: Theme.neutral-badge;
+    in property <color> ink: Theme.secondary;
+    in property <color> outline: Theme.border;
+    in property <color> icon-ink: root.ink;
+    out property <length> natural-width: caption.preferred-width + 2 * root.side-padding + (root.dot ? 12px : 0px) + (root.icon != "" ? 20px : 0px);
+    width: root.natural-width; height: 23px;
+    border-radius: self.height / 2; border-width: 1px; border-color: root.outline; background: root.fill;
+    HorizontalLayout {
+        padding-left: root.side-padding; padding-right: root.side-padding; spacing: 6px; alignment: center;
+        if root.dot: Rectangle { width: 6px;
+            Rectangle { y: (parent.height - self.height) / 2; height: 6px; width: 6px; border-radius: 3px; background: root.icon-ink; }
+        }
+        if root.icon != "": Rectangle { width: 14px;
+            UiIcon { y: (parent.height - self.height) / 2; width: 14px; height: 14px; name: root.icon; ink: root.icon-ink; }
+        }
+        caption := Text {
+            text: root.label; color: root.ink; font-family: root.numeric ? Theme.numeric-font : Theme.font-family;
+            font-size: root.font-size; font-weight: 500; min-width: 0px; overflow: elide; vertical-alignment: center;
+        }
+    }
+}
+
+export component SessionCard inherits SurfaceCard {
+    in property <string> status;
+    in property <string> uptime;
+    in property <bool> active;
+    in property <bool> error;
+    in property <bool> expanded;
+    in property <bool> compact;
+    private property <color> status-color: root.error ? Theme.danger : root.active ? Theme.accent : Theme.muted;
+    preferred-width: 0px;
+    horizontal-stretch: root.expanded ? 1.5 : 1.8;
+    if root.expanded: Rectangle {
+        x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px;
+        private property <length> center-x: self.width * 0.18;
+        private property <length> center-y: self.height * 0.25;
+        background: @radial-gradient(circle at self.center-x self.center-y, root.status-color.with-alpha(0.08), transparent 68%);
+    }
+    if root.expanded: VerticalLayout {
+        padding: root.compact ? 14px : Theme.card-padding;
+        HorizontalLayout { height: 24px; spacing: 7px;
+            Rectangle { width: 10px; Rectangle { y: (parent.height - self.height) / 2; width: 10px; height: 10px; border-radius: 5px; background: root.status-color; } }
+            Text { text: root.status; color: Theme.text; font-size: Theme.card-title-size; font-weight: 600; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+            if root.active && !root.error && !root.compact: Badge {
+                label: "LIVE"; font-size: 10.5px; ink: Theme.accent-text;
+                fill: Theme.accent-soft; outline: Theme.accent-border;
+            }
+        }
+        Rectangle { vertical-stretch: 1; }
+        HorizontalLayout { height: 18px; spacing: 6px;
+            Text { text: "Session"; color: Theme.muted; font-size: 12.5px; vertical-alignment: center; }
+            NumericText { text: root.uptime; color: Theme.secondary; font-size: 13px; min-width: 0px; overflow: elide; horizontal-alignment: right; vertical-alignment: center; }
+        }
+    }
+    if !root.expanded: HorizontalLayout { padding: 16px; spacing: 10px;
+        Rectangle { width: 10px; Rectangle { width: 10px; height: 10px; y: (parent.height - self.height) / 2; border-radius: 5px; background: root.status-color; } }
+        Text { text: root.status; color: Theme.text; font-size: 15px; font-weight: 600; min-width: 0px; wrap: word-wrap; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+        NumericText { text: root.uptime; accessible-label: "Session " + root.uptime; color: Theme.secondary; font-size: 12px; vertical-alignment: center; }
+    }
+}
+
+export component MetricCard inherits SurfaceCard {
+    in property <string> value;
+    in property <string> label;
+    in property <string> suffix;
+    in property <string> icon;
+    in property <bool> compact;
+    private property <length> side-padding: root.icon == "" || root.compact ? 14px : Theme.card-padding;
+    preferred-width: 0px;
+    horizontal-stretch: 1;
+    VerticalLayout {
+        padding-left: root.side-padding; padding-right: root.side-padding;
+        padding-top: root.icon == "" ? 8px : 16px; padding-bottom: root.icon == "" ? 8px : 16px;
+        spacing: 2px; alignment: center;
+        HorizontalLayout { height: 32px; spacing: 4px;
+            NumericText { text: root.value; color: Theme.text; font-size: root.icon == "" ? 24px : Theme.page-title-size; font-weight: 600; min-width: 0px; overflow: elide; vertical-alignment: center; horizontal-stretch: 0; }
+            if root.suffix != "": NumericText { text: root.suffix; color: Theme.muted; font-size: 18px; min-width: 0px; overflow: elide; vertical-alignment: center; horizontal-stretch: 0; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.icon != "" && !root.compact: IconTile {
+                name: root.icon; width: 28px; height: 28px; icon-size: 14px; border-radius: 8px;
+                ink: Theme.muted; background: Theme.subtle;
+            }
+        }
+        if root.icon != "": Rectangle { vertical-stretch: 1; }
+        Text { text: root.label; color: Theme.secondary; font-size: 12.5px; min-width: 0px; overflow: elide; height: 18px; vertical-alignment: center; }
+    }
+}
 
 export component EmptyState inherits Rectangle {
     in property <string> title;
@@ -147,26 +271,36 @@ export component ActionButton inherits Rectangle {
     in property <bool> icon-only: false;
     in property <bool> trailing-icon: false;
     in property <bool> primary: false;
+    in property <bool> accented: false;
+    in property <bool> numeric: false;
     in property <bool> quiet: false;
     in property <bool> enabled: true;
     in property <length> content-min-width: 38px;
+    in property <length> label-size: Theme.body-size;
+    in property <int> label-weight: 500;
+    in property <color> fill: Theme.button;
     in property <color> primary-fill: Theme.primary;
-    in property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : Theme.text;
+    in property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : root.accented ? Theme.accent-text : Theme.button-text;
     in property <color> icon-ink: root.ink;
-    in property <color> outline: Theme.border;
+    in property <color> outline: root.accented ? Theme.accent-border : Theme.strong-border;
     callback clicked;
     min-width: root.icon-only ? 36px : max(root.content-min-width, label-text.preferred-width + 26px + (root.icon == "" ? 0px : 23px)); max-width: self.min-width;
     height: 40px; horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Theme.radius-small; border-width: 1px;
+    border-radius: 9px; border-width: 1px;
     border-color: root.primary || root.quiet ? transparent : root.outline;
     background: !root.enabled ? (root.quiet ? transparent : Theme.disabled) : root.primary
         ? (touch.pressed ? (root.primary-fill == Theme.primary ? Theme.primary-pressed : root.primary-fill.darker(0.2))
-           : touch.has-hover ? (root.primary-fill == Theme.primary ? Theme.primary-hover : root.primary-fill.darker(0.1)) : root.primary-fill)
-        : (touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : root.quiet ? transparent : Theme.surface);
-    animate background, border-color { duration: 100ms; }
+           : touch.has-hover ? (root.primary-fill == Theme.primary ? Theme.primary-hover : root.primary-fill == Theme.accent ? Theme.accent-hover : root.primary-fill.darker(0.1)) : root.primary-fill)
+        : root.accented ? (touch.pressed || touch.has-hover ? Theme.accent.with-alpha(0.18) : Theme.accent-soft)
+        : touch.pressed ? Theme.pressed : touch.has-hover ? (root.quiet ? Theme.hover : Theme.button-hover) : root.quiet ? transparent : root.fill;
+    animate background, border-color { duration: Theme.reduce-motion ? 0ms : 140ms; }
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
+    if !root.quiet && !root.primary: Rectangle {
+        x: root.border-radius; y: 1px; width: max(0px, root.width - 2 * self.x);
+        height: 1px; background: Theme.highlight;
+    }
     if root.icon-only && root.icon != "": UiIcon {
         name: root.icon;
         ink: root.icon-ink;
@@ -182,7 +316,12 @@ export component ActionButton inherits Rectangle {
             width: 16px;
             UiIcon { name: root.icon; ink: root.icon-ink; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
         }
-        label-text := Text { text: root.icon-only ? "" : root.label; color: root.ink; font-size: 12px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide; }
+        label-text := Text {
+            text: root.icon-only ? "" : root.label; color: root.ink;
+            font-family: root.numeric ? Theme.numeric-font : Theme.font-family;
+            font-size: root.label-size; font-weight: root.label-weight; horizontal-alignment: center;
+            vertical-alignment: center; accessible-role: none; min-width: 0px; overflow: elide;
+        }
         if !root.icon-only && root.trailing-icon && root.icon != "": Rectangle {
             width: 16px;
             UiIcon { name: root.icon; ink: root.icon-ink; width: 16px; height: 16px; y: (parent.height - self.height) / 2; }
@@ -209,33 +348,38 @@ export component FormCard inherits SurfaceCard {
     in property <string> action-icon: "external";
     in property <bool> action-enabled: true;
     in property <bool> outlined-action: false;
+    in property <bool> inset-body: true;
     in property <string> action-accessibility: root.action-label;
     callback action;
     out property <length> content-height: content.preferred-height;
     height: root.content-height;
     vertical-stretch: 0;
     content := VerticalLayout {
-        padding: 20px; spacing: 16px; alignment: start;
+        padding: root.inset-body ? Theme.card-padding : 0px;
+        spacing: root.inset-body ? Theme.card-gap : 0px; alignment: start;
         if root.title != "": HorizontalLayout {
-            height: max(40px, heading.preferred-height);
-            spacing: 12px;
+            padding-left: root.inset-body ? 0px : Theme.panel-padding;
+            padding-right: root.inset-body ? 0px : Theme.panel-padding;
+            padding-top: root.inset-body ? 0px : Theme.card-padding;
+            padding-bottom: root.inset-body ? 0px : Theme.card-padding;
+            height: max(40px, heading.preferred-height) + self.padding-top + self.padding-bottom;
+            spacing: 14px;
             if root.icon != "": Rectangle {
                 width: 40px;
-                Rectangle { height: 40px; y: (parent.height - self.height) / 2;
-                    background: Theme.field; border-radius: 12px;
-                    UiIcon { name: root.icon; ink: Theme.text; width: 20px; height: 20px; x: 10px; y: 10px; }
+                IconTile { width: 40px; height: 40px; y: (parent.height - self.height) / 2;
+                    name: root.icon;
                 }
             }
             heading := VerticalLayout {
-                alignment: center; spacing: 4px; min-width: 0px; horizontal-stretch: 1;
+                alignment: center; spacing: 2px; min-width: 0px; horizontal-stretch: 1;
                 HorizontalLayout { spacing: 8px; alignment: start;
-                    Text { text: root.title; color: Theme.text; font-size: 18px; font-weight: 600; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
-                    if root.version != "": Text { text: root.version; color: Theme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
+                    Text { text: root.title; color: Theme.text; font-size: Theme.card-title-size; font-weight: 600; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
+                    if root.version != "": NumericText { text: root.version; color: Theme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
                 }
-                if root.caption != "" && root.caption-emphasis == "": Text { text: root.caption; color: Theme.secondary; font-size: 12px; min-width: 0px; wrap: word-wrap; height: self.preferred-height; }
+                if root.caption != "" && root.caption-emphasis == "": Text { text: root.caption; color: Theme.secondary; font-size: Theme.body-size; min-width: 0px; wrap: word-wrap; height: self.preferred-height; }
                 if root.caption-emphasis != "": StyledText {
                     text: @markdown("\{root.caption} **<font color='\{Theme.text}'>\{root.caption-emphasis}</font>**");
-                    default-color: Theme.secondary; default-font-size: 12px;
+                    default-color: Theme.secondary; default-font-size: Theme.body-size;
                     min-width: 0px; height: self.preferred-height;
                     accessible-role: text; accessible-label: root.caption + " " + root.caption-emphasis;
                 }
@@ -243,7 +387,7 @@ export component FormCard inherits SurfaceCard {
             if root.action-label != "": Rectangle {
                 width: action-link.min-width;
                 action-link := TextLink {
-                    x: 0px; y: 0px; label: root.action-label; icon: root.action-icon;
+                    x: 0px; y: (parent.height - self.height) / 2; label: root.action-label; icon: root.action-icon;
                     quiet: !root.outlined-action; trailing-icon: !root.outlined-action;
                     height: root.outlined-action ? 38px : 30px;
                     enabled: root.action-enabled; accessible-label: root.action-accessibility;
@@ -295,9 +439,8 @@ export component SegmentButton inherits Rectangle {
 
 export component PageAction inherits ActionButton {
     content-min-width: 122px;
-    height: 43px;
-    icon-ink: Theme.accent;
-    outline: Theme.dark ? Theme.switch-off : Theme.border;
+    height: 40px;
+    icon-ink: root.enabled ? Theme.accent-text : Theme.disabled-text;
 }
 
 export component PageHeader inherits HorizontalLayout {
@@ -307,6 +450,7 @@ export component PageHeader inherits HorizontalLayout {
     in property <string> action-icon;
     in property <string> action-accessibility: root.action-label;
     in property <bool> action-enabled: true;
+    in property <bool> action-accented: false;
     in property <string> badge;
     callback action;
     height: root.subtitle == "" ? 44px : 62px;
@@ -314,18 +458,19 @@ export component PageHeader inherits HorizontalLayout {
     spacing: 14px;
     VerticalLayout {
         min-width: 0px; horizontal-stretch: 1; spacing: 4px; alignment: center;
-        Text { text: root.title; color: Theme.text; font-size: 30px; font-weight: 700; min-width: 0px; overflow: elide; height: 36px; vertical-alignment: center; }
-        if root.subtitle != "": Text { text: root.subtitle; color: Theme.secondary; font-size: 13px; min-width: 0px; overflow: elide; height: 18px; vertical-alignment: center; }
+        Text { text: root.title; color: Theme.text; font-size: Theme.page-title-size; font-weight: 600; letter-spacing: -0.65px; min-width: 0px; overflow: elide; height: 34px; vertical-alignment: center; }
+        if root.subtitle != "": Text { text: root.subtitle; color: Theme.secondary; font-size: 13.5px; min-width: 0px; overflow: elide; height: 20px; vertical-alignment: center; }
     }
     if root.badge != "": Rectangle {
-        width: 92px;
-        Rectangle { height: 24px; y: (parent.height - self.height) / 2; border-radius: 12px; background: Theme.accent-soft;
-            Text { text: root.badge; color: Theme.accent; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+        width: sample.natural-width;
+        sample := Badge { height: 28px; y: (parent.height - self.height) / 2;
+            label: root.badge; dot: true; icon-ink: Theme.accent;
+            ink: Theme.accent-text; outline: Theme.accent-border; fill: Theme.accent-soft;
         }
     }
     if root.action-label != "": Rectangle {
         width: button.min-width;
-        button := PageAction { label: root.action-label; icon: root.action-icon; accessible-label: root.action-accessibility; enabled: root.action-enabled; y: (parent.height - self.height) / 2; clicked => { root.action(); } }
+        button := PageAction { label: root.action-label; icon: root.action-icon; accessible-label: root.action-accessibility; enabled: root.action-enabled; accented: root.action-accented; y: (parent.height - self.height) / 2; clicked => { root.action(); } }
     }
 }
 
@@ -335,8 +480,8 @@ export component SectionHeading inherits HorizontalLayout {
     in property <string> action-accessibility;
     callback open;
     height: 30px;
-    Text { text: root.title; color: Theme.text; font-size: 19px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
-    TextLink { label: root.action-label; accessible-label: root.action-accessibility; clicked => { root.open(); } }
+    Text { text: root.title; color: Theme.text; font-size: Theme.card-title-size; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+    TextLink { label: root.action-label; accessible-label: root.action-accessibility; ink: Theme.secondary; clicked => { root.open(); } }
 }
 
 export component RuleSwitch inherits Rectangle {
@@ -344,12 +489,24 @@ export component RuleSwitch inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> fixed: false;
     in property <string> label;
-    in property <length> track-width: 42px;
+    in property <bool> compact;
+    in property <length> track-width: root.compact ? 40px : 42px;
+    private property <length> track-height: root.compact ? 22px : 24px;
     callback toggled;
     width: 44px; height: 38px;
     opacity: root.enabled || root.fixed ? 1 : 0.45;
-    Rectangle { y: (parent.height - self.height) / 2; x: (parent.width - self.width) / 2; width: root.track-width; height: 24px; border-radius: 12px; background: root.checked && root.fixed ? Theme.accent-soft : root.checked && root.enabled ? Theme.primary : Theme.switch-off;
-        Rectangle { x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.fixed ? Theme.secondary : root.checked && root.enabled ? Theme.switch-on-thumb : Theme.switch-off-thumb; animate x { duration: 100ms; } }
+    Rectangle {
+        y: (parent.height - self.height) / 2; x: (parent.width - self.width) / 2;
+        width: root.track-width; height: root.track-height; border-radius: self.height / 2;
+        background: root.checked ? (root.fixed ? Theme.accent-soft : Theme.accent) : Theme.switch-off;
+        border-width: 1px;
+        border-color: root.checked ? Theme.accent-border : Theme.border;
+        Rectangle {
+            x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px;
+            width: root.track-height - 6px; height: self.width; border-radius: self.width / 2;
+            background: root.fixed ? Theme.secondary : root.checked ? Theme.switch-on-thumb : Theme.switch-off-thumb;
+            animate x { duration: Theme.reduce-motion ? 0ms : 150ms; }
+        }
     }
     TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
     focus := FocusScope { width: 0px; enabled: root.enabled; key-pressed(event) => { if event.text == Key.Space || event.text == Key.Return { root.toggled(); return accept; } return reject; } }
@@ -363,6 +520,7 @@ export component Field inherits VerticalLayout {
     in property <string> placeholder;
     in property <string> icon;
     in property <bool> secret: false;
+    in property <bool> numeric;
     in property <length> field-height: 40px;
     in-out property <string> value;
     spacing: 6px;
@@ -380,8 +538,8 @@ export component Field inherits VerticalLayout {
         background: Theme.field;
         property <length> inset: root.icon == "" ? 12px : 36px;
         if root.icon != "": UiIcon { name: root.icon; x: 12px; y: (parent.height - self.height) / 2; width: 16px; height: 16px; }
-        if root.value == "": Text { x: parent.inset; width: parent.width - parent.inset - 12px; text: root.placeholder; font-size: 13px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
-        input := TextInput { x: parent.inset; width: parent.width - parent.inset - 12px; height: parent.height; text <=> root.value; font-size: 13px; color: Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
+        if root.value == "": Text { x: parent.inset; width: parent.width - parent.inset - 12px; text: root.placeholder; font-family: root.numeric ? Theme.numeric-font : Theme.font-family; font-size: 13px; color: Theme.muted; vertical-alignment: center; overflow: elide; }
+        input := TextInput { x: parent.inset; width: parent.width - parent.inset - 12px; height: parent.height; text <=> root.value; font-family: root.numeric ? Theme.numeric-font : Theme.font-family; font-size: 13px; color: Theme.text; selection-background-color: Theme.selection; selection-foreground-color: Theme.text; single-line: true; vertical-alignment: center; input-type: root.secret ? InputType.password : InputType.text; accessible-label: root.label != "" ? root.label : root.placeholder; edited => { root.edited(); } accepted => { root.accepted(); } }
     }
 }
 
@@ -405,7 +563,7 @@ export component DialogHeader inherits Rectangle {
                 width: 40px; height: 40px;
                 border-radius: Theme.radius-small;
                 background: Theme.accent-soft;
-                UiIcon { name: root.icon; ink: Theme.accent; x: 10px; y: 10px; width: 20px; height: 20px; }
+                UiIcon { name: root.icon; ink: Theme.accent-text; x: 10px; y: 10px; width: 20px; height: 20px; }
             }
         }
         VerticalLayout {
@@ -473,12 +631,12 @@ component CheckMark inherits Rectangle {
     height: 16px;
     border-radius: 5px;
     border-width: 1px;
-    border-color: root.checked ? Theme.primary : Theme.muted;
-    background: root.checked ? Theme.primary : Theme.field;
+    border-color: root.checked ? Theme.accent-border : Theme.muted;
+    background: root.checked ? Theme.accent : Theme.field;
     if root.checked: Path {
         x: 3px; y: 3px; width: 10px; height: 10px;
         viewbox-width: 10; viewbox-height: 10;
-        stroke: Theme.primary-text; stroke-width: 1.6px;
+        stroke: Theme.switch-on-thumb; stroke-width: 1.6px;
         commands: "M1 5 L4 8 L9 2";
     }
 }

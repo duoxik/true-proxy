@@ -1,8 +1,9 @@
 use super::bytes;
-use crate::MainWindow;
+use crate::{MainWindow, TrafficReading};
 use std::{
     cell::{Cell, RefCell},
     collections::VecDeque,
+    fmt::Write,
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
@@ -33,6 +34,7 @@ pub(super) struct DashboardTraffic {
     previous: Cell<Option<Sample>>,
     last_dashboard: Cell<Option<Instant>>,
     history: RefCell<VecDeque<Point>>,
+    rendered_at: Cell<Option<Instant>>,
 }
 
 impl DashboardTraffic {
@@ -103,14 +105,48 @@ impl DashboardTraffic {
             ui.set_download_rate(format!("{}/s", bytes(point.download)).into());
         }
         let scale = chart_scale(&history);
-        let (upload, download) = chart_paths(&history, Instant::now(), scale);
-        ui.set_upload_path(upload.into());
-        ui.set_download_path(download.into());
+        let now = Instant::now();
+        self.rendered_at.set(Some(now));
+        let upload = chart_path(&history, now, scale, |point| point.upload);
+        let download = chart_path(&history, now, scale, |point| point.download);
+        ui.set_upload_area(upload.area.into());
+        ui.set_download_area(download.area.into());
+        ui.set_upload_path(upload.line.into());
+        ui.set_download_path(download.line.into());
         ui.set_traffic_scale(super::model(
             (0..4)
                 .map(|i| format!("{}/s", bytes(scale / 3 * (3 - i))).into())
                 .collect(),
         ));
+    }
+
+    pub(super) fn reading(&self, seconds_ago: i32) -> TrafficReading {
+        let Some(now) = self.rendered_at.get() else {
+            return TrafficReading::default();
+        };
+        if !(0..=RETENTION.as_secs() as i32).contains(&seconds_ago) {
+            return TrafficReading::default();
+        }
+        let target = Duration::from_secs(seconds_ago as u64);
+        let history = self.history.borrow();
+        let Some(point) = history
+            .iter()
+            .min_by_key(|point| now.saturating_duration_since(point.at).abs_diff(target))
+        else {
+            return TrafficReading::default();
+        };
+        let age = now.saturating_duration_since(point.at);
+        // The cursor may be in a gap left by a suspended or hidden window.
+        if age > RETENTION || age.abs_diff(target) > Duration::from_millis(1500) {
+            return TrafficReading::default();
+        }
+        TrafficReading {
+            valid: true,
+            position: 1.0 - age.as_secs_f32() / RETENTION.as_secs_f32(),
+            seconds_ago: age.as_secs_f32().round() as i32,
+            download: format!("{}/s", bytes(point.download)).into(),
+            upload: format!("{}/s", bytes(point.upload)).into(),
+        }
     }
 
     fn rates(&self, sample: Sample) -> Option<(u64, u64)> {
@@ -151,40 +187,46 @@ fn chart_scale(history: &VecDeque<Point>) -> u64 {
     step.saturating_mul(3)
 }
 
-fn chart_paths(history: &VecDeque<Point>, now: Instant, scale: u64) -> (String, String) {
-    use std::fmt::Write;
+#[derive(Default)]
+struct ChartPath {
+    line: String,
+    area: String,
+}
+
+fn chart_path(
+    history: &VecDeque<Point>,
+    now: Instant,
+    scale: u64,
+    rate: impl Fn(&Point) -> u64,
+) -> ChartPath {
+    let mut path = ChartPath::default();
     if history.len() < 2 {
-        return (String::new(), String::new());
+        return path;
     }
-    let mut upload = String::new();
-    let mut download = String::new();
-    let mut previous = None::<Instant>;
-    for point in history {
-        let age = now.saturating_duration_since(point.at).as_secs_f64();
-        if age > RETENTION.as_secs_f64() {
-            continue;
-        }
-        let x = (1.0 - age / RETENTION.as_secs_f64()) * 600.0;
-        let command = if previous
-            .is_none_or(|at| point.at.saturating_duration_since(at) > Duration::from_secs(3))
+    let x = |p: &Point| {
+        let age = now.saturating_duration_since(p.at).as_secs_f64();
+        600.0 * (1.0 - age / RETENTION.as_secs_f64())
+    };
+    let y = |p: &Point| 100.0 * (1.0 - rate(p) as f64 / scale as f64);
+    let mut visible = history
+        .iter()
+        .skip_while(|p| now.saturating_duration_since(p.at) > RETENTION)
+        .peekable();
+    while let Some(first) = visible.next() {
+        let start = path.line.len();
+        let mut last = first;
+        let _ = write!(path.line, "M{:.2} {:.2} ", x(first), y(first));
+        while let Some(next) =
+            visible.next_if(|p| p.at.saturating_duration_since(last.at) <= Duration::from_secs(3))
         {
-            'M'
-        } else {
-            'L'
-        };
-        previous = Some(point.at);
-        let _ = write!(
-            upload,
-            "{command}{x:.2} {:.2} ",
-            100.0 - point.upload as f64 / scale as f64 * 100.0
-        );
-        let _ = write!(
-            download,
-            "{command}{x:.2} {:.2} ",
-            100.0 - point.download as f64 / scale as f64 * 100.0
-        );
+            let _ = write!(path.line, "L{:.2} {:.2} ", x(next), y(next));
+            last = next;
+        }
+        // Close each visible segment at its own baseline so a gap stays empty.
+        path.area.push_str(&path.line[start..]);
+        let _ = write!(path.area, "L{:.2} 100 L{:.2} 100 Z ", x(last), x(first));
     }
-    (upload, download)
+    path
 }
 
 #[cfg(test)]
@@ -205,6 +247,11 @@ mod tests {
             route: "Proxy · VPN".into(),
             enabled: true,
             priority: 1,
+        }])));
+        ui.set_proxies(ModelRc::new(VecModel::from(vec![crate::ProxyRow {
+            name: "Test proxy".into(),
+            address: "[2001:db8::1234]:1080".into(),
+            ..Default::default()
         }])));
         let toggles = Rc::new(Cell::new(0));
         let count = toggles.clone();
@@ -227,6 +274,14 @@ mod tests {
         ui.set_busy(false);
         click("Rule Applications", AccessibleRole::Switch);
         assert!(changed_rule.get());
+        click(
+            "Copy endpoint [2001:db8::1234]:1080",
+            AccessibleRole::Button,
+        );
+        ui.set_dialog(3);
+        click("Paste JSON", AccessibleRole::Button);
+        assert_eq!(ui.get_import_json().as_str(), "[2001:db8::1234]:1080");
+        ui.set_dialog(0);
         click("View Proxies", AccessibleRole::Button);
         assert_eq!(ui.get_page(), 2);
         ui.set_page(0);
@@ -255,12 +310,16 @@ mod tests {
         let points = traffic.history.borrow();
         let scale = chart_scale(&points);
         assert!(scale >= 200);
-        let (_, path) = chart_paths(&points, make(20).at, scale);
+        let path = chart_path(&points, make(20).at, scale, |point| point.download);
         assert_eq!(
-            path.matches('M').count(),
+            path.line.matches('M').count(),
             2,
             "hidden intervals must not be interpolated"
         );
+        assert_eq!(path.area.matches('Z').count(), 2);
+        traffic.rendered_at.set(Some(make(20).at));
+        assert!(!traffic.reading(10).valid);
+        assert_eq!(traffic.reading(19).download.as_str(), "200 B/s");
         drop(points);
         for seconds in 21..400 {
             traffic.sample(make(seconds), true);
