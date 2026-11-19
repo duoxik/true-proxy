@@ -14,15 +14,18 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     use true_proxy::xray::profile::Settings;
     let xray = ui.global::<XrayModule>();
     let settings: Settings = serde_json::from_value(serde_json::json!({
-        "manual_default_port": 2081,
+        "ports": [
+            {"id":"default","name":"Default","number":2081,"is_default":true},
+            {"id":"us","name":"US","number":2082,"is_default":false}
+        ],
         "subscriptions": [
-            {"id":"preview-subscription", "protected_url":"", "default_port":2100},
-            {"id":"preview-us", "protected_url":"", "default_port":2200}
+            {"id":"preview-subscription", "protected_url":""},
+            {"id":"preview-us", "protected_url":""}
         ],
         "profiles":[
-            {"id":"preview-primary","name":"Primary tunnel","host":"vpn.example.test","port":443,"protected":"","subscription":null,"enabled":true},
-            {"id":"preview-backup","name":"Backup tunnel","host":"backup.example.test","port":443,"protected":"","subscription":"preview-subscription"},
-            {"id":"preview-us-east","name":"US East","host":"us.example.test","port":443,"protected":"","subscription":"preview-us","custom_port":2201}
+            {"id":"preview-primary","name":"Primary tunnel","host":"vpn.example.test","port":443,"protected":"","subscription":null,"enabled":true,"port_id":"default"},
+            {"id":"preview-backup","name":"Backup tunnel","host":"backup.example.test","port":443,"protected":"","subscription":"preview-subscription","port_id":"us"},
+            {"id":"preview-us-east","name":"US East","host":"us.example.test","port":443,"protected":"","subscription":"preview-us","port_id":"us"}
         ]
     })).expect("valid preview profiles");
     let settings = Rc::new(RefCell::new(settings));
@@ -30,7 +33,11 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     xray.set_version("26.10.31".into());
     xray.set_hpwnr_installed(true);
     xray.set_hpwnr_version("1.0.3".into());
-    super::xray::show_profiles(ui, &settings.borrow());
+    fn refresh(ui: &crate::MainWindow, settings: &Settings) {
+        super::xray::show_profiles(ui, settings);
+        super::xray::show_preview_ports(ui, settings, None);
+    }
+    refresh(ui, &settings.borrow());
     let model = settings.clone();
     let weak = ui.as_weak();
     xray.on_settings_edited(move || {
@@ -59,57 +66,89 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     });
     let model = settings.clone();
     let weak = ui.as_weak();
-    xray.on_activate_profile(move |id| {
+    let change_profile = Rc::new(
+        move |id: slint::SharedString, port: Option<slint::SharedString>| {
+            let Some(ui) = weak.upgrade() else { return };
+            let mut settings = model.borrow_mut();
+            let result = match port {
+                Some(port) => settings.set_profile_port(&id, &port),
+                None => settings.toggle_profile(&id),
+            };
+            match result {
+                Ok(previous) => {
+                    if let Some(previous) = previous {
+                        let selected = settings
+                            .profiles
+                            .iter()
+                            .find(|p| p.id == id.as_str())
+                            .unwrap();
+                        let port = settings.port(&selected.port_id).unwrap();
+                        super::show_toast(
+                            &ui,
+                            format!("Replaced {previous} on {}", port.name),
+                            false,
+                        );
+                    }
+                    refresh(&ui, &settings);
+                }
+                Err(error) => ui
+                    .global::<XrayModule>()
+                    .set_error(error.to_string().into()),
+            }
+        },
+    );
+    let toggle = change_profile.clone();
+    xray.on_activate_profile(move |id| toggle(id, None));
+    xray.on_assign_profile_port(move |id, port| change_profile(id, Some(port)));
+    let model = settings.clone();
+    super::xray::wire_port_editor(ui, move |ui, edit, revision| {
+        let mut settings = model.borrow_mut();
+        let result = edit.apply(&mut settings, &[]);
+        let xray = ui.global::<XrayModule>();
+        if result.is_ok() {
+            refresh(ui, &settings);
+        }
+        drop(settings);
+        xray.invoke_finish_port_edit(
+            edit.id.into(),
+            edit.number,
+            revision,
+            result
+                .err()
+                .map_or_else(String::new, |e| e.to_string())
+                .into(),
+        );
+        true
+    });
+    let model = settings.clone();
+    let weak = ui.as_weak();
+    xray.on_add_port(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut settings = model.borrow_mut();
-        match settings.toggle_profile(&id) {
-            Ok(previous) => {
-                if let Some(previous) = previous {
-                    super::show_toast(&ui, format!("Replaced {previous}"), false);
-                }
-                super::xray::show_profiles(&ui, &settings);
-            }
+        match settings.add_port(&[]) {
+            Ok(_) => refresh(&ui, &settings),
             Err(error) => ui
                 .global::<XrayModule>()
                 .set_error(error.to_string().into()),
         }
     });
     let model = settings.clone();
-    super::xray::wire_port_editor(ui, move |ui, edit, revision| {
+    let weak = ui.as_weak();
+    xray.on_remove_port(move |id| {
+        let Some(ui) = weak.upgrade() else { return };
         let mut settings = model.borrow_mut();
-        let result = edit.apply(&mut settings);
-        let xray = ui.global::<XrayModule>();
-        if matches!(result, Ok(Some(_))) {
-            super::xray::show_profiles(ui, &settings);
+        if let Err(error) = settings.remove_port(&id) {
+            super::xray::show_preview_ports(&ui, &settings, Some(&(id.into(), error.to_string())));
+        } else {
+            refresh(&ui, &settings);
         }
-        drop(settings);
-        xray.invoke_finish_port_edit(
-            edit.owner.into(),
-            edit.profile,
-            revision,
-            result
-                .err()
-                .map_or_else(String::new, |error| error.to_string())
-                .into(),
-        );
-        true
     });
     let weak = ui.as_weak();
     xray.on_remove_profile(move |id| {
         if let Some(ui) = weak.upgrade() {
             let mut settings = settings.borrow_mut();
             settings.remove_profile(&id);
-            super::xray::show_profiles(&ui, &settings);
-        }
-    });
-    let weak = ui.as_weak();
-    xray.on_copy_address(move |port| {
-        if let Some(ui) = weak.upgrade() {
-            super::show_toast(
-                &ui,
-                format!("127.0.0.1:{port} · Clipboard disabled in preview"),
-                false,
-            );
+            refresh(&ui, &settings);
         }
     });
     let weak = ui.as_weak();

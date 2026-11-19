@@ -265,7 +265,7 @@ mod ui_tests {
         let sections = [
             "Xray Dashboard",
             "Xray Profiles",
-            "Xray General",
+            "Xray Ports",
             "Xray DNS",
             "Xray Fallbacks",
             "Xray Connections",
@@ -581,37 +581,20 @@ mod ui_tests {
     }
 
     #[test]
-    fn xray_general_copies_active_ports_and_restart_is_explicit() {
+    fn xray_ports_requires_explicit_restart() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         let xray = ui.global::<XrayModule>();
         xray.set_installed(true);
         xray.set_running(true);
-        xray.set_active_ports(slint::ModelRc::new(slint::VecModel::from(vec![
-            XrayPortRow {
-                port: "2081".into(),
-                profile: "Manual node".into(),
-                status: "Listening".into(),
-                ..Default::default()
-            },
-        ])));
-        let copied = Rc::new(Cell::new(slint::SharedString::default()));
-        xray.on_copy_address({
-            let copied = copied.clone();
-            move |port| copied.set(port)
-        });
         let restarts = Rc::new(Cell::new(0));
         xray.on_restart({
             let restarts = restarts.clone();
             move || restarts.set(restarts.get() + 1)
         });
         ui.show().unwrap();
-        click(&ui, "Xray General");
-        click(&ui, "Copy address for port 2081");
-        assert_eq!(copied.take(), "2081");
-        click(&ui, "Open Profiles");
-        assert_eq!(xray.get_section(), 1);
+        click(&ui, "Xray Ports");
         assert_eq!(restarts.get(), 0);
         xray.set_pending(true);
         xray.set_settings_saving(true);
@@ -640,7 +623,7 @@ mod ui_tests {
             move || restarts.set(restarts.get() + 1)
         });
         ui.show().unwrap();
-        click(&ui, "Xray General");
+        click(&ui, "Xray Ports");
         assert!(
             ElementHandle::find_by_accessible_label(&ui, "DNS exits through")
                 .next()
@@ -661,7 +644,7 @@ mod ui_tests {
         assert!(!xray.get_dns_exit_error().is_empty());
         assert_eq!(xray.get_dns_exit_profiles().row_count(), 3);
 
-        click(&ui, "Xray General");
+        click(&ui, "Xray Ports");
         click(&ui, "Open DNS");
         assert_eq!(xray.get_section(), 3);
 
@@ -677,7 +660,7 @@ mod ui_tests {
             });
         assert!(xray.get_dns_exit_profile_id().is_empty());
         dropdown.mock_single_click(PointerEventButton::Left);
-        ElementHandle::find_by_accessible_label(&ui, "Backup tunnel · :2100")
+        ElementHandle::find_by_accessible_label(&ui, "Backup tunnel · :2082")
             .next()
             .expect("Enabled backup profile")
             .mock_single_click(PointerEventButton::Left);
@@ -714,9 +697,8 @@ mod ui_tests {
 
     #[cfg(windows)]
     #[test]
-    fn xray_ports_save_inline_and_reset_to_the_group_default() {
+    fn named_port_editor_commits_on_enter_and_blur_and_escape_restores_the_saved_name() {
         use slint::platform::{Key, WindowEvent};
-        use std::time::Duration;
 
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
@@ -724,16 +706,13 @@ mod ui_tests {
         app::preview::populate_xray(&ui);
         let xray = ui.global::<XrayModule>();
         ui.show().unwrap();
-        click(&ui, "Xray Profiles");
-        let advance = |milliseconds| {
-            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(milliseconds));
-        };
+        click(&ui, "Xray Ports");
         let field = |label: &str| {
             ElementHandle::find_by_accessible_label(&ui, label)
                 .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
                 .unwrap_or_else(|| panic!("Missing port field: {label}"))
         };
-        let replace_port = |value: &str| {
+        let replace = |value: &str| {
             let window = ui.window();
             window.dispatch_event(WindowEvent::KeyPressed {
                 text: Key::Control.into(),
@@ -744,87 +723,181 @@ mod ui_tests {
             });
             window.dispatch_event(WindowEvent::KeyPressed { text: value.into() });
         };
-        let subscription = || xray.get_subscriptions().row_data(0).unwrap();
-        let backup = || subscription().profiles.row_data(0).unwrap();
-        let profile_port = "Port for Backup tunnel";
-        let group_port = "Subscription 1 default port";
-        let reset = "Reset port to inherited default for Backup tunnel";
+        let key = |key: Key| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() })
+        };
+        let first = || xray.get_ports().row_data(0).unwrap();
+        field("Port name for Default").mock_single_click(PointerEventButton::Left);
+        replace("US");
+        assert!(
+            !xray
+                .invoke_port_draft("default".into(), false, xray.get_port_draft_revision())
+                .error
+                .is_empty()
+        );
+        key(Key::Escape);
+        assert_eq!(
+            field("Port name for Default").accessible_value().as_deref(),
+            Some("Default")
+        );
+        field("Port name for Default").mock_single_click(PointerEventButton::Left);
+        replace("Latvia");
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+        assert_eq!(first().name, "Default");
+        key(Key::Return);
+        assert_eq!(first().name, "Latvia");
+        field("Port name for Latvia").mock_single_click(PointerEventButton::Left);
+        replace("Baltic");
+        field("Port number for US").mock_single_click(PointerEventButton::Left);
+        assert_eq!(first().name, "Baltic");
+        replace("65536");
+        assert!(
+            !xray
+                .invoke_port_draft("us".into(), true, xray.get_port_draft_revision())
+                .error
+                .is_empty()
+        );
+        key(Key::Escape);
+        assert_eq!(
+            field("Port number for US").accessible_value().as_deref(),
+            Some("2082")
+        );
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let number = occupied.local_addr().unwrap().port().to_string();
+        replace(&number);
+        key(Key::Return);
+        assert_eq!(xray.get_ports().row_data(1).unwrap().number, "2082");
+        drop(occupied);
+        key(Key::Return);
+        assert_eq!(
+            xray.get_ports().row_data(1).unwrap().number.as_str(),
+            number
+        );
+        assert_eq!(first().id, "default");
+        click(&ui, "Add port");
+        let added = xray.get_ports().row_data(2).unwrap();
+        click(&ui, &format!("Remove port {}", added.name));
+        assert_eq!(xray.get_ports().row_count(), 2);
+        click(&ui, "Remove port US");
+        let us = xray.get_ports().row_data(1).unwrap();
+        assert_eq!(us.used_count, 2);
+        assert!(us.delete_error.contains("Backup tunnel"));
+        click(&ui, "Open profile Backup tunnel");
+        assert_eq!(xray.get_section(), 1);
+    }
 
-        for label in [
-            "Copy address",
-            "Copy address for Subscription 1",
-            "Copy address for Manual Profiles",
-        ] {
-            assert_eq!(
-                ElementHandle::find_by_accessible_label(&ui, label).count(),
-                0
-            );
-        }
+    #[cfg(windows)]
+    #[test]
+    fn profile_selects_a_named_port_and_disables_the_selector_when_only_default_remains() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        app::preview::populate_xray(&ui);
+        let xray = ui.global::<XrayModule>();
+        ui.show().unwrap();
+        click(&ui, "Xray Profiles");
+        let selector = || {
+            ElementHandle::find_by_accessible_label(&ui, "Port for Backup tunnel")
+                .find(|e| e.accessible_value().is_some())
+                .expect("Backup tunnel port selector")
+        };
+        assert_eq!(selector().accessible_value().as_deref(), Some("US · 2082"));
+        selector().mock_single_click(PointerEventButton::Left);
+        ElementHandle::find_by_accessible_label(&ui, "Default · 2081")
+            .next()
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
         assert_eq!(
-            field(profile_port).accessible_value().as_deref(),
-            Some("2100")
+            selector().accessible_value().as_deref(),
+            Some("Default · 2081")
         );
-        assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, reset)
-                .next()
-                .expect("Inherited port reset")
-                .accessible_enabled(),
-            Some(false)
-        );
-        field(profile_port).mock_single_click(PointerEventButton::Left);
-        replace_port("65536");
-        assert_eq!(
-            field(profile_port).accessible_value().as_deref(),
-            Some("65536")
-        );
-        assert_eq!(
-            ElementHandle::find_by_accessible_label(&ui, "Save port").count(),
-            0
-        );
-        advance(1000);
-        assert!(!backup().custom);
-        assert_eq!(backup().port, "2100");
-        assert!(!xray.get_port_save_pending());
+        xray.invoke_assign_profile_port("preview-us-east".into(), "default".into());
+        xray.invoke_remove_port("us".into());
+        assert_eq!(xray.get_ports().row_count(), 1);
+        assert_eq!(selector().accessible_enabled(), Some(false));
+        selector().mock_single_click(PointerEventButton::Left);
+        assert_ne!(selector().accessible_expanded(), Some(true));
+    }
+    #[test]
+    fn bound_profile_link_reveals_and_focuses_its_row_in_a_long_subscription() {
+        use slint::{
+            ModelRc, VecModel,
+            platform::{Key, WindowEvent},
+        };
 
-        replace_port("2101");
-        assert!(xray.get_port_save_pending());
-        advance(300);
-        replace_port("2102");
-        advance(300);
-        assert!(!backup().custom);
-        advance(500);
-        assert!(backup().custom);
-        assert_eq!(backup().port, "2102");
-        assert!(!xray.get_port_save_pending());
-
-        assert_eq!(
-            field(group_port).accessible_value().as_deref(),
-            Some("2100")
-        );
-        field(group_port).mock_single_click(PointerEventButton::Left);
-        replace_port("2110");
-        assert_eq!(subscription().port, "2100");
-        advance(1000);
-        assert_eq!(subscription().port, "2110");
-        assert_eq!(backup().port, "2102");
-        click(&ui, reset);
-        advance(1000);
-        assert!(!backup().custom);
-        assert_eq!(backup().port, "2110");
-        assert_eq!(
-            field(profile_port).accessible_value().as_deref(),
-            Some("2110")
-        );
-
-        field(group_port).mock_single_click(PointerEventButton::Left);
-        replace_port("2120");
-        click(&ui, "VLESS, HTTPS, or v2RayTun link");
-        advance(0);
-        assert_eq!(subscription().port, "2120");
-        assert_eq!(backup().port, "2120");
-        assert_eq!(
-            field(profile_port).accessible_value().as_deref(),
-            Some("2120")
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(960., 640.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        let profiles = (1..=30)
+            .map(|index| XrayProfileRow {
+                id: format!("p-{index}").into(),
+                name: format!("Server {index}").into(),
+                port_index: i32::from(index == 30),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        xray.set_subscriptions(ModelRc::new(VecModel::from(vec![XraySubscriptionGroup {
+            id: "source".into(),
+            name: "My subscription".into(),
+            profiles: ModelRc::new(VecModel::from(profiles)),
+            ..Default::default()
+        }])));
+        xray.set_port_labels(ModelRc::new(VecModel::from(vec![
+            "Default · 2081".into(),
+            "US · 2082".into(),
+        ])));
+        xray.set_ports(ModelRc::new(VecModel::from(vec![
+            XrayPortRow {
+                id: "default".into(),
+                name: "Default".into(),
+                number: "2081".into(),
+                is_default: true,
+                ..Default::default()
+            },
+            XrayPortRow {
+                id: "us".into(),
+                name: "US".into(),
+                number: "2082".into(),
+                used_count: 1,
+                users: ModelRc::new(VecModel::from(vec![XrayPortUser {
+                    id: "p-30".into(),
+                    name: "Server 30".into(),
+                }])),
+                delete_error: "Used by Server 30. Unbind it first, then delete.".into(),
+                ..Default::default()
+            },
+        ])));
+        let target_activated = Rc::new(Cell::new(false));
+        xray.on_activate_profile({
+            let target_activated = target_activated.clone();
+            move |id| target_activated.set(id == "p-30")
+        });
+        ui.set_page(6);
+        xray.set_section(1);
+        ui.show().unwrap();
+        let target = || {
+            ElementHandle::find_by_accessible_label(&ui, "Activate Server 30")
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Switch))
+                .unwrap()
+        };
+        assert!(target().absolute_position().y > 640.);
+        xray.set_section(2);
+        click(&ui, "Open profile Server 30");
+        assert_eq!(xray.get_section(), 1);
+        // Instantiate the requested row and let its deferred reveal run after layout.
+        let target = target();
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+        let y = target.absolute_position().y;
+        assert!(y >= 90. && y + target.size().height <= 640., "row y={y}");
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Space.into(),
+        });
+        assert!(
+            target_activated.get(),
+            "the revealed profile switch must own keyboard focus"
         );
     }
 

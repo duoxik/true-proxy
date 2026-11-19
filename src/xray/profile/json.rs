@@ -32,8 +32,10 @@ pub(super) fn parse_nodes(text: &str) -> Result<Vec<Node>> {
         {
             continue;
         }
+        let start = nodes.len();
         for outbound in outbounds {
             if let Ok(mut node) = parse_outbound(outbound) {
+                node.source_id = provider_id(outbound);
                 if let Some(name) = config
                     .get("remarks")
                     .or_else(|| config.get("name"))
@@ -51,12 +53,23 @@ pub(super) fn parse_nodes(text: &str) -> Result<Vec<Node>> {
                 );
             }
         }
+        if nodes.len() == start + 1 && nodes[start].source_id.is_none() {
+            nodes[start].source_id = provider_id(config);
+        }
     }
     ensure!(
         !nodes.is_empty(),
         "No independent VLESS RAW/TCP profiles with TLS or REALITY were found in the JSON subscription"
     );
     Ok(nodes)
+}
+
+fn provider_id(value: &Value) -> Option<String> {
+    match value.get("profileId").or_else(|| value.get("id"))? {
+        Value::String(id) if !id.trim().is_empty() => Some(id.clone()),
+        Value::Number(id) => Some(id.to_string()),
+        _ => None,
+    }
 }
 
 fn parse_outbound(outbound: &Value) -> Result<Node> {
@@ -207,6 +220,24 @@ mod tests {
             super::super::parse_nodes(encoded.as_bytes()).unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn provider_ids_are_scoped_to_individual_json_nodes() {
+        let mut document = config();
+        document["id"] = json!("provider-node");
+        assert_eq!(
+            parse_nodes(&document.to_string()).unwrap()[0]
+                .source_id
+                .as_deref(),
+            Some("provider-node")
+        );
+        let mut second = document["outbounds"][0].clone();
+        second["id"] = json!(2);
+        document["outbounds"].as_array_mut().unwrap().push(second);
+        let nodes = parse_nodes(&document.to_string()).unwrap();
+        assert_eq!(nodes[0].source_id, None);
+        assert_eq!(nodes[1].source_id.as_deref(), Some("2"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use super::{model, uptime};
 use crate::{
-    MainWindow, XrayConnectionRow, XrayHostRow, XrayModule, XrayPortRow, XrayProfileRow,
-    XraySubscriptionGroup,
+    MainWindow, XrayConnectionRow, XrayHostRow, XrayModule, XrayPortRow, XrayPortUser,
+    XrayProfileRow, XraySubscriptionGroup,
 };
 use anyhow::{Context, Result, ensure};
 use slint::{ComponentHandle, Model, ModelRc, SharedString};
@@ -37,6 +37,9 @@ enum Command {
     UpdateHpwnr,
     RefreshSubscription(String),
     Activate(String),
+    AssignPort(String, String),
+    AddPort,
+    RemovePort(String),
     Remove(String),
     RefreshHosts,
     SaveDraft(i32, SettingsDraft),
@@ -137,7 +140,12 @@ type GeoCatalog = (Vec<String>, Vec<String>);
 type SharedGeoCatalog = Arc<Mutex<Option<GeoCatalog>>>;
 
 fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
-    applied.dns == saved.dns
+    applied
+        .ports
+        .iter()
+        .map(|p| (&p.id, p.number))
+        .eq(saved.ports.iter().map(|p| (&p.id, p.number)))
+        && applied.dns == saved.dns
         && (applied.dns.is_empty() || applied.dns_exit_profile_id == saved.dns_exit_profile_id)
         && applied.direct_ips == saved.direct_ips
         && applied.direct_domains == saved.direct_domains
@@ -148,6 +156,7 @@ fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
                 old.id == new.id
                     && old.same_outbound(new)
                     && applied.upstream_ip(old) == saved.upstream_ip(new)
+                    && old.port_id == new.port_id
                     && applied.effective_port(old) == saved.effective_port(new)
             })
         })
@@ -181,7 +190,9 @@ struct Controller {
     runtime: Option<Runtime>,
     runtime_geo: Option<PathBuf>,
     applied: Option<Settings>,
-    failed_ports: Vec<PortInfo>,
+    failed_ports: Vec<LivePort>,
+    delete_error: Option<(String, String)>,
+    replacement: Option<String>,
     bypass: Arc<Bypass>,
     activity: Arc<Activity>,
     pending: bool,
@@ -222,6 +233,8 @@ impl Controller {
             runtime_geo: None,
             applied: None,
             failed_ports: Vec::new(),
+            delete_error: None,
+            replacement: None,
             bypass,
             activity,
             pending: false,
@@ -246,9 +259,11 @@ impl Controller {
         next.save(&self.settings_path)?;
         if let Some(applied) = &self.applied {
             self.pending = !same_runtime_settings(applied, &next) || runtime_change;
-        } else if !self.failed_ports.is_empty() && !same_runtime_settings(&self.settings, &next) {
+        }
+        if !self.failed_ports.is_empty() && !same_runtime_settings(&self.settings, &next) {
             self.failed_ports.clear();
         }
+        self.delete_error = None;
         self.settings = next;
         Ok(())
     }
@@ -339,7 +354,15 @@ impl Controller {
                 ensure!(self.runtime.is_some(), "Xray is already stopped.");
                 check_dns_exit(&self.settings)?;
                 for profile in self.settings.enabled_profiles() {
-                    self.check_port(self.settings.effective_port(profile))?;
+                    let port = self.settings.effective_port(profile);
+                    if let Err(error) = self.check_port(port) {
+                        self.failed_ports = vec![LivePort {
+                            id: profile.port_id.clone(),
+                            number: port,
+                            error: Some(format!("{error:#}")),
+                        }];
+                        return Err(error);
+                    }
                     self.settings.upstream_ip(profile).context(
                         "Refresh VPN server addresses in X-RAY → DNS before restarting Xray",
                     )?;
@@ -369,21 +392,24 @@ impl Controller {
             Command::Activate(id) => {
                 let mut next = self.settings.clone();
                 let replaced = next.toggle_profile(&id)?;
-                let profile = next
-                    .profiles
-                    .iter()
-                    .find(|p| p.id == id)
-                    .context("Profile not found")?;
-                let port = next.effective_port(profile);
-                if profile.enabled {
-                    self.check_port(port)?;
-                    if next.upstream_ip(profile).is_none() {
-                        next.resolve_hosts(std::iter::once(profile.host.clone()).collect());
-                    }
+                self.save_profile_change(next, &id, replaced)?;
+            }
+            Command::AssignPort(id, port_id) => {
+                let mut next = self.settings.clone();
+                let replaced = next.set_profile_port(&id, &port_id)?;
+                self.save_profile_change(next, &id, replaced)?;
+            }
+            Command::AddPort => {
+                let owned = self.owned_numbers();
+                self.change(false, |settings| settings.add_port(&owned).map(|_| ()))?;
+            }
+            Command::RemovePort(id) => {
+                let mut next = self.settings.clone();
+                if let Err(error) = next.remove_port(&id) {
+                    self.delete_error = Some((id, error.to_string()));
+                } else {
+                    self.save_settings(next, false)?;
                 }
-                self.save_settings(next, false)?;
-                self.status =
-                    replaced.map_or_else(String::new, |name| format!("Replaced {name} on :{port}"));
             }
             Command::Remove(id) => {
                 self.change(false, |settings| {
@@ -404,10 +430,8 @@ impl Controller {
             }
             Command::SavePort(edit, _) => {
                 let mut next = self.settings.clone();
-                if let Some(port) = edit.apply(&mut next)? {
-                    self.check_port(port)?;
-                    self.save_settings(next, false)?;
-                }
+                edit.apply(&mut next, &self.owned_numbers())?;
+                self.save_settings(next, false)?;
             }
             Command::RefreshGeo => self.refresh_geo()?,
             Command::LoadGeoTags => self.reload_geo_tags(false),
@@ -419,6 +443,46 @@ impl Controller {
                 self.activity.set_recording(record);
             }
         }
+        Ok(())
+    }
+
+    fn owned_numbers(&self) -> Vec<u16> {
+        self.applied
+            .iter()
+            .flat_map(|settings| {
+                settings
+                    .enabled_profiles()
+                    .map(|p| settings.effective_port(p))
+            })
+            .filter(|port| {
+                self.runtime
+                    .as_ref()
+                    .is_some_and(|run| run.owns_listener(*port))
+            })
+            .collect()
+    }
+
+    fn save_profile_change(
+        &mut self,
+        mut next: Settings,
+        id: &str,
+        replaced: Option<String>,
+    ) -> Result<()> {
+        let profile = next
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .context("Profile not found")?;
+        let port = next.port(&profile.port_id)?;
+        let message = replaced.map(|name| format!("Replaced {name} on {}", port.name));
+        if profile.enabled {
+            self.check_port(port.number)?;
+            if next.upstream_ip(profile).is_none() {
+                next.resolve_hosts(std::iter::once(profile.host.clone()).collect());
+            }
+        }
+        self.save_settings(next, false)?;
+        self.replacement = message;
         Ok(())
     }
 
@@ -471,7 +535,7 @@ impl Controller {
         }
         check_dns_exit(&self.settings)?;
         if let Err(error) = self.start() {
-            self.failed_ports = port_rows(&self.settings, "Error");
+            self.failed_ports = live_ports(&self.settings, Some(format!("{error:#}")));
             return Err(self.remember_failure(error));
         }
         if let Err(error) = self.remember_enabled(true) {
@@ -517,6 +581,7 @@ impl Controller {
                     )
                 })?;
                 Ok(runtime::Listener {
+                    port_id: profile.port_id.clone(),
                     profile_id: profile.id.clone(),
                     port: self.settings.effective_port(profile),
                     upstream: profile.host.clone(),
@@ -586,16 +651,16 @@ impl Controller {
             match runtime.running() {
                 Ok(true) => {}
                 result => {
-                    let failed = self
-                        .applied
-                        .as_ref()
-                        .map(|settings| port_rows(settings, "Error"))
-                        .unwrap_or_default();
-                    self.stop();
-                    self.failed_ports = failed;
                     let error = result.err().unwrap_or_else(|| {
                         anyhow::anyhow!("Xray exited unexpectedly. Check Logs for details.")
                     });
+                    let failed = self
+                        .applied
+                        .as_ref()
+                        .map(|settings| live_ports(settings, Some(format!("{error:#}"))))
+                        .unwrap_or_default();
+                    self.stop();
+                    self.failed_ports = failed;
                     return Some(self.remember_failure(error).to_string());
                 }
             }
@@ -625,48 +690,129 @@ fn newer(latest: &str, installed: &str) -> bool {
 }
 
 #[derive(Clone)]
-struct PortInfo {
-    port: u16,
-    profile: String,
-    source: String,
-    status: &'static str,
+struct LivePort {
+    id: String,
+    number: u16,
+    error: Option<String>,
 }
 
-fn port_rows(settings: &Settings, status: &'static str) -> Vec<PortInfo> {
-    let sources: BTreeMap<_, _> = settings
-        .subscription_ids()
-        .enumerate()
-        .map(|(index, id)| (id, format!("Subscription {}", index + 1)))
-        .collect();
-    let mut rows: Vec<_> = settings
+fn live_ports(settings: &Settings, error: Option<String>) -> Vec<LivePort> {
+    settings
         .enabled_profiles()
-        .map(|profile| PortInfo {
-            port: settings.effective_port(profile),
-            profile: profile.name.clone(),
-            source: profile
-                .subscription
-                .as_deref()
-                .and_then(|id| sources.get(id))
-                .cloned()
-                .unwrap_or_else(|| "Manual profiles".into()),
-            status,
+        .map(|profile| LivePort {
+            id: profile.port_id.clone(),
+            number: settings.effective_port(profile),
+            error: error.clone(),
         })
-        .collect();
-    rows.sort_by_key(|row| row.port);
-    rows
+        .collect()
 }
 
-fn show_ports(ui: &MainWindow, rows: &[PortInfo]) {
-    ui.global::<XrayModule>().set_active_ports(model(
-        rows.iter()
-            .map(|row| XrayPortRow {
-                port: row.port.to_string().into(),
-                profile: row.profile.as_str().into(),
-                source: row.source.as_str().into(),
-                status: row.status.into(),
-            })
-            .collect(),
-    ));
+fn show_ports(
+    ui: &MainWindow,
+    settings: &Settings,
+    live: &[LivePort],
+    delete_error: Option<&(String, String)>,
+    next_free: Option<u16>,
+) {
+    let xray = ui.global::<XrayModule>();
+    let mut labels = Vec::new();
+    let mut rows = Vec::new();
+    let listening: Vec<_> = live
+        .iter()
+        .filter(|p| p.error.is_none())
+        .map(|p| i32::from(p.number))
+        .collect();
+    let summary = match listening.as_slice() {
+        [] => "No ports listening".into(),
+        [number] => format!("127.0.0.1:{number}"),
+        ports => format!("{} ports listening", ports.len()),
+    };
+    xray.set_listener_summary(summary.into());
+    xray.set_listening_numbers(model(listening));
+    for port in &settings.ports {
+        labels.push(format!("{} · {}", port.name, port.number).into());
+        let mut users = Vec::new();
+        let mut used_count = 0;
+        let mut enabled = false;
+        for profile in settings.profiles.iter().filter(|p| p.port_id == port.id) {
+            used_count += 1;
+            enabled |= profile.enabled;
+            if users.len() < 3 {
+                users.push(XrayPortUser {
+                    id: profile.id.as_str().into(),
+                    name: profile.name.as_str().into(),
+                });
+            }
+        }
+        let running = live.iter().find(|p| p.error.is_none() && p.id == port.id);
+        let failure = live
+            .iter()
+            .find(|p| p.id == port.id && p.number == port.number && p.error.is_some());
+        let (status, detail) = if let Some(reason) = failure.and_then(|p| p.error.as_deref()) {
+            ("Error", reason.to_owned())
+        } else if let Some(actual) = running {
+            if actual.number == port.number {
+                (
+                    "Listening",
+                    if enabled {
+                        String::new()
+                    } else {
+                        "Will stop on restart.".into()
+                    },
+                )
+            } else {
+                (
+                    "Idle",
+                    format!("Listening on {} until restart.", actual.number),
+                )
+            }
+        } else {
+            (
+                "Idle",
+                if enabled {
+                    "The selected profile has not started on this port.".into()
+                } else {
+                    String::new()
+                },
+            )
+        };
+        rows.push(XrayPortRow {
+            id: port.id.as_str().into(),
+            name: port.name.as_str().into(),
+            number: port.number.to_string().into(),
+            is_default: port.is_default,
+            status: status.into(),
+            status_detail: detail.into(),
+            used_count,
+            users: model(users),
+            delete_error: delete_error
+                .filter(|(id, _)| id == &port.id)
+                .map_or("", |(_, err)| err.as_str())
+                .into(),
+        });
+    }
+    xray.set_ports(update_rows(xray.get_ports(), rows, |a, b| a.id == b.id));
+    xray.set_port_labels(model(labels));
+    xray.set_next_free_port(
+        next_free
+            .map_or_else(|| "unavailable".into(), |number| number.to_string())
+            .into(),
+    );
+    xray.invoke_port_owners_changed();
+}
+
+pub(super) fn show_preview_ports(
+    ui: &MainWindow,
+    settings: &Settings,
+    delete_error: Option<&(String, String)>,
+) {
+    show_ports(
+        ui,
+        settings,
+        &[],
+        delete_error,
+        settings.next_free_port(&[]).ok(),
+    );
 }
 
 struct View {
@@ -675,7 +821,9 @@ struct View {
     latest: String,
     status: String,
     pending: bool,
-    ports: Vec<PortInfo>,
+    ports: Vec<LivePort>,
+    delete_error: Option<(String, String)>,
+    next_free: Option<u16>,
     geo_status: String,
     started: Option<std::time::Instant>,
     hpwnr_installed: bool,
@@ -698,10 +846,19 @@ impl View {
                 .map_or_else(String::new, |release| release.version.clone()),
             status: controller.status.clone(),
             pending: controller.pending,
-            ports: controller.applied.as_ref().map_or_else(
-                || controller.failed_ports.clone(),
-                |settings| port_rows(settings, "Listening"),
-            ),
+            ports: controller
+                .applied
+                .iter()
+                .flat_map(|settings| live_ports(settings, None))
+                .chain(controller.failed_ports.iter().cloned())
+                .collect(),
+            delete_error: controller.delete_error.clone(),
+            next_free: controller.installed.as_ref().and_then(|_| {
+                controller
+                    .settings
+                    .next_free_port(&controller.owned_numbers())
+                    .ok()
+            }),
             geo_status: controller.geo_status.clone(),
             started: controller.runtime.as_ref().map(Runtime::started_at),
             hpwnr_installed: controller.hpwnr_installed.is_some(),
@@ -729,7 +886,13 @@ impl View {
         xray.set_running(self.started.is_some());
         xray.set_status(self.status.into());
         xray.set_pending(self.pending);
-        show_ports(ui, &self.ports);
+        show_ports(
+            ui,
+            &self.settings,
+            &self.ports,
+            self.delete_error.as_ref(),
+            self.next_free,
+        );
         xray.set_geo_status(self.geo_status.into());
         xray.set_hosts(model(
             self.settings
@@ -756,7 +919,7 @@ impl View {
 
 pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
     let xray = ui.global::<XrayModule>();
-    xray.set_manual_port(settings.default_port(None).to_string().into());
+
     xray.set_enabled_count(settings.enabled_profiles().count() as i32);
     let mut manual = Vec::new();
     let mut groups = BTreeMap::<&str, Vec<XrayProfileRow>>::new();
@@ -764,8 +927,11 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
     for profile in &settings.profiles {
         let row = XrayProfileRow {
             active: profile.enabled,
-            port: settings.effective_port(profile).to_string().into(),
-            custom: profile.custom_port.is_some(),
+            port_index: settings
+                .ports
+                .iter()
+                .position(|port| port.id == profile.port_id)
+                .expect("validated port binding") as i32,
             id: profile.id.as_str().into(),
             name: profile.name.as_str().into(),
             summary: format!("VLESS · {}:{}", profile.host, profile.port).into(),
@@ -792,7 +958,6 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
             XraySubscriptionGroup {
                 id: id.into(),
                 name: format!("Subscription {}", index + 1).into(),
-                port: settings.default_port(Some(id)).to_string().into(),
                 active_removed: settings.active_profile_removed(Some(id)),
                 profiles: update_rows(
                     previous.map_or_else(ModelRc::default, |group| group.profiles),
@@ -803,7 +968,6 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
         })
         .collect();
     xray.set_subscriptions(update_rows(old_groups, subscriptions, |a, b| a.id == b.id));
-    xray.invoke_port_owners_changed();
     let mut names = vec!["Not selected".into()];
     let mut ids = vec![SharedString::default()];
     for profile in settings.enabled_profiles() {
@@ -929,22 +1093,12 @@ fn spawn_worker(
     thread::Builder::new()
         .name("xray-module".into())
         .spawn(move || {
-            let announce_start = |settings: &Settings| {
-                let rows = port_rows(settings, "Starting");
-                let weak = weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = weak.upgrade() {
-                        show_ports(&ui, &rows);
-                    }
-                });
-            };
             let (migrated, migration_error) = match controller.refresh_hosts(false) {
                 Ok((changed, _)) => (changed, None),
                 Err(error) => (false, Some(error)),
             };
             let restoring = on_restored.is_some();
             let error = if restoring {
-                announce_start(&controller.settings);
                 controller.set_running(true).err().or(migration_error)
             } else {
                 migration_error
@@ -979,16 +1133,9 @@ fn spawn_worker(
                 let (result, command_done, manages_core, hpwnr, revision, port_edit) =
                     match receiver.recv_timeout(interval) {
                         Ok(command) => {
-                            if (matches!(command, Command::Restart)
-                                || matches!(command, Command::Toggle)
-                                    && controller.runtime.is_none())
-                                && controller.settings.dns_exit_error().is_none()
-                            {
-                                announce_start(&controller.settings);
-                            }
                             let port_edit = match &command {
                                 Command::SavePort(edit, revision) => {
-                                    Some((edit.owner.clone(), edit.profile, *revision))
+                                    Some((edit.id.clone(), edit.number, *revision))
                                 }
                                 _ => None,
                             };
@@ -1033,12 +1180,16 @@ fn spawn_worker(
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
                 if let Some(error) = result {
+                    let replacement = controller.replacement.take();
                     let view = View::new(&controller);
                     *started.lock().unwrap() = view.started;
                     let weak = weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = weak.upgrade() {
                             view.apply(&ui, command_done);
+                            if let Some(message) = replacement {
+                                super::show_toast(&ui, message, false);
+                            }
                             let xray = ui.global::<XrayModule>();
                             let port_done = port_edit.is_some();
                             if let Some((owner, profile, revision)) = port_edit {
@@ -1203,20 +1354,11 @@ pub(super) fn wire(
     );
     bind!(on_activate_profile, Command::Activate, string);
     bind!(on_remove_profile, Command::Remove, string);
-    let weak = ui.as_weak();
-    xray.on_copy_address(move |port| {
-        if let Some(ui) = weak.upgrade()
-            && let Ok(port) = port.parse::<u16>()
-        {
-            let address = format!("127.0.0.1:{port}");
-            let result = super::appearance::native_handle(&ui).and_then(|handle| {
-                true_proxy::platform::windows::clipboard::copy(handle as usize, &address)
-            });
-            match result {
-                Ok(()) => super::show_toast(&ui, format!("Copied {address}"), false),
-                Err(err) => super::show_toast(&ui, err.to_string(), true),
-            }
-        }
+    bind!(on_add_port, Command::AddPort);
+    bind!(on_remove_port, Command::RemovePort, string);
+    let assign = send.clone();
+    xray.on_assign_profile_port(move |id, port_id| {
+        assign(Command::AssignPort(id.into(), port_id.into()))
     });
     xray.on_set_log_recording(move |record| send(Command::Record(record)));
     let weak = ui.as_weak();
@@ -1591,10 +1733,8 @@ mod tests {
         }
         let first = controller.settings.profiles[0].id.clone();
         let second = controller.settings.profiles[1].id.clone();
-        controller
-            .settings
-            .set_custom_port(&second, Some(2201))
-            .unwrap();
+        let us = controller.settings.add_port(&[]).unwrap();
+        controller.settings.set_profile_port(&second, &us).unwrap();
         controller.settings.toggle_profile(&second).unwrap();
         controller.settings.dns.push("1.1.1.1".into());
         set_dns_exit(&mut controller.settings, first.clone()).unwrap();
@@ -1627,36 +1767,47 @@ mod tests {
             )).unwrap();
         }
         let second = controller.settings.profiles[1].id.clone();
-        let first_port = controller.settings.default_port(None);
+        let first_port = controller.settings.default_port().clone();
+        controller.perform(Command::AddPort).unwrap();
         controller.applied = Some(controller.settings.clone());
         controller
             .perform(Command::Activate(second.clone()))
             .unwrap();
         assert!(controller.pending);
         assert_eq!(
-            controller.status,
-            format!("Replaced First on :{first_port}")
+            controller.replacement.as_deref(),
+            Some("Replaced First on Default")
         );
-        assert_eq!(View::new(&controller).ports[0].profile, "First");
+        let snapshot = View::new(&controller);
+        assert_eq!(
+            snapshot.ports.len(),
+            1,
+            "Idle ports must have no live listener"
+        );
+        assert_eq!(snapshot.ports[0].id, first_port.id);
+        assert_eq!(snapshot.ports[0].number, first_port.number);
         let saved = Settings::load(&controller.settings_path).unwrap();
-        assert_eq!(port_rows(&saved, "Starting")[0].profile, "Second");
+        assert_eq!(saved.enabled_profiles().next().unwrap().id, second);
         let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = occupied.local_addr().unwrap().port();
         assert!(
             controller
                 .perform(Command::SavePort(
                     PortEdit {
-                        owner: second,
-                        profile: true,
-                        value: port.to_string(),
+                        id: first_port.id.clone(),
+                        number: true,
+                        value: port.to_string()
                     },
                     0
                 ))
                 .is_err()
         );
         assert_eq!(
-            Settings::load(&controller.settings_path).unwrap().profiles[1].custom_port,
-            None
+            Settings::load(&controller.settings_path)
+                .unwrap()
+                .default_port()
+                .number,
+            first_port.number
         );
         drop(occupied);
         std::fs::remove_dir_all(directory).unwrap();

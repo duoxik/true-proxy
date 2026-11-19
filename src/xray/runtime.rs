@@ -31,6 +31,7 @@ const DNS_TUNNEL: &str = "vless-dns";
 const DIRECT: &str = "direct";
 
 pub struct Listener {
+    pub port_id: String,
     pub profile_id: String,
     pub port: u16,
     pub upstream: String,
@@ -423,7 +424,8 @@ fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
     );
     let has_direct = !settings.direct_domains.is_empty() || !settings.direct_ips.is_empty();
     let mut ports = BTreeSet::new();
-    let mut ids = BTreeSet::new();
+    let mut port_ids = BTreeSet::new();
+    let mut profile_ids = BTreeSet::new();
     let mut inbounds = Vec::new();
     let mut outbounds = Vec::new();
     let mut profile_routes = Vec::new();
@@ -436,10 +438,14 @@ fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
             listener.port
         );
         ensure!(
-            !listener.profile_id.is_empty() && ids.insert(&listener.profile_id),
+            !listener.profile_id.is_empty() && profile_ids.insert(&listener.profile_id),
             "Missing or duplicate enabled profile ID"
         );
-        let tag = format!("in-{}", listener.profile_id);
+        ensure!(
+            !listener.port_id.is_empty() && port_ids.insert(&listener.port_id),
+            "Missing or duplicate enabled port ID"
+        );
+        let tag = format!("in-{}", listener.port_id);
         let mut inbound = json!({
             "tag": tag,
             "listen": "127.0.0.1",
@@ -762,6 +768,7 @@ mod tests {
         let outbound = profile.outbound().unwrap();
         let address: SocketAddr = "192.0.2.1:443".parse().unwrap();
         let listeners = [Listener {
+            port_id: "default".into(),
             profile_id: profile.id.clone(),
             port: 2081,
             upstream: profile.host.clone(),
@@ -806,6 +813,7 @@ mod tests {
             },
         });
         let mut listener = Listener {
+            port_id: "default".into(),
             profile_id: "node".into(),
             port: 2081,
             upstream: "node.example".into(),
@@ -851,7 +859,8 @@ mod tests {
 
     #[test]
     fn independent_ports_generate_independent_routes_and_redact_all_credentials() {
-        let listener = |id: &str, port, upstream: &str| Listener {
+        let listener = |id: &str, port_id: &str, port, upstream: &str| Listener {
+            port_id: port_id.into(),
             profile_id: id.into(),
             port,
             upstream: upstream.into(),
@@ -864,8 +873,8 @@ mod tests {
             }),
         };
         let listeners = [
-            listener("us", 2200, "192.0.2.4"),
-            listener("lv", 2100, "192.0.2.3"),
+            listener("us", "port-2", 2200, "192.0.2.4"),
+            listener("lv", "default", 2100, "192.0.2.3"),
         ];
         let settings = Settings {
             listeners: &listeners,
@@ -889,7 +898,7 @@ mod tests {
             assert_eq!(outbound["settings"]["address"], listener.upstream);
             assert_eq!(
                 rule["inboundTag"],
-                json!([format!("in-{}", listener.profile_id)])
+                json!([format!("in-{}", listener.port_id)])
             );
             assert_eq!(rule["inboundTag"][0], inbound["tag"]);
             assert_eq!(rule["outboundTag"], format!("out-{}", listener.profile_id));
@@ -918,9 +927,29 @@ mod tests {
         let rules = config["routing"]["rules"].as_array().unwrap();
         assert_eq!(rules[0]["outboundTag"], DNS_TUNNEL);
         assert_eq!(rules[1]["outboundTag"], DIRECT);
-        assert_eq!(rules[1]["inboundTag"], json!(["in-us", "in-lv"]));
+        assert_eq!(rules[1]["inboundTag"], json!(["in-port-2", "in-default"]));
         assert_eq!(rules[2]["outboundTag"], "out-us");
         assert_eq!(rules[3]["outboundTag"], "out-lv");
+
+        let replacement = [
+            listener("new-us", "port-2", 2200, "192.0.2.5"),
+            listener("lv", "default", 2100, "192.0.2.3"),
+        ];
+        let plain_settings = Settings {
+            listeners: &replacement,
+            dns_servers: &[],
+            direct_domains: &[],
+            dns_exit_profile_id: None,
+            ..settings
+        };
+        let (switched, _) = configuration(&plain_settings).unwrap();
+        assert_eq!(switched["inbounds"][0]["tag"], "in-port-2");
+        assert_eq!(switched["routing"]["rules"][0]["outboundTag"], "out-new-us");
+        assert_eq!(
+            switched["routing"]["rules"][1]["inboundTag"],
+            json!(["in-default"])
+        );
+        assert_eq!(switched["routing"]["rules"][1]["outboundTag"], "out-lv");
     }
 
     #[test]
@@ -1030,7 +1059,7 @@ mod tests {
     fn native_xray_opens_owned_loopback_socks_and_stops() {
         use std::{
             io::{Read, Write},
-            net::{Ipv4Addr, TcpListener, TcpStream},
+            net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
             thread,
         };
 
@@ -1049,7 +1078,7 @@ mod tests {
             .each_ref()
             .map(|socket| socket.local_addr().unwrap().port());
         ports.sort_unstable();
-        let servers = [reserve(), reserve()];
+        let servers = [reserve(), reserve(), reserve()];
         for server in &servers {
             server.set_nonblocking(true).unwrap();
         }
@@ -1064,7 +1093,8 @@ mod tests {
                 "tlsSettings": {"serverName": "localhost"}
             },
         });
-        let listeners = [0, 1].map(|index| Listener {
+        let mut listeners = [0, 1].map(|index| Listener {
+            port_id: format!("port-{index}"),
             profile_id: format!("local-{index}"),
             port: ports[index],
             upstream: "localhost".into(),
@@ -1126,9 +1156,23 @@ mod tests {
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
                         let mut header = [0; 1];
-                        (&socket).read_exact(&mut header).unwrap();
-                        assert_eq!(header, [0x16], "expected a TLS handshake");
-                        return socket;
+                        match (&socket).read_exact(&mut header) {
+                            Ok(()) => {
+                                assert_eq!(header, [0x16], "expected a TLS handshake");
+                                return socket;
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof
+                                ) && Instant::now() < deadline =>
+                            {
+                                continue;
+                            }
+                            Err(error) => {
+                                panic!("expected TLS on {:?}: {error}", server.local_addr())
+                            }
+                        }
                     }
                     Err(error)
                         if error.kind() == io::ErrorKind::WouldBlock
@@ -1140,16 +1184,18 @@ mod tests {
                 }
             }
         };
-        let connections = [0, 1].map(|index| {
-            let port = ports[index];
-            assert!(runtime.owns_listener(port));
+        let connect_tcp = |port, server: &TcpListener| {
             let mut socks = open_socks(port);
             socks
                 .write_all(&[5, 1, 0, 1, 192, 0, 2, 9, 1, 187])
                 .unwrap();
             socks.write_all(b"test payload").unwrap();
             // Leave the handshake pending so retries cannot satisfy the DNS assertion.
-            (socks, accept_tls(&servers[index]))
+            (socks, accept_tls(server))
+        };
+        let connections = [0, 1].map(|index| {
+            assert!(runtime.owns_listener(ports[index]));
+            connect_tcp(ports[index], &servers[index])
         });
         let until = Instant::now() + Duration::from_secs(2);
         while activity.stats().accepted < 2 && Instant::now() < until {
@@ -1193,11 +1239,76 @@ mod tests {
 
         runtime.stop();
         drop((connections, socks, dns_socket));
+        // A and AAAA queries can each have an upstream socket. Drop any
+        // queued sockets from the stopped generation before testing the next.
+        for server in &servers {
+            loop {
+                match server.accept() {
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("could not drain the stopped upstream: {error}"),
+                }
+            }
+        }
         assert!(!runtime.running().unwrap());
         assert_eq!(bypass.generation(), 0);
         for port in ports {
             assert!(!runtime.owns_listener(port));
             assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok());
+        }
+
+        // Change just the profile behind the first named port. The same two
+        // client endpoints now reach the replacement and the untouched peer.
+        listeners[0].profile_id = "replacement".into();
+        listeners[0].upstream_port = servers[2].local_addr().unwrap().port();
+        let restarted_settings = || Settings {
+            listeners: &listeners,
+            dns_servers: &[],
+            dns_exit_profile_id: None,
+            direct_domains: &[],
+            direct_ips: &[],
+            geo_directory: installed.executable.parent().unwrap(),
+        };
+        let occupied = UdpSocket::bind((Ipv4Addr::LOCALHOST, ports[0])).unwrap();
+        let error = Runtime::start(
+            &installed,
+            restarted_settings(),
+            bypass.clone(),
+            activity.clone(),
+        )
+        .err()
+        .expect("a UDP port owned by another program must prevent startup");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("UDP port {}", ports[0]))
+        );
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, ports[1])).is_ok());
+        drop(occupied);
+
+        let mut runtime =
+            Runtime::start(&installed, restarted_settings(), bypass, activity).unwrap();
+        let tcp = connect_tcp(ports[0], &servers[2]);
+        let mut control = open_socks(ports[1]);
+        control.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+        let mut reply = [0; 10];
+        control.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[..8], [5, 0, 0, 1, 127, 0, 0, 1]);
+        let relay = (
+            Ipv4Addr::LOCALHOST,
+            u16::from_be_bytes([reply[8], reply[9]]),
+        );
+        let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        udp.send_to(&[0, 0, 0, 1, 192, 0, 2, 8, 0, 80, 1], relay)
+            .unwrap();
+        let udp_upstream = accept_tls(&servers[1]);
+        assert!(
+            matches!(servers[0].accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        runtime.stop();
+        drop((tcp, control, udp_upstream));
+        for port in ports {
+            check_listener_port(port).unwrap();
         }
     }
 }

@@ -17,7 +17,9 @@ use std::{
 use url::Url;
 
 mod json;
+mod migration;
 mod ports;
+pub use ports::Port;
 
 const MAX_PROFILES: usize = 128;
 const MAX_IMPORT: usize = 1024 * 1024;
@@ -35,8 +37,9 @@ pub struct Profile {
     pub subscription: Option<String>,
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
-    pub custom_port: Option<u16>,
+    pub port_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    protected_source_id: Option<String>,
 }
 
 impl Profile {
@@ -56,8 +59,6 @@ struct Subscription {
     id: String,
     protected_url: String,
     #[serde(default)]
-    default_port: u16,
-    #[serde(default)]
     active_profile_removed: bool,
 }
 
@@ -65,13 +66,9 @@ struct Subscription {
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub enabled: bool,
-    manual_default_port: u16,
+    pub ports: Vec<Port>,
     #[serde(skip_serializing_if = "Option::is_none")]
     grandfathered_port: Option<u16>,
-    #[serde(rename = "socks_port", skip_serializing)]
-    legacy_port: Option<u16>,
-    #[serde(rename = "active", skip_serializing)]
-    legacy_active: Option<String>,
     pub profiles: Vec<Profile>,
     subscriptions: Vec<Subscription>,
     pub dns: Vec<String>,
@@ -91,10 +88,8 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled: false,
-            manual_default_port: 2081,
+            ports: vec![Port::default()],
             grandfathered_port: None,
-            legacy_port: None,
-            legacy_active: None,
             profiles: Vec::new(),
             subscriptions: Vec::new(),
             dns: Vec::new(),
@@ -115,12 +110,7 @@ impl Settings {
     pub fn load(path: &Path) -> Result<Self> {
         let file = match File::open(path) {
             Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(Self {
-                    manual_default_port: ports::next_port(&BTreeSet::new())?,
-                    ..Self::default()
-                });
-            }
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
             Err(error) => return Err(error.into()),
         };
         let mut bytes = Vec::new();
@@ -129,13 +119,15 @@ impl Settings {
             bytes.len() as u64 <= MAX_SETTINGS,
             "Xray settings exceed 2 MiB"
         );
-        let mut settings: Self = serde_json::from_slice(&bytes).context("Invalid Xray settings")?;
-        if let Some(port) = settings.legacy_port.take() {
-            settings.migrate_ports(port)?;
+        let mut document: Value =
+            serde_json::from_slice(&bytes).context("Invalid Xray settings")?;
+        let migrated = migration::upgrade_ports(&mut document)?;
+        let settings: Self = serde_json::from_value(document).context("Invalid Xray settings")?;
+        if migrated {
             settings.save(path)?;
-            return Ok(settings);
+        } else {
+            settings.validate()?;
         }
-        settings.validate()?;
         Ok(settings)
     }
 
@@ -264,12 +256,10 @@ impl Settings {
             ensure!(!nodes.is_empty(), "The subscription contains no profiles");
             let id = new_id();
             let protected_url = crate::platform::windows::protect_secret(url.as_str())?;
-            let default_port = ports::next_port(&self.reserved_ports())?;
             let domains = self.merge_nodes(nodes, Some(&id))?;
             self.subscriptions.push(Subscription {
                 id,
                 protected_url,
-                default_port,
                 active_profile_removed: false,
             });
             Ok(domains)
@@ -311,6 +301,12 @@ impl Settings {
         nodes: Vec<Node>,
         subscription: Option<&str>,
     ) -> Result<BTreeSet<String>> {
+        struct SavedNode<'a> {
+            profile: &'a Profile,
+            source_id: Option<String>,
+            endpoint: (String, u16, String),
+            outbound: String,
+        }
         let select_first = self.profiles.is_empty() && self.subscriptions.is_empty();
         let domains = nodes
             .iter()
@@ -327,8 +323,7 @@ impl Settings {
                     .to_ascii_lowercase(),
             )
         };
-        let mut existing = BTreeMap::new();
-        let mut by_endpoint = BTreeMap::new();
+        let mut existing = Vec::new();
         for profile in self
             .profiles
             .iter()
@@ -336,48 +331,97 @@ impl Settings {
         {
             let outbound = profile.outbound()?;
             let key = endpoint(&profile.host, profile.port, &outbound);
-            by_endpoint
-                .entry(key)
-                .and_modify(|unique| *unique = None)
-                .or_insert(Some(profile));
-            existing.insert(serde_json::to_string(&outbound)?, profile);
+            let source_id = profile
+                .protected_source_id
+                .as_deref()
+                .map(crate::platform::unprotect)
+                .transpose()?;
+            existing.push(SavedNode {
+                profile,
+                source_id,
+                endpoint: key,
+                outbound: serde_json::to_string(&outbound)?,
+            });
         }
         let mut seen = HashSet::new();
         let mut candidates = Vec::new();
         let mut incoming = BTreeMap::new();
-        for node in nodes {
+        let mut source_ids = HashSet::new();
+        for mut node in nodes {
+            if subscription.is_none() {
+                node.source_id = None;
+            }
             let serialized = serde_json::to_string(&node.outbound)?;
-            if seen.insert(serialized.clone()) {
+            if seen.insert((node.source_id.clone(), serialized.clone())) {
+                if let Some(id) = &node.source_id {
+                    ensure!(
+                        source_ids.insert(id.clone()),
+                        "Duplicate provider profile ID in the subscription"
+                    );
+                }
                 let key = endpoint(&node.host, node.port, &node.outbound);
                 *incoming.entry(key.clone()).or_insert(0usize) += 1;
                 candidates.push((node, serialized, key));
             }
         }
+        let default_port_id = &self.default_port().id;
         let mut replaced = Vec::new();
         for (node, serialized, key) in candidates {
-            let exact = existing.get(&serialized).copied();
-            if subscription.is_none() && exact.is_some() {
+            if subscription.is_none() && existing.iter().any(|saved| saved.outbound == serialized) {
                 continue;
             }
-            let same = exact.or_else(|| {
-                if subscription.is_some() && incoming.get(&key) == Some(&1) {
-                    by_endpoint.get(&key).copied().flatten()
-                } else {
-                    None
-                }
+            let by_provider = node.source_id.as_ref().and_then(|id| {
+                existing
+                    .iter()
+                    .find(|saved| saved.source_id.as_ref() == Some(id))
             });
+            // Exact settings disambiguate TLS variants sharing a host, port and UUID.
+            // A new provider ID can adopt a unique legacy endpoint on its first refresh.
+            let compatible = existing.iter().filter(|saved| {
+                saved.endpoint == key
+                    && match (&node.source_id, &saved.source_id) {
+                        (None, Some(id)) => !source_ids.contains(id),
+                        (Some(_), Some(_)) => false,
+                        (Some(_), None) => incoming.get(&key) == Some(&1),
+                        (None, None) => true,
+                    }
+            });
+            let same = by_provider.or_else(|| {
+                subscription?;
+                let mut exact = compatible
+                    .clone()
+                    .filter(|saved| saved.outbound == serialized);
+                let first = exact.next();
+                if first.is_some() && exact.next().is_none() {
+                    return first;
+                }
+                let mut matches = compatible;
+                let first = matches.next()?;
+                (incoming.get(&key) == Some(&1) && matches.next().is_none()).then_some(first)
+            });
+            let protected_source_id = match (&node.source_id, same) {
+                (Some(id), Some(saved)) if saved.source_id.as_ref() == Some(id) => {
+                    saved.profile.protected_source_id.clone()
+                }
+                (Some(id), _) => Some(crate::platform::windows::protect_secret(id)?),
+                // A provider may temporarily omit its identifier. Keep the last
+                // confirmed one when the endpoint still identifies this profile.
+                (None, saved) => saved.and_then(|node| node.profile.protected_source_id.clone()),
+            };
+            let saved = same.map(|node| node.profile);
             replaced.push(Profile {
-                id: same.map_or_else(new_id, |profile| profile.id.clone()),
+                id: saved.map_or_else(new_id, |profile| profile.id.clone()),
                 name: node.name,
                 host: node.host,
                 port: node.port,
-                protected: match exact {
-                    Some(profile) => profile.protected.clone(),
-                    None => crate::platform::windows::protect_secret(&serialized)?,
+                protected: match same {
+                    Some(saved) if saved.outbound == serialized => saved.profile.protected.clone(),
+                    _ => crate::platform::windows::protect_secret(&serialized)?,
                 },
                 subscription: subscription.map(str::to_owned),
-                enabled: same.is_some_and(|profile| profile.enabled),
-                custom_port: same.and_then(|profile| profile.custom_port),
+                enabled: saved.is_some_and(|profile| profile.enabled),
+                port_id: saved.map_or(default_port_id, |p| &p.port_id).clone(),
+                protected_source_id,
             });
         }
         let retained = self
@@ -693,6 +737,7 @@ fn unwrap_v2raytun(input: &str) -> Result<Cow<'_, str>> {
 }
 
 struct Node {
+    source_id: Option<String>,
     name: String,
     host: String,
     port: u16,
@@ -926,6 +971,10 @@ fn parse_node(line: &str) -> Result<Node> {
         bail!("Invalid VLESS server address");
     }
     Ok(Node {
+        source_id: query
+            .get("profileId")
+            .filter(|id| !id.trim().is_empty())
+            .cloned(),
         name: if name.is_empty() { host.clone() } else { name },
         host: host.clone(),
         port,
@@ -1047,7 +1096,7 @@ mod tests {
         let serialized = serde_json::to_string(&settings).unwrap();
         assert!(!serialized.contains("00000000-0000-4000-8000-000000000001"));
         let restored: Settings = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(restored.default_port(None), 2081);
+        assert_eq!(restored.default_port().number, 2081);
         assert_eq!(
             restored.selected().unwrap().outbound().unwrap()["settings"]["address"],
             "vpn.example.test"
@@ -1058,14 +1107,13 @@ mod tests {
         );
     }
 
-    fn add_source(settings: &mut Settings, id: &str, default_port: u16, body: &str) {
+    fn add_source(settings: &mut Settings, id: &str, body: &str) {
         settings
             .merge_nodes(parse_nodes(body.as_bytes()).unwrap(), Some(id))
             .unwrap();
         settings.subscriptions.push(Subscription {
             id: id.to_owned(),
             protected_url: String::new(),
-            default_port,
             active_profile_removed: false,
         });
     }
@@ -1074,7 +1122,7 @@ mod tests {
     fn custom_dns_never_inherits_a_replacement_profile() {
         let mut settings = Settings::default();
         let replacement = NODE.replace("vpn.example.test", "us.example.test");
-        add_source(&mut settings, "A", 2100, &format!("{NODE}\n{replacement}"));
+        add_source(&mut settings, "A", &format!("{NODE}\n{replacement}"));
         let original = settings.selected().unwrap().id.clone();
         settings.dns = vec!["192.0.2.53".into()];
         assert!(settings.dns_exit_error().is_some());
@@ -1099,43 +1147,52 @@ mod tests {
     }
 
     #[test]
-    fn two_groups_inherit_ports_and_switch_only_the_conflicting_profile() {
+    fn toggling_and_rebinding_replace_only_the_active_profile_on_the_same_port() {
         let mut settings = Settings::default();
         let second_node = NODE
             .replace("vpn.example.test", "us.example.test")
             .replace("#Demo", "#USA");
-        add_source(&mut settings, "A", 2100, &format!("{NODE}\n{second_node}"));
-        add_source(&mut settings, "B", 2200, NODE);
+        add_source(&mut settings, "A", &format!("{NODE}\n{second_node}"));
+        add_source(&mut settings, "B", NODE);
         let first = settings.profiles[0].id.clone();
         let second = settings.profiles[1].id.clone();
         let third = settings.profiles[2].id.clone();
-        assert_eq!(settings.toggle_profile(&third).unwrap(), None);
+        let us_port = settings.add_port(&[]).unwrap();
+        let default = settings.default_port().id.clone();
+        assert!(settings.profiles.iter().all(|p| p.port_id == default));
+        assert_eq!(settings.set_profile_port(&second, &us_port).unwrap(), None);
+        assert_eq!(settings.toggle_profile(&second).unwrap(), None);
         assert_eq!(
-            settings.toggle_profile(&second).unwrap().as_deref(),
+            settings.toggle_profile(&third).unwrap().as_deref(),
             Some("Demo")
         );
+        assert!(!settings.profiles[0].enabled);
+        assert!(settings.profiles[1].enabled);
         assert!(settings.profiles[2].enabled);
-        settings.set_custom_port(&first, Some(2201)).unwrap();
+        assert_eq!(
+            settings
+                .set_profile_port(&third, &us_port)
+                .unwrap()
+                .as_deref(),
+            Some("USA")
+        );
+        assert!(!settings.profiles[1].enabled);
+        assert!(settings.profiles[2].enabled);
         assert_eq!(settings.toggle_profile(&first).unwrap(), None);
-        assert_eq!(settings.enabled_profiles().count(), 3);
-        assert!(settings.set_custom_port(&first, None).is_err());
-        assert!(settings.set_custom_port(&first, Some(2200)).is_err());
-        assert!(settings.set_custom_port(&first, Some(1023)).is_err());
-        assert!(settings.set_default_port(Some("B"), 2100).is_err());
-        assert!(settings.set_default_port(Some("B"), 2201).is_err());
-        assert_eq!(settings.effective_port(&settings.profiles[0]), 2201);
-        settings.set_default_port(Some("A"), 65535).unwrap();
-        assert_eq!(settings.effective_port(&settings.profiles[1]), 65535);
-        assert_eq!(settings.effective_port(&settings.profiles[2]), 2200);
+        assert_eq!(settings.enabled_profiles().count(), 2);
+        settings.toggle_profile(&third).unwrap();
+        assert!(settings.profiles[0].enabled);
+        assert_eq!(settings.enabled_profiles().count(), 1);
     }
 
     #[test]
     fn refresh_preserves_identity_through_rename_and_tls_change_but_does_not_replace_removed_node()
     {
         let mut settings = Settings::default();
-        add_source(&mut settings, "A", 2100, NODE);
+        add_source(&mut settings, "A", NODE);
         let original = settings.profiles[0].clone();
-        settings.set_custom_port(&original.id, Some(2300)).unwrap();
+        let port = settings.add_port(&[]).unwrap();
+        settings.set_profile_port(&original.id, &port).unwrap();
         let renamed = NODE.replace("#Demo", "#Riga");
         settings
             .merge_nodes(parse_nodes(renamed.as_bytes()).unwrap(), Some("A"))
@@ -1148,7 +1205,7 @@ mod tests {
         let profile = &settings.profiles[0];
         assert!(profile.enabled && !profile.same_outbound(&original));
         assert_eq!(profile.id, original.id);
-        assert_eq!(profile.custom_port, Some(2300));
+        assert_eq!(profile.port_id, port);
         let other = rotated.replace("vpn.example.test", "other.example.test");
         settings
             .merge_nodes(parse_nodes(other.as_bytes()).unwrap(), Some("A"))
@@ -1156,7 +1213,7 @@ mod tests {
         assert_eq!(settings.enabled_profiles().count(), 0);
         assert!(settings.active_profile_removed(Some("A")));
         assert_ne!(settings.profiles[0].id, original.id);
-        assert_eq!(settings.profiles[0].custom_port, None);
+        assert_eq!(settings.profiles[0].port_id, settings.default_port().id);
         for body in ["[ ]", "W10="] {
             let nodes = parse_nodes_inner(body.as_bytes(), true).unwrap();
             settings.merge_nodes(nodes, Some("A")).unwrap();
@@ -1166,14 +1223,14 @@ mod tests {
     }
 
     #[test]
-    fn migration_atomically_preserves_legacy_listener_in_its_source_or_first_container() {
+    fn migration_atomically_preserves_legacy_listener_and_every_profile_id() {
         for active in [true, false] {
             let directory = std::env::temp_dir().join(format!("true-proxy-migrate-{}", new_id()));
             fs::create_dir_all(&directory).unwrap();
             let path = directory.join("settings.json");
             let mut fixture = Settings::default();
-            add_source(&mut fixture, "A", 2100, NODE);
-            add_source(&mut fixture, "B", 2200, NODE);
+            add_source(&mut fixture, "A", NODE);
+            add_source(&mut fixture, "B", NODE);
             let old = json!({
                 "socks_port": 2082, "enabled": true, "dns": ["192.0.2.53"],
                 "active": active.then(|| fixture.profiles[1].id.clone()),
@@ -1185,23 +1242,159 @@ mod tests {
             });
             fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
             let migrated = Settings::load(&path).unwrap();
-            assert_eq!(
-                migrated.default_port(Some(if active { "B" } else { "A" })),
-                2082
+            assert_eq!(migrated.default_port().number, 2082);
+            assert_eq!(migrated.default_port().name, "Default");
+            assert!(
+                migrated
+                    .profiles
+                    .iter()
+                    .all(|p| p.port_id == migrated.default_port().id)
             );
+            assert_eq!(migrated.profiles[1].enabled, active);
+            assert_eq!(migrated.profiles[1].id, fixture.profiles[1].id);
             assert_eq!(migrated.enabled_profiles().count(), usize::from(active));
             assert_eq!(migrated.dns_exit_profile_id, None);
             assert!(migrated.dns_exit_error().is_some());
             assert!(migrated.enabled);
-            assert_eq!(migrated.reserved_ports().len(), 3);
+            assert_eq!(migrated.ports.len(), 1);
             let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             assert!(saved.get("socks_port").is_none() && saved.get("active").is_none());
-            assert_eq!(
-                Settings::load(&path).unwrap().reserved_ports(),
-                migrated.reserved_ports()
-            );
+            assert_eq!(Settings::load(&path).unwrap().ports, migrated.ports);
             fs::remove_file(path).unwrap();
             fs::remove_dir(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn disabled_bindings_protect_the_port_and_delete_reports_the_first_three_names() {
+        let mut settings = Settings::default();
+        let default = settings.default_port().id.clone();
+        assert!(
+            settings
+                .remove_port(&default)
+                .unwrap_err()
+                .to_string()
+                .contains("Default")
+        );
+        let port = settings.add_port(&[]).unwrap();
+        let mut ids = Vec::new();
+        for index in 1..=7 {
+            let name = format!("Node {index}");
+            settings
+                .import(
+                    &NODE
+                        .replace(":443?", &format!(":44{index}?"))
+                        .replace("Demo", &format!("Node%20{index}")),
+                )
+                .unwrap();
+            let profile = settings.profiles.last().unwrap();
+            assert_eq!(profile.name, name);
+            let id = profile.id.clone();
+            settings.set_profile_port(&id, &port).unwrap();
+            ids.push(id);
+        }
+        settings.toggle_profile(&ids[0]).unwrap();
+        assert_eq!(settings.enabled_profiles().count(), 0);
+        assert_eq!(
+            settings.remove_port(&port).unwrap_err().to_string(),
+            "Used by Node 1, Node 2, Node 3 and 4 more. Unbind them first, then delete."
+        );
+        for id in &ids[1..] {
+            settings.set_profile_port(id, &default).unwrap();
+        }
+        assert_eq!(
+            settings.remove_port(&port).unwrap_err().to_string(),
+            "Used by Node 1. Unbind it first, then delete."
+        );
+        settings.set_profile_port(&ids[0], &default).unwrap();
+        settings.remove_port(&port).unwrap();
+        assert_eq!(settings.ports.len(), 1);
+    }
+
+    #[test]
+    fn port_edits_validate_names_range_uniqueness_and_socket_ownership() {
+        use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+        let mut settings = Settings::default();
+        settings.import(NODE).unwrap();
+        let default = settings.default_port().id.clone();
+        let second = settings.add_port(&[]).unwrap();
+        assert!(settings.rename_port(&second, "  dEfAuLt  ").is_err());
+        assert!(settings.rename_port(&default, " ").is_err());
+        settings.rename_port(&default, "  Main  ").unwrap();
+        assert_eq!(settings.default_port().name, "Main");
+        assert!(settings.set_port_number(&second, 2081, &[2081]).is_err());
+        assert!(settings.set_port_number(&default, 1023, &[1023]).is_err());
+        let tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        for occupied in [
+            tcp.local_addr().unwrap().port(),
+            udp.local_addr().unwrap().port(),
+        ] {
+            assert!(settings.set_port_number(&default, occupied, &[]).is_err());
+            settings
+                .set_port_number(&default, occupied, &[occupied])
+                .unwrap();
+            assert_eq!(settings.default_port().number, occupied);
+            assert_eq!(settings.profiles[0].port_id, default);
+        }
+        settings.set_port_number(&default, 65535, &[65535]).unwrap();
+        assert_eq!(settings.effective_port(&settings.profiles[0]), 65535);
+    }
+
+    #[test]
+    fn provider_id_keeps_a_renamed_and_moved_node_and_distinguishes_replacement_at_same_endpoint() {
+        let mut settings = Settings::default();
+        let source = NODE.replace("#Demo", "&profileId=server-1#Demo");
+        add_source(&mut settings, "A", &source);
+        let id = settings.profiles[0].id.clone();
+        let port = settings.add_port(&[]).unwrap();
+        settings.set_profile_port(&id, &port).unwrap();
+        settings
+            .merge_nodes(parse_nodes(NODE.as_bytes()).unwrap(), Some("A"))
+            .unwrap();
+        assert_eq!(settings.profiles[0].id, id);
+        assert_eq!(settings.profiles[0].port_id, port);
+        let moved = source
+            .replace("vpn.example.test", "different.example.test")
+            .replace("#Demo", "#Moved");
+        settings
+            .merge_nodes(parse_nodes(moved.as_bytes()).unwrap(), Some("A"))
+            .unwrap();
+        assert_eq!(settings.profiles[0].id, id);
+        assert_eq!(settings.profiles[0].port_id, port);
+        assert!(settings.profiles[0].enabled);
+        let other = moved.replace("server-1", "server-2");
+        settings
+            .merge_nodes(parse_nodes(other.as_bytes()).unwrap(), Some("A"))
+            .unwrap();
+        assert_ne!(settings.profiles[0].id, id);
+        assert!(!settings.profiles[0].enabled);
+        assert!(settings.active_profile_removed(Some("A")));
+    }
+
+    #[test]
+    fn only_a_valid_empty_subscription_removes_its_last_active_node() {
+        for body in ["[ \n ]", "W10="] {
+            let mut settings = Settings::default();
+            add_source(&mut settings, "A", NODE);
+            let active = settings.selected().unwrap().id.clone();
+            for invalid in ["", "not a subscription", "{", "[{}]"] {
+                let refreshed = parse_nodes_inner(invalid.as_bytes(), true)
+                    .and_then(|nodes| settings.merge_nodes(nodes, Some("A")));
+                assert!(refreshed.is_err());
+                assert_eq!(settings.selected().unwrap().id, active);
+                assert!(!settings.active_profile_removed(Some("A")));
+            }
+            assert!(parse_nodes(body.as_bytes()).is_err());
+            let nodes = parse_nodes_inner(body.as_bytes(), true).unwrap();
+            settings.merge_nodes(nodes, Some("A")).unwrap();
+            assert_eq!(settings.enabled_profiles().count(), 0);
+            assert_eq!(settings.subscription_ids().collect::<Vec<_>>(), ["A"]);
+            assert!(settings.active_profile_removed(Some("A")));
+            settings
+                .merge_nodes(parse_nodes(NODE.as_bytes()).unwrap(), Some("A"))
+                .unwrap();
+            assert!(!settings.profiles[0].enabled);
         }
     }
 

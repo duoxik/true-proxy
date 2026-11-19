@@ -1,12 +1,12 @@
 use crate::{MainWindow, XrayModule, XrayPortDraft};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use slint::{ComponentHandle, Model, SharedString};
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, time::Duration};
-use true_proxy::xray::profile::Settings;
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use true_proxy::xray::{profile::Settings, runtime};
 
 pub(in crate::app) struct PortEdit {
-    pub(in crate::app) owner: String,
-    pub(in crate::app) profile: bool,
+    pub(in crate::app) id: String,
+    pub(in crate::app) number: bool,
     pub(in crate::app) value: String,
 }
 
@@ -19,33 +19,11 @@ impl PortEdit {
         port.context("Enter a port between 1024 and 65535.")
     }
 
-    pub(in crate::app) fn apply(&self, settings: &mut Settings) -> Result<Option<u16>> {
-        if self.profile {
-            let custom = if self.value.is_empty() {
-                None
-            } else {
-                Some(Self::number(&self.value)?)
-            };
-            let profile = settings
-                .profiles
-                .iter()
-                .find(|p| p.id == self.owner)
-                .context("Profile not found")?;
-            if profile.custom_port == custom {
-                return Ok(None);
-            }
-            let port =
-                custom.unwrap_or_else(|| settings.default_port(profile.subscription.as_deref()));
-            settings.set_custom_port(&self.owner, custom)?;
-            Ok(Some(port))
+    pub(in crate::app) fn apply(&self, settings: &mut Settings, owned: &[u16]) -> Result<()> {
+        if self.number {
+            settings.set_port_number(&self.id, Self::number(&self.value)?, owned)
         } else {
-            let port = Self::number(&self.value)?;
-            let container = (!self.owner.is_empty()).then_some(self.owner.as_str());
-            if settings.default_port(container) == port {
-                return Ok(None);
-            }
-            settings.set_default_port(container, port)?;
-            Ok(Some(port))
+            settings.rename_port(&self.id, &self.value)
         }
     }
 }
@@ -82,32 +60,47 @@ impl PortEditor {
                 .any(|draft| matches!(draft.state, PortDraftState::Editing | PortDraftState::Ready))
     }
 
-    fn prepare(&mut self, key: &PortFieldKey, allow_inherit: bool) {
-        let Some(draft) = self.drafts.get_mut(key) else {
-            return;
-        };
-        if !matches!(
-            draft.state,
-            PortDraftState::Editing | PortDraftState::Invalid
-        ) {
-            return;
-        }
-        let result = if allow_inherit && key.1 && draft.value.is_empty() {
-            Ok(())
-        } else {
-            PortEdit::number(&draft.value).map(|_| ())
-        };
-        match result {
-            Ok(_) => {
-                draft.state = PortDraftState::Ready;
-                draft.error = SharedString::default();
-            }
-            Err(error) => {
-                draft.state = PortDraftState::Invalid;
-                draft.error = error.to_string().into();
-            }
+    fn prepare(&mut self, key: &PortFieldKey) {
+        if let Some(draft) = self.drafts.get_mut(key)
+            && matches!(
+                draft.state,
+                PortDraftState::Editing | PortDraftState::Invalid
+            )
+            && draft.error.is_empty()
+        {
+            draft.state = PortDraftState::Ready;
         }
     }
+}
+
+fn validate_draft(xray: &XrayModule<'_>, id: &str, number: bool, value: &str) -> Result<()> {
+    let ports = xray.get_ports();
+    if number {
+        let parsed = PortEdit::number(value)?;
+        ensure!(
+            !ports
+                .iter()
+                .any(|p| p.id != id && p.number.parse::<u16>() == Ok(parsed)),
+            "Another port already uses this number."
+        );
+        if !xray
+            .get_listening_numbers()
+            .iter()
+            .any(|owned| owned == i32::from(parsed))
+        {
+            runtime::check_listener_port(parsed)?;
+        }
+    } else {
+        let name = value.trim();
+        ensure!(!name.is_empty(), "Enter a port name.");
+        ensure!(
+            !ports
+                .iter()
+                .any(|p| p.id != id && p.name.to_lowercase() == name.to_lowercase()),
+            "Another port already uses this name."
+        );
+    }
+    Ok(())
 }
 
 fn update_port_drafts(xray: &XrayModule<'_>, editor: &RefCell<PortEditor>) {
@@ -123,13 +116,12 @@ pub(in crate::app) fn wire_port_editor(
 ) {
     let xray = ui.global::<XrayModule>();
     let state = Rc::new(RefCell::new(PortEditor::default()));
-    let timer = Rc::new(slint::Timer::default());
     let drafts = state.clone();
-    xray.on_port_draft(move |owner, profile, _| {
+    xray.on_port_draft(move |id, number, _| {
         drafts
             .borrow()
             .drafts
-            .get(&(owner, profile))
+            .get(&(id, number))
             .map_or_else(XrayPortDraft::default, |draft| XrayPortDraft {
                 present: true,
                 value: draft.value.clone(),
@@ -138,59 +130,58 @@ pub(in crate::app) fn wire_port_editor(
     });
     let drafts = state.clone();
     let weak = ui.as_weak();
-    let edit_timer = timer.clone();
-    xray.on_edit_port(move |owner, profile, value| {
+    xray.on_edit_port(move |id, number, value| {
         let Some(ui) = weak.upgrade() else { return };
         let xray = ui.global::<XrayModule>();
-        let key = (owner, profile);
+        let error = validate_draft(&xray, &id, number, &value)
+            .err()
+            .map_or_else(SharedString::default, |e| e.to_string().into());
+        let key = (id, number);
         let revision = xray.get_port_draft_revision().wrapping_add(1);
         {
             let mut editor = drafts.borrow_mut();
             if let Some(previous) = editor.active.replace(key.clone())
                 && previous != key
             {
-                editor.prepare(&previous, true);
+                editor.prepare(&previous);
             }
             editor.drafts.insert(
                 key.clone(),
                 PortDraft {
                     value,
-                    error: SharedString::default(),
-                    state: PortDraftState::Editing,
+                    state: if error.is_empty() {
+                        PortDraftState::Editing
+                    } else {
+                        PortDraftState::Invalid
+                    },
+                    error,
                     revision,
                 },
             );
         }
-        xray.set_port_save_pending(true);
-        xray.set_port_draft_revision(revision);
-        let drafts = drafts.clone();
-        let weak = weak.clone();
-        edit_timer.start(
-            slint::TimerMode::SingleShot,
-            Duration::from_millis(550),
-            move || {
-                let Some(ui) = weak.upgrade() else { return };
-                let xray = ui.global::<XrayModule>();
-                drafts.borrow_mut().prepare(&key, false);
-                update_port_drafts(&xray, &drafts);
-                xray.invoke_process_port_edits();
-            },
-        );
+        update_port_drafts(&xray, &drafts);
         xray.invoke_process_port_edits();
     });
     let drafts = state.clone();
     let weak = ui.as_weak();
-    xray.on_commit_port(move |owner, profile| {
+    xray.on_commit_port(move |id, number| {
         let Some(ui) = weak.upgrade() else { return };
         let xray = ui.global::<XrayModule>();
-        let key = (owner, profile);
+        let key = (id, number);
         {
             let mut editor = drafts.borrow_mut();
             if editor.active.as_ref() == Some(&key) {
-                timer.stop();
                 editor.active = None;
             }
-            editor.prepare(&key, true);
+            // A conflicting listener may have closed since the last keystroke.
+            if let Some(draft) = editor.drafts.get_mut(&key)
+                && matches!(draft.state, PortDraftState::Invalid)
+            {
+                draft.error = validate_draft(&xray, &key.0, key.1, &draft.value)
+                    .err()
+                    .map_or_else(SharedString::default, |e| e.to_string().into());
+            }
+            editor.prepare(&key);
         }
         update_port_drafts(&xray, &drafts);
         xray.invoke_process_port_edits();
@@ -199,17 +190,22 @@ pub(in crate::app) fn wire_port_editor(
     let weak = ui.as_weak();
     xray.on_flush_port_edit(move || {
         let active = drafts.borrow().active.clone();
-        if let Some(((owner, profile), ui)) = active.zip(weak.upgrade()) {
-            ui.global::<XrayModule>().invoke_commit_port(owner, profile);
+        if let Some(((id, number), ui)) = active.zip(weak.upgrade()) {
+            ui.global::<XrayModule>().invoke_commit_port(id, number);
         }
     });
     let weak = ui.as_weak();
-    xray.on_reset_profile_port(move |owner, _| {
-        if let Some(ui) = weak.upgrade() {
-            let xray = ui.global::<XrayModule>();
-            xray.invoke_edit_port(owner.clone(), true, SharedString::default());
-            xray.invoke_commit_port(owner, true);
+    let drafts = state.clone();
+    xray.on_cancel_port_edit(move |id, number| {
+        let Some(ui) = weak.upgrade() else { return };
+        let key = (id, number);
+        let mut editor = drafts.borrow_mut();
+        if editor.active.as_ref() == Some(&key) {
+            editor.active = None;
         }
+        editor.drafts.remove(&key);
+        drop(editor);
+        update_port_drafts(&ui.global::<XrayModule>(), &drafts);
     });
     let drafts = state.clone();
     let weak = ui.as_weak();
@@ -230,28 +226,28 @@ pub(in crate::app) fn wire_port_editor(
                     .iter_mut()
                     .filter(|(_, draft)| matches!(draft.state, PortDraftState::Ready))
                     .min_by_key(|(_, draft)| draft.revision)
-                    .map(|((owner, profile), draft)| {
+                    .map(|((id, number), draft)| {
                         draft.state = PortDraftState::Saving;
-                        (owner.clone(), *profile, draft.value.clone(), draft.revision)
+                        (id.clone(), *number, draft.value.clone(), draft.revision)
                     });
                 editor.in_flight = pending.as_ref().map(|(_, _, _, revision)| *revision);
                 pending
             };
-            let Some((owner, profile, value, revision)) = pending else {
+            let Some((id, number, value, revision)) = pending else {
                 return;
             };
             if !submit(
                 &ui,
                 PortEdit {
-                    owner: owner.to_string(),
-                    profile,
+                    id: id.to_string(),
+                    number,
                     value: value.to_string(),
                 },
                 revision,
             ) {
                 xray.invoke_finish_port_edit(
-                    owner,
-                    profile,
+                    id,
+                    number,
                     revision,
                     "Could not save the port. Try again.".into(),
                 );
@@ -260,7 +256,7 @@ pub(in crate::app) fn wire_port_editor(
     });
     let drafts = state.clone();
     let weak = ui.as_weak();
-    xray.on_finish_port_edit(move |owner, profile, revision, error| {
+    xray.on_finish_port_edit(move |id, number, revision, error| {
         let Some(ui) = weak.upgrade() else { return };
         {
             let mut editor = drafts.borrow_mut();
@@ -268,7 +264,7 @@ pub(in crate::app) fn wire_port_editor(
                 return;
             }
             editor.in_flight = None;
-            let key = (owner, profile);
+            let key = (id, number);
             if let Some(draft) = editor
                 .drafts
                 .get_mut(&key)
@@ -290,18 +286,17 @@ pub(in crate::app) fn wire_port_editor(
         let xray = ui.global::<XrayModule>();
         let mut editor = state.borrow_mut();
         let count = editor.drafts.len();
-        let manual = xray.get_profiles();
-        let groups = xray.get_subscriptions();
-        editor.drafts.retain(|(owner, profile), _| {
-            if *profile {
-                manual.iter().any(|row| row.id == *owner)
-                    || groups
-                        .iter()
-                        .any(|group| group.profiles.iter().any(|row| row.id == *owner))
-            } else {
-                owner.is_empty() || groups.iter().any(|group| group.id == *owner)
-            }
-        });
+        let ports = xray.get_ports();
+        editor
+            .drafts
+            .retain(|(owner, _), _| ports.iter().any(|row| row.id == *owner));
+        if editor
+            .active
+            .as_ref()
+            .is_some_and(|key| !editor.drafts.contains_key(key))
+        {
+            editor.active = None;
+        }
         let changed = editor.drafts.len() != count;
         drop(editor);
         if changed {

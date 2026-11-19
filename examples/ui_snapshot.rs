@@ -463,21 +463,18 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         name: "Primary".into(),
         summary: "VLESS · vpn.example.test:443".into(),
         active: true,
-        port: "2081".into(),
-        custom: false,
+        port_index: 0,
     }]));
     xray.set_selected_profile(XrayProfileRow {
         id: "primary".into(),
         name: "Primary".into(),
         summary: "VLESS · vpn.example.test:443".into(),
         active: true,
-        port: "2081".into(),
-        custom: false,
+        port_index: 0,
     });
     xray.set_subscriptions(model(vec![XraySubscriptionGroup {
         id: "sample-source".into(),
         name: "Subscription 1".into(),
-        port: "2200".into(),
         active_removed: false,
         profiles: model(vec![
             XrayProfileRow {
@@ -485,40 +482,56 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
                 name: "Backup".into(),
                 summary: "VLESS · backup.example.test:443".into(),
                 active: false,
-                port: "2200".into(),
-                custom: false,
+                port_index: 0,
             },
             XrayProfileRow {
                 id: "regional".into(),
                 name: "Regional".into(),
                 summary: "VLESS · regional.example.test:443".into(),
                 active: true,
-                port: "2201".into(),
-                custom: true,
+                port_index: 1,
             },
         ]),
     }]));
-    xray.set_manual_port("2081".into());
     xray.set_enabled_count(2);
-    xray.set_active_ports(model(vec![
+    xray.set_listener_summary("2 ports listening".into());
+    xray.set_port_labels(model(vec![
+        "Default · 2081".into(),
+        "US · 2082".into(),
+        "Games · 2083".into(),
+    ]));
+    xray.set_next_free_port("2084".into());
+    xray.set_ports(model(vec![
         XrayPortRow {
-            port: "2081".into(),
-            profile: "Primary".into(),
-            source: "Manual Profiles".into(),
+            id: "default".into(),
+            name: "Default".into(),
+            number: "2081".into(),
+            is_default: true,
+            used_count: 2,
             status: "Listening".into(),
+            ..Default::default()
         },
         XrayPortRow {
-            port: "2201".into(),
-            profile: "Regional".into(),
-            source: "Subscription 1".into(),
+            id: "us".into(),
+            name: "US".into(),
+            number: "2082".into(),
+            used_count: 1,
             status: "Listening".into(),
+            ..Default::default()
+        },
+        XrayPortRow {
+            id: "games".into(),
+            name: "Games".into(),
+            number: "2083".into(),
+            status: "Idle".into(),
+            ..Default::default()
         },
     ]));
     xray.set_dns("https://resolver.example.test/dns-query".into());
     xray.set_dns_exit_profiles(model(vec![
         "Not selected".into(),
         "Primary · :2081".into(),
-        "Regional · :2201".into(),
+        "Regional · :2082".into(),
     ]));
     xray.set_dns_exit_profile_ids(model(vec!["".into(), "primary".into(), "regional".into()]));
     xray.set_dns_exit_profile_id("regional".into());
@@ -583,7 +596,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     for (section, name) in [
         "dashboard",
         "profiles",
-        "general",
+        "ports",
         "dns",
         "fallbacks",
         "connections",
@@ -593,7 +606,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     .enumerate()
     {
         xray.set_section(section as i32);
-        xray.set_pending(*name == "general");
+        xray.set_pending(*name == "ports");
         save(adapter, &destination.join(format!("xray-{name}.png")))?;
     }
     xray.set_section(1);

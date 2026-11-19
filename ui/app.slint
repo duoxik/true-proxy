@@ -9,8 +9,8 @@ import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
 import { LogsView, TechnicalLogs } from "logs.slint";
 export { TechnicalLogs }
-import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow } from "xray.slint";
-export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow }
+import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser } from "xray.slint";
+export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -841,7 +841,7 @@ export component MainWindow inherits Window {
                                 links: [
                                     { label: "Dashboard", icon: "dashboard", target: 0 },
                                     { label: "Profiles", icon: "file", target: 1 },
-                                    { label: "General", icon: "settings", target: 2 },
+                                    { label: "Ports", icon: "network", target: 2 },
                                     { label: "DNS", icon: "globe", target: 3 },
                                     { label: "Fallbacks", icon: "rules", target: 4 },
                                     { label: "Connections", icon: "activity", target: 5 },

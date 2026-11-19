@@ -267,10 +267,10 @@ impl Child {
             if !self.identity.alive() {
                 if let Some(code) = self.identity.exit_code() {
                     bail!(
-                        "Xray exited before its local SOCKS port was ready (Windows exit code 0x{code:08X})"
+                        "Xray exited before the SOCKS listener on {endpoint} was ready (Windows exit code 0x{code:08X})"
                     );
                 }
-                bail!("Xray exited before its local SOCKS port was ready");
+                bail!("Xray exited before the SOCKS listener on {endpoint} was ready");
             }
             if owns_loopback_listener(self.identity.pid, port)
                 && socks_ready(endpoint)
