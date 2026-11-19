@@ -95,8 +95,8 @@ pub fn wire(ui: &MainWindow, state: State, path: PathBuf, statuses: Arc<Mutex<pr
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;
-    use i_slint_backend_testing::ElementHandle;
-    use slint::platform::{PointerEventButton, WindowEvent};
+    use i_slint_backend_testing::{AccessibleRole, ElementHandle};
+    use slint::platform::{Key, PointerEventButton, WindowEvent};
 
     #[test]
     fn rule_search_preserves_priority_and_cidrs_save_with_deferred_apply() {
@@ -125,6 +125,8 @@ mod tests {
         let path = directory.join("config.json");
         let statuses = Arc::new(Mutex::new(proxies::Statuses::new()));
         wire(&ui, state.clone(), path.clone(), statuses);
+        let weak = ui.as_weak();
+        ui.on_close_dialog(move || weak.unwrap().set_dialog(0));
         refresh(&ui, &config);
         ui.show().unwrap();
 
@@ -159,7 +161,27 @@ mod tests {
 
         ui.set_active(true);
         pending::acknowledge(&ui, &state, true);
-        ui.set_local_network_draft("192.0.2.15/24\n192.0.2.0/24, fd00::/8".into());
+        let editor = || {
+            ElementHandle::find_by_accessible_label(&ui, "Local network CIDRs")
+                .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+                .expect("Accessible multiline CIDR editor")
+        };
+        let press = |text: slint::SharedString| {
+            ui.window().dispatch_event(WindowEvent::KeyPressed { text });
+        };
+        editor().mock_single_click(PointerEventButton::Left);
+        press(Key::Control.into());
+        press("a".into());
+        ui.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Control.into(),
+        });
+        press("192.0.2.15/24".into());
+        press(Key::Return.into());
+        press("192.0.2.0/24, fd00::/8".into());
+        assert_eq!(
+            editor().accessible_value().as_deref(),
+            Some("192.0.2.15/24\n192.0.2.0/24, fd00::/8")
+        );
         click("Save local network");
         assert_eq!(ui.get_dialog(), 0);
         assert!(ui.get_routing_pending());
@@ -172,6 +194,13 @@ mod tests {
             ]
         );
         assert_eq!(saved.rules, config.rules);
+        click("Edit local network");
+        assert_eq!(ui.get_local_network_draft(), "192.0.2.0/24\nfd00::/8");
+        editor().mock_single_click(PointerEventButton::Left);
+        press("x".into());
+        assert!(ui.get_local_network_draft().contains('x'));
+        press(Key::Escape.into());
+        assert_eq!(ui.get_dialog(), 0);
         click("Edit local network");
         assert_eq!(ui.get_local_network_draft(), "192.0.2.0/24\nfd00::/8");
         std::fs::remove_file(path).unwrap();

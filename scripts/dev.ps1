@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('check', 'test', 'build', 'run', 'preview', 'package', 'fmt', 'clippy', 'smoke', 'snapshot', 'dns-probe')]
+    [ValidateSet('check', 'test', 'build', 'run', 'test-local', 'preview', 'package', 'fmt', 'clippy', 'smoke', 'snapshot', 'dns-probe')]
     [string]$Task = 'check',
     [string]$PackageDirectory = 'dist\TrueProxy',
     [string]$PackageArchive = 'dist\TrueProxy-windows-x64.zip',
@@ -7,6 +7,31 @@ param(
     [string]$Page = 'xray'
 )
 $ErrorActionPreference = 'Stop'
+
+function Assert-TrueProxyExited {
+    try {
+        $taskInstance = [Threading.Mutex]::OpenExisting('Local\TrueProxy.Desktop.v1')
+    } catch [Threading.WaitHandleCannotBeOpenedException] {
+        return
+    } catch [UnauthorizedAccessException] {
+        throw 'Exit True Proxy from its tray icon, then run Test-Local.cmd again.'
+    }
+    $taskInstance.Dispose()
+    throw 'Exit True Proxy from its tray icon, then run Test-Local.cmd again.'
+}
+
+function Copy-GnuRuntime([string]$Executable, [string]$Mingw) {
+    if ($Mingw -and (Test-Path -LiteralPath $Mingw)) {
+        $taskImports = & (Join-Path $Mingw 'objdump.exe') -p $Executable
+        if ($LASTEXITCODE -ne 0) { throw "Could not inspect DLL imports for $Executable" }
+        foreach ($taskDll in @('libgcc_s_seh-1.dll', 'libwinpthread-1.dll')) {
+            if ($taskImports -match "DLL Name:\s+$([regex]::Escape($taskDll))\s*$") {
+                Copy-Item -LiteralPath (Join-Path $Mingw $taskDll) -Destination (Split-Path -Parent $Executable) -Force
+            }
+        }
+    }
+}
+
 $taskRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $taskRoot
 try {
@@ -22,6 +47,7 @@ try {
             $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = Join-Path $taskMingw 'gcc.exe'
         }
     }
+    if ($Task -eq 'test-local') { Assert-TrueProxyExited }
     if ($Task -ne 'fmt') {
         & (Join-Path $PSScriptRoot 'fetch-driver.ps1')
     }
@@ -30,6 +56,35 @@ try {
         'test' { cargo test --locked }
         'build' { cargo build --locked --release }
         'run' { cargo run --locked -- --paused }
+        'test-local' {
+            $taskOwnsLaunchLock = $false
+            $taskLaunchLock = [Threading.Mutex]::new($true, 'Local\TrueProxy.LocalTest.Launcher.v1', [ref]$taskOwnsLaunchLock)
+            try {
+                if (-not $taskOwnsLaunchLock) { throw 'Test-Local.cmd is already running.' }
+                & (Join-Path $PSScriptRoot 'seed-local-test.ps1')
+                cargo build --locked --bin true-proxy
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Local build failed with exit code $LASTEXITCODE."
+                    exit $LASTEXITCODE
+                }
+                Assert-TrueProxyExited
+                $taskTarget = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $taskRoot 'target' }
+                $taskLive = Join-Path $taskRoot '.tools\local-live'
+                New-Item -ItemType Directory -Path $taskLive -Force | Out-Null
+                $taskLiveExe = Join-Path $taskLive 'TrueProxy-Local.exe'
+                Copy-Item -LiteralPath (Join-Path $taskTarget 'debug\true-proxy.exe') -Destination $taskLiveExe -Force
+                Copy-GnuRuntime $taskLiveExe $taskMingw
+                # Wait for the elevated GUI itself, including time spent in the tray.
+                $taskProcess = Start-Process -FilePath $taskLiveExe -ArgumentList '--local-test' -Verb RunAs -WindowStyle Normal -Wait -PassThru
+                if ($taskProcess.ExitCode -ne 0) {
+                    Write-Host "Local True Proxy exited with code $($taskProcess.ExitCode)."
+                    exit $taskProcess.ExitCode
+                }
+            } finally {
+                if ($taskOwnsLaunchLock) { $taskLaunchLock.ReleaseMutex() }
+                $taskLaunchLock.Dispose()
+            }
+        }
         'preview' {
             cargo build --locked
             if ($LASTEXITCODE -ne 0) { throw 'Local build failed' }
@@ -88,14 +143,7 @@ try {
             Copy-Item -LiteralPath (Join-Path $taskRoot 'docs') -Destination $taskDist -Recurse -Force
             Copy-Item -LiteralPath (Join-Path $taskDriver 'LICENSE') -Destination (Join-Path $taskDist 'LICENSE-WinDivert.txt') -Force
             # GNU builds need the matching exception and thread runtime DLLs next to the executable.
-            if ($taskMingw -and (Test-Path -LiteralPath $taskMingw)) {
-                $taskImports = & (Join-Path $taskMingw 'objdump.exe') -p (Join-Path $taskDist 'TrueProxy.exe')
-                foreach ($taskDll in @('libgcc_s_seh-1.dll', 'libwinpthread-1.dll')) {
-                    if ($taskImports -match "DLL Name:\s+$([regex]::Escape($taskDll))\s*$") {
-                        Copy-Item -LiteralPath (Join-Path $taskMingw $taskDll) -Destination $taskDist -Force
-                    }
-                }
-            }
+            Copy-GnuRuntime (Join-Path $taskDist 'TrueProxy.exe') $taskMingw
             & (Join-Path $PSScriptRoot 'package-notices.ps1') -Destination $taskDist
             Get-ChildItem -LiteralPath $taskDist -File -Recurse | Where-Object LastWriteTime -LT ([datetime]'1980-01-01') | ForEach-Object { $_.LastWriteTime = [datetime]'2000-01-01' }
             New-Item -ItemType Directory -Path (Split-Path -Parent $taskArchive) -Force | Out-Null

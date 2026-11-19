@@ -93,7 +93,7 @@ pub fn relaunch_elevated() -> Result<()> {
     // Normal launches elevate before creating UI or reading the profile. Safe
     // diagnostic/preview modes bypass this path. Never force-enable a saved pause.
     let mut arguments = format!("--wait-parent {}", std::process::id());
-    for flag in ["--paused", "--enable", "--tray"] {
+    for flag in ["--paused", "--enable", "--tray", "--local-test"] {
         if std::env::args().any(|argument| argument == flag) {
             arguments.push(' ');
             arguments.push_str(flag);

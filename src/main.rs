@@ -154,6 +154,7 @@ fn main() {
     }
     if let Err(error) = app::run() {
         true_proxy::platform::show_error(&format!("{error:#}"));
+        std::process::exit(1);
     }
 }
 
@@ -264,7 +265,7 @@ mod ui_tests {
         let sections = [
             "Xray Dashboard",
             "Xray Profiles",
-            "Xray General",
+            "Xray Ports",
             "Xray DNS",
             "Xray Fallbacks",
             "Xray Connections",
@@ -438,6 +439,7 @@ mod ui_tests {
                     "subscription-id",
                     "Subscription node",
                 )])),
+                ..Default::default()
             },
         ])));
         let selected = Rc::new(Cell::new(slint::SharedString::default()));
@@ -466,6 +468,7 @@ mod ui_tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn local_xray_preview_selects_profiles_and_keeps_core_disabled() {
         i_slint_backend_testing::init_no_event_loop();
@@ -482,8 +485,17 @@ mod ui_tests {
         xray.set_section(0);
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         click(&ui, "Activate Backup tunnel");
-        assert_eq!(xray.get_selected_profile().id, "preview-backup");
-        assert!(!xray.get_profiles().row_data(0).unwrap().active);
+        assert_eq!(xray.get_enabled_count(), 2);
+        assert!(
+            xray.get_subscriptions()
+                .row_data(0)
+                .unwrap()
+                .profiles
+                .row_data(0)
+                .unwrap()
+                .active
+        );
+        assert!(xray.get_profiles().row_data(0).unwrap().active);
         click(&ui, "Start Xray");
         assert!(!xray.get_running() && !ui.get_active());
         assert!(xray.get_error().contains("disabled in this UI preview"));
@@ -515,6 +527,7 @@ mod ui_tests {
                     profile("profile-a1", "Node A1"),
                     profile("profile-a2", "Node A2"),
                 ])),
+                ..Default::default()
             },
             XraySubscriptionGroup {
                 id: "source-b".into(),
@@ -523,6 +536,7 @@ mod ui_tests {
                     "profile-b1",
                     "Node B1",
                 )])),
+                ..Default::default()
             },
         ])));
         let refreshed = Rc::new(Cell::new(slint::SharedString::default()));
@@ -548,6 +562,11 @@ mod ui_tests {
                 .is_none()
             );
         }
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Refresh Manual Profiles")
+                .next()
+                .is_none()
+        );
         for (label, id) in [
             ("Refresh Subscription 1", "source-a"),
             ("Refresh Subscription 2", "source-b"),
@@ -562,42 +581,404 @@ mod ui_tests {
     }
 
     #[test]
-    fn xray_edits_settings_inline_and_restart_is_explicit() {
+    fn xray_ports_requires_explicit_restart() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         let xray = ui.global::<XrayModule>();
         xray.set_installed(true);
         xray.set_running(true);
-        let edits = Rc::new(Cell::new(0));
-        xray.on_settings_edited({
-            let edits = edits.clone();
-            move || edits.set(edits.get() + 1)
-        });
         let restarts = Rc::new(Cell::new(0));
         xray.on_restart({
             let restarts = restarts.clone();
             move || restarts.set(restarts.get() + 1)
         });
         ui.show().unwrap();
-        click(&ui, "Xray General");
-        assert!(
-            ElementHandle::find_by_accessible_label(&ui, "Save Port")
-                .next()
-                .is_none()
-        );
-        click(&ui, "2081");
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "2".into() });
-        assert_eq!(edits.get(), 1);
+        click(&ui, "Xray Ports");
         assert_eq!(restarts.get(), 0);
         xray.set_pending(true);
         xray.set_settings_saving(true);
         click(&ui, "Restart");
         assert_eq!(restarts.get(), 0);
         xray.set_settings_saving(false);
+        xray.set_port_save_pending(true);
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 0);
+        xray.set_port_save_pending(false);
         click(&ui, "Restart");
         assert_eq!(restarts.get(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn xray_dns_exit_requires_a_selection_and_tracks_profile_availability() {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        app::preview::populate_xray(&ui);
+        let xray = ui.global::<XrayModule>();
+        let restarts = Rc::new(Cell::new(0));
+        xray.on_restart({
+            let restarts = restarts.clone();
+            move || restarts.set(restarts.get() + 1)
+        });
+        ui.show().unwrap();
+        click(&ui, "Xray Ports");
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "DNS exits through")
+                .next()
+                .is_none()
+        );
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Open DNS")
+                .next()
+                .is_none()
+        );
+        click(&ui, "Xray DNS");
+        assert_eq!(xray.get_section(), 3);
+        assert!(xray.get_dns_exit_error().is_empty());
+        assert_eq!(xray.get_dns_exit_profiles().row_count(), 2);
+        xray.invoke_activate_profile("preview-backup".into());
+        xray.set_dns("1.1.1.1".into());
+        xray.invoke_settings_edited();
+        assert!(!xray.get_dns_exit_error().is_empty());
+        assert_eq!(xray.get_dns_exit_profiles().row_count(), 3);
+
+        click(&ui, "Xray Ports");
+        click(&ui, "Open DNS");
+        assert_eq!(xray.get_section(), 3);
+
+        let dropdown = ElementHandle::find_by_accessible_label(&ui, "DNS exits through")
+            .find(|element| element.accessible_value().is_some())
+            .expect("DNS exit selector");
+        assert_eq!(dropdown.accessible_value().as_deref(), Some("Not selected"));
+        dropdown.mock_single_click(PointerEventButton::Left);
+        assert_eq!(dropdown.accessible_expanded(), Some(true));
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: slint::platform::Key::Escape.into(),
+            });
+        assert!(xray.get_dns_exit_profile_id().is_empty());
+        dropdown.mock_single_click(PointerEventButton::Left);
+        ElementHandle::find_by_accessible_label(&ui, "Backup tunnel · :2082")
+            .next()
+            .expect("Enabled backup profile")
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(xray.get_dns_exit_profile_id(), "preview-backup");
+        assert_eq!(xray.get_dns_exit_index(), 2);
+        assert!(xray.get_dns_exit_error().is_empty());
+
+        xray.invoke_activate_profile("preview-backup".into());
+        assert!(xray.get_dns_exit_error().contains("disabled"));
+        assert_eq!(xray.get_dns_exit_index(), 0);
+        assert_eq!(xray.get_dns_exit_profile_id(), "preview-backup");
+        xray.set_dns("Default".into());
+        xray.invoke_settings_edited();
+        assert!(xray.get_dns_exit_warning().contains("disabled"));
+        assert!(xray.get_dns_exit_error().is_empty());
+        xray.set_dns("1.1.1.1".into());
+        xray.invoke_settings_edited();
+        xray.invoke_activate_profile("preview-backup".into());
+        assert_eq!(xray.get_dns_exit_index(), 2);
+        assert!(xray.get_dns_exit_error().is_empty());
+        xray.invoke_remove_profile("preview-backup".into());
+        assert!(xray.get_dns_exit_error().contains("removed"));
+
+        xray.set_running(true);
+        xray.set_pending(true);
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 0);
+        xray.set_dns("Default".into());
+        xray.invoke_settings_edited();
+        assert!(xray.get_dns_exit_error().is_empty());
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn named_port_editor_commits_on_enter_and_blur_and_escape_restores_the_saved_name() {
+        use slint::platform::{Key, WindowEvent};
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        app::preview::populate_xray(&ui);
+        let xray = ui.global::<XrayModule>();
+        ui.show().unwrap();
+        click(&ui, "Xray Ports");
+        let field = |label: &str| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+                .unwrap_or_else(|| panic!("Missing port field: {label}"))
+        };
+        let replace = |value: &str| {
+            let window = ui.window();
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: Key::Control.into(),
+            });
+            window.dispatch_event(WindowEvent::KeyPressed { text: "a".into() });
+            window.dispatch_event(WindowEvent::KeyReleased {
+                text: Key::Control.into(),
+            });
+            window.dispatch_event(WindowEvent::KeyPressed { text: value.into() });
+        };
+        let key = |key: Key| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: key.into() })
+        };
+        let first = || xray.get_ports().row_data(0).unwrap();
+        let assert_caption = |name: &str, number: &str| {
+            let caption = format!("New profiles use {name} · {number}.");
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, &caption)
+                    .next()
+                    .is_some(),
+                "Missing Ports caption: {caption}"
+            );
+        };
+        assert_caption("Default", "2081");
+        field("Port name for Default").mock_single_click(PointerEventButton::Left);
+        replace("US");
+        assert!(
+            !xray
+                .invoke_port_draft("default".into(), false, xray.get_port_draft_revision())
+                .error
+                .is_empty()
+        );
+        key(Key::Escape);
+        assert_eq!(
+            field("Port name for Default").accessible_value().as_deref(),
+            Some("Default")
+        );
+        field("Port name for Default").mock_single_click(PointerEventButton::Left);
+        replace("Latvia");
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_secs(1));
+        assert_eq!(first().name, "Default");
+        key(Key::Return);
+        assert_eq!(first().name, "Latvia");
+        assert_caption("Latvia", "2081");
+        field("Port name for Latvia").mock_single_click(PointerEventButton::Left);
+        replace("Baltic");
+        field("Port number for US").mock_single_click(PointerEventButton::Left);
+        assert_eq!(first().name, "Baltic");
+        replace("65536");
+        assert!(
+            !xray
+                .invoke_port_draft("us".into(), true, xray.get_port_draft_revision())
+                .error
+                .is_empty()
+        );
+        key(Key::Escape);
+        assert_eq!(
+            field("Port number for US").accessible_value().as_deref(),
+            Some("2082")
+        );
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let number = occupied.local_addr().unwrap().port().to_string();
+        replace(&number);
+        key(Key::Return);
+        assert_eq!(xray.get_ports().row_data(1).unwrap().number, "2082");
+        drop(occupied);
+        key(Key::Return);
+        assert_eq!(
+            xray.get_ports().row_data(1).unwrap().number.as_str(),
+            number
+        );
+        assert_eq!(first().id, "default");
+        let new_number = xray.get_next_free_port();
+        field("Port number for Baltic").mock_single_click(PointerEventButton::Left);
+        replace(new_number.as_str());
+        key(Key::Return);
+        assert_eq!(first().number, new_number);
+        assert_caption("Baltic", new_number.as_str());
+        click(&ui, "Add port");
+        let added = xray.get_ports().row_data(2).unwrap();
+        click(&ui, &format!("Remove port {}", added.name));
+        assert_eq!(xray.get_ports().row_count(), 2);
+        click(&ui, "Remove port US");
+        let us = xray.get_ports().row_data(1).unwrap();
+        assert_eq!(us.used_count, 2);
+        assert!(us.delete_error.contains("Backup tunnel"));
+        click(&ui, "Open profile Backup tunnel");
+        assert_eq!(xray.get_section(), 1);
+        click(&ui, "Xray Ports");
+        assert_caption("Baltic", new_number.as_str());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn profile_selects_a_named_port_and_disables_the_selector_when_only_default_remains() {
+        use slint::platform::{Key, WindowEvent};
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        app::preview::populate_xray(&ui);
+        ui.show().unwrap();
+        click(&ui, "Xray Profiles");
+
+        let selector = |name: &str| {
+            ElementHandle::find_by_accessible_label(&ui, &format!("Port for {name}"))
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Combobox))
+                .expect("Profile port selector")
+        };
+        let option = |label: &str| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Button))
+        };
+        let press = |key: Key| {
+            let text: slint::SharedString = key.into();
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        };
+        let backup = || selector("Backup tunnel");
+        let selected = || backup().accessible_value().unwrap();
+        let us = "US · 2082";
+        let default = "Default · 2081";
+        assert_eq!(selected().as_str(), us);
+
+        backup().mock_single_click(PointerEventButton::Left);
+        assert_eq!(backup().accessible_expanded(), Some(true));
+        assert!(option(default).is_some());
+        for key in [Key::UpArrow, Key::DownArrow, Key::Return, Key::Space] {
+            press(key);
+            assert_eq!(selected().as_str(), us);
+            assert!(option(default).is_some());
+        }
+
+        // Click the profile name area beside the trigger, outside the popup.
+        let origin = backup().absolute_position();
+        let position =
+            slint::LogicalPosition::new(origin.x - 24., origin.y + backup().size().height / 2.);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+        assert_eq!(selected().as_str(), us);
+        assert_eq!(backup().accessible_expanded(), Some(false));
+        assert!(option(default).is_none());
+        for key in [Key::Space, Key::Return, Key::UpArrow, Key::DownArrow] {
+            press(key);
+            assert_eq!(selected().as_str(), us);
+            assert!(option(default).is_none());
+        }
+
+        backup().mock_single_click(PointerEventButton::Left);
+        option(default)
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        assert_eq!(selected().as_str(), default);
+        assert_eq!(backup().accessible_expanded(), Some(false));
+        assert!(option(default).is_none());
+
+        selector("US East").mock_single_click(PointerEventButton::Left);
+        option(default)
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        click(&ui, "Xray Ports");
+        click(&ui, "Remove port US");
+        assert_eq!(ui.global::<XrayModule>().get_ports().row_count(), 1);
+        click(&ui, "Xray Profiles");
+        assert_eq!(backup().accessible_enabled(), Some(false));
+        backup().mock_single_click(PointerEventButton::Left);
+        assert_eq!(backup().accessible_expanded(), Some(false));
+        assert!(option(default).is_none());
+        assert_eq!(selected().as_str(), default);
+    }
+    #[test]
+    fn bound_profile_link_reveals_and_focuses_its_row_in_a_long_subscription() {
+        use slint::{
+            ModelRc, VecModel,
+            platform::{Key, WindowEvent},
+        };
+
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = MainWindow::new().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(960., 640.));
+        let xray = ui.global::<XrayModule>();
+        xray.set_installed(true);
+        let profiles = (1..=30)
+            .map(|index| XrayProfileRow {
+                id: format!("p-{index}").into(),
+                name: format!("Server {index}").into(),
+                port_index: i32::from(index == 30),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        xray.set_subscriptions(ModelRc::new(VecModel::from(vec![XraySubscriptionGroup {
+            id: "source".into(),
+            name: "My subscription".into(),
+            profiles: ModelRc::new(VecModel::from(profiles)),
+            ..Default::default()
+        }])));
+        xray.set_port_labels(ModelRc::new(VecModel::from(vec![
+            "Default · 2081".into(),
+            "US · 2082".into(),
+        ])));
+        xray.set_ports(ModelRc::new(VecModel::from(vec![
+            XrayPortRow {
+                id: "default".into(),
+                name: "Default".into(),
+                number: "2081".into(),
+                is_default: true,
+                ..Default::default()
+            },
+            XrayPortRow {
+                id: "us".into(),
+                name: "US".into(),
+                number: "2082".into(),
+                used_count: 1,
+                users: ModelRc::new(VecModel::from(vec![XrayPortUser {
+                    id: "p-30".into(),
+                    name: "Server 30".into(),
+                }])),
+                delete_error: "Used by Server 30. Unbind it first, then delete.".into(),
+                ..Default::default()
+            },
+        ])));
+        let target_activated = Rc::new(Cell::new(false));
+        xray.on_activate_profile({
+            let target_activated = target_activated.clone();
+            move |id| target_activated.set(id == "p-30")
+        });
+        ui.set_page(6);
+        xray.set_section(1);
+        ui.show().unwrap();
+        let target = || {
+            ElementHandle::find_by_accessible_label(&ui, "Activate Server 30")
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Switch))
+        };
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Activate Server 1")
+                .next()
+                .is_some()
+        );
+        assert!(target().is_none_or(|row| row.absolute_position().y > 640.));
+        xray.set_section(2);
+        click(&ui, "Open profile Server 30");
+        assert_eq!(xray.get_section(), 1);
+        // Flush the new page's layout before advancing the one-shot reveal.
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+        let target = target().expect("the linked profile is visible after navigation");
+        let y = target.absolute_position().y;
+        assert!(y >= 90. && y + target.size().height <= 640., "row y={y}");
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Space.into(),
+        });
+        assert!(
+            target_activated.get(),
+            "the revealed profile switch must own keyboard focus"
+        );
     }
 
     #[test]

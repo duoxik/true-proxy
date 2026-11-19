@@ -1,6 +1,6 @@
 import { DashboardView } from "dashboard.slint";
 import { PageHeader, FormCard, SurfaceCard, PanelToolbar, TableHeading, EmptyState, DialogHeader, DialogActions } from "common.slint";
-import { ScrollView, Palette, TextEdit } from "std-widgets.slint";
+import { ScrollView, Palette } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
 import { Theme, UiIcon, ActionButton, RuleSwitch, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption } from "common.slint";
@@ -9,8 +9,8 @@ import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
 import { LogsView, TechnicalLogs } from "logs.slint";
 export { TechnicalLogs }
-import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow } from "xray.slint";
-export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow }
+import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser } from "xray.slint";
+export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -122,8 +122,6 @@ component Disclosure inherits Rectangle {
     in property <int> count;
     callback clicked;
     height: 40px; border-radius: Theme.radius-small;
-    border-width: 1px;
-    border-color: focus.has-focus ? Theme.accent : transparent;
     background: touch.has-hover ? Theme.surface-hover : Theme.field;
     HorizontalLayout { padding-left: 7px; padding-right: 10px; spacing: 10px;
         Rectangle { width: 14px; Path { y: (parent.height - 12px) / 2; width: 12px; height: 12px; viewbox-width: 12; viewbox-height: 12; stroke: Theme.secondary; stroke-width: 1.5px; commands: root.expanded ? "M2 4 L6 8 L10 4" : "M4 2 L8 6 L4 10"; } }
@@ -145,7 +143,6 @@ component RouteChoice inherits Rectangle {
     callback hovered;
     height: 38px; border-radius: Theme.radius-small;
     background: root.enabled && touch.has-hover ? Theme.surface-hover : transparent;
-    border-width: focus.has-focus ? 1px : 0px; border-color: Theme.accent;
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     forward-focus: focus;
@@ -228,7 +225,7 @@ component ListEditor inherits VerticalLayout {
         }
     }
     for value[index] in root.values: HorizontalLayout { height: 34px; spacing: 8px;
-        value-field := Rectangle { horizontal-stretch: 1; border-radius: Theme.radius-small; background: Theme.field; border-width: 1px; border-color: value-input.has-focus ? Theme.accent : Theme.border;
+        value-field := Rectangle { horizontal-stretch: 1; border-radius: Theme.radius-small; background: Theme.field; border-width: 1px; border-color: Theme.border;
             if value == "": Text { x: 12px; width: parent.width - 24px; text: root.placeholder; color: Theme.muted; font-size: 12px; overflow: elide; vertical-alignment: center; accessible-role: none; }
             value-input := TextInput { x: 12px; width: parent.width - 24px; height: parent.height; text: value; color: Theme.text; font-size: 12px; single-line: true; vertical-alignment: center;
                 accessible-label: root.title + " · row " + (index + 1);
@@ -484,7 +481,7 @@ component ProxySelectionCheck inherits Rectangle {
         height: 18px;
         border-radius: 5px;
         border-width: 1px;
-        border-color: focus.has-focus ? Theme.accent-hover : root.checked || root.mixed ? Theme.primary : Theme.border;
+        border-color: root.checked || root.mixed ? Theme.primary : Theme.border;
         background: root.checked || root.mixed ? Theme.primary : Theme.surface;
         if root.checked: UiIcon {
             name: "check"; ink: Theme.primary-text;
@@ -637,9 +634,56 @@ component ProxyTableColumns inherits HorizontalLayout {
     }
 }
 
+component CidrEditor inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    private property <string> placeholder: "192.168.0.0/16";
+    callback cancel;
+    horizontal-stretch: 1; vertical-stretch: 1;
+    border-width: 1px; border-radius: Theme.radius-small;
+    border-color: Theme.border; background: Theme.field;
+    forward-focus: input;
+    ContextMenuArea {
+        Menu {
+            MenuItem { title: @tr("Cut"); activated => { input.cut(); } }
+            MenuItem { title: @tr("Copy"); enabled: root.text != ""; activated => { input.copy(); } }
+            MenuItem { title: @tr("Paste"); activated => { input.paste(); } }
+            MenuItem { title: @tr("Select All"); enabled: root.text != ""; activated => { input.select-all(); } }
+        }
+        scroll := ScrollView {
+            x: 12px; y: 12px; width: parent.width - 24px; height: parent.height - 24px;
+            content-width: max(self.visible-width, input.preferred-width);
+            content-height: max(self.visible-height, input.preferred-height);
+            input := TextInput {
+                width: scroll.content-width; height: scroll.content-height;
+                single-line: false; wrap: no-wrap; page-height: scroll.visible-height;
+                font-family: "Consolas"; font-size: 13px; color: Theme.text;
+                selection-background-color: Theme.selection; selection-foreground-color: Theme.text;
+                accessible-label: "Local network CIDRs";
+                accessible-placeholder-text: root.placeholder;
+                cursor-position-changed(cpos) => {
+                    let line-height = self.font-metrics.ascent - self.font-metrics.descent;
+                    let x = clamp(scroll.content-x, -cpos.x, scroll.visible-width - cpos.x - 1px);
+                    let y = clamp(scroll.content-y, -cpos.y, scroll.visible-height - cpos.y - line-height);
+                    scroll.content-x = clamp(x, scroll.visible-width - scroll.content-width, 0px);
+                    scroll.content-y = clamp(y, scroll.visible-height - scroll.content-height, 0px);
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.cancel(); return accept; }
+                    return reject;
+                }
+            }
+        }
+    }
+    if root.text == "" && input.preedit-text == "": Text {
+        x: 12px; y: 12px; width: parent.width - 24px; height: self.preferred-height;
+        text: root.placeholder; color: Theme.muted;
+        font-family: input.font-family; font-size: input.font-size; accessible-role: none;
+    }
+}
+
 export component MainWindow inherits Window {
     icon: @image-url("../assets/icon.svg");
-    title: root.preview-ui ? "True Proxy · Local UI Preview" : root.local-build ? "True Proxy · Local build" : "True Proxy";
+    title: root.preview-ui ? "True Proxy · Local UI Preview" : root.local-test ? "True Proxy · Local Test" : root.local-build ? "True Proxy · Local build" : "True Proxy";
     preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
     in-out property <bool> dark-theme <=> Theme.dark;
@@ -650,9 +694,13 @@ export component MainWindow inherits Window {
         if root.dialog == 3 { root.import-viewport(); }
     }
     in-out property <int> page: 0;
-    changed page => { root.sync-connection-observation(); }
+    changed page => {
+        root.sync-connection-observation();
+        if root.page != 6 { XrayModule.flush-port-edit(); }
+    }
     in property <bool> preview-ui: false;
     in property <bool> local-build: false;
+    in property <bool> local-test: false;
     in-out property <int> settings-section: 0;
     in-out property <int> dialog: 0;
     in property <bool> active: false;
@@ -837,7 +885,7 @@ export component MainWindow inherits Window {
                                 links: [
                                     { label: "Dashboard", icon: "dashboard", target: 0 },
                                     { label: "Profiles", icon: "file", target: 1 },
-                                    { label: "General", icon: "settings", target: 2 },
+                                    { label: "Ports", icon: "network", target: 2 },
                                     { label: "DNS", icon: "globe", target: 3 },
                                     { label: "Fallbacks", icon: "rules", target: 4 },
                                     { label: "Connections", icon: "activity", target: 5 },
@@ -1245,9 +1293,9 @@ export component MainWindow inherits Window {
                                         HorizontalLayout {
                                             spacing: 8px;
                                             Text { text: "Launch at Windows sign-in"; color: Theme.text; font-size: 12px; wrap: word-wrap; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
-                                            RuleSwitch { label: "Start when I sign in to Windows"; checked: root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.autostart-enabled = !root.autostart-enabled; root.set-autostart(root.autostart-enabled); } }
+                                            RuleSwitch { label: "Start when I sign in to Windows"; checked: root.autostart-enabled; enabled: !root.autostart-busy && !root.local-test; toggled => { root.autostart-enabled = !root.autostart-enabled; root.set-autostart(root.autostart-enabled); } }
                                         }
-                                        Text { text: root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                                        Text { text: root.local-test ? "Windows startup is managed by the installed app." : root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
                                     }
                                 }
                                 FormCard {
@@ -1527,17 +1575,9 @@ export component MainWindow inherits Window {
                         text: "Enter one IPv4 or IPv6 CIDR per line.";
                         color: Theme.muted; font-size: 12px;
                     }
-                    TextEdit {
-                        accessible-label: "Local network CIDRs";
+                    CidrEditor {
                         text <=> root.local-network-draft;
-                        font-family: "Consolas";
-                        font-size: 13px;
-                        wrap: no-wrap;
-                        placeholder-text: "192.168.0.0/16";
-                        key-pressed(event) => {
-                            if event.text == Key.Escape { root.close-dialog(); return accept; }
-                            return reject;
-                        }
+                        cancel => { root.close-dialog(); }
                     }
                     if root.notice != "": Text {
                         text: root.notice; color: Theme.danger; font-size: 12px;

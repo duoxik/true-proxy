@@ -155,7 +155,7 @@ export component ActionButton inherits Rectangle {
     min-width: root.icon-only ? 36px : max(root.content-min-width, label-text.preferred-width + 26px + (root.icon == "" ? 0px : 23px)); max-width: self.min-width;
     height: 40px; horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: Theme.radius-small; border-width: 1px;
-    border-color: focus.has-focus ? Theme.accent : root.primary || root.quiet ? transparent : root.outline;
+    border-color: root.primary || root.quiet ? transparent : root.outline;
     background: !root.enabled ? (root.quiet ? transparent : Theme.disabled) : root.primary
         ? (touch.pressed ? Theme.primary-pressed : touch.has-hover ? Theme.primary-hover : Theme.primary)
         : (touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : root.quiet ? transparent : Theme.surface);
@@ -198,11 +198,13 @@ export component TextLink inherits ActionButton {
 export component FormCard inherits SurfaceCard {
     in property <string> title;
     in property <string> caption;
+    in property <string> caption-emphasis;
     in property <string> icon;
     in property <string> version;
     in property <string> action-label;
     in property <string> action-icon: "external";
     in property <bool> action-enabled: true;
+    in property <bool> outlined-action: false;
     in property <string> action-accessibility: root.action-label;
     callback action;
     out property <length> content-height: content.preferred-height;
@@ -226,11 +228,23 @@ export component FormCard inherits SurfaceCard {
                     Text { text: root.title; color: Theme.text; font-size: 18px; font-weight: 600; min-width: 0px; overflow: elide; horizontal-stretch: 0; vertical-alignment: center; }
                     if root.version != "": Text { text: root.version; color: Theme.muted; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
                 }
-                if root.caption != "": Text { text: root.caption; color: Theme.secondary; font-size: 12px; min-width: 0px; wrap: word-wrap; height: self.preferred-height; }
+                if root.caption != "" && root.caption-emphasis == "": Text { text: root.caption; color: Theme.secondary; font-size: 12px; min-width: 0px; wrap: word-wrap; height: self.preferred-height; }
+                if root.caption-emphasis != "": StyledText {
+                    text: @markdown("\{root.caption} **<font color='\{Theme.text}'>\{root.caption-emphasis}</font>**");
+                    default-color: Theme.secondary; default-font-size: 12px;
+                    min-width: 0px; height: self.preferred-height;
+                    accessible-role: text; accessible-label: root.caption + " " + root.caption-emphasis;
+                }
             }
             if root.action-label != "": Rectangle {
                 width: action-link.min-width;
-                action-link := TextLink { x: 0px; y: 0px; label: root.action-label; icon: root.action-icon; enabled: root.action-enabled; accessible-label: root.action-accessibility; clicked => { root.action(); } }
+                action-link := TextLink {
+                    x: 0px; y: 0px; label: root.action-label; icon: root.action-icon;
+                    quiet: !root.outlined-action; trailing-icon: !root.outlined-action;
+                    height: root.outlined-action ? 38px : 30px;
+                    enabled: root.action-enabled; accessible-label: root.action-accessibility;
+                    clicked => { root.action(); }
+                }
             }
         }
         @children
@@ -247,8 +261,6 @@ export component SegmentButton inherits Rectangle {
     width: max(28px, caption.preferred-width + 16px);
     height: 28px;
     border-radius: 8px;
-    border-width: focus.has-focus ? 1px : 0px;
-    border-color: Theme.accent-hover;
     background: root.selected ? root.selected-color : touch.has-hover ? Theme.surface-hover : root.resting-color;
     accessible-role: button;
     accessible-label: root.label;
@@ -333,7 +345,6 @@ export component RuleSwitch inherits Rectangle {
     width: 44px; height: 38px;
     opacity: root.enabled || root.fixed ? 1 : 0.45;
     Rectangle { y: (parent.height - self.height) / 2; x: (parent.width - self.width) / 2; width: root.track-width; height: 24px; border-radius: 12px; background: root.checked && root.fixed ? Theme.accent-soft : root.checked && root.enabled ? Theme.primary : Theme.switch-off;
-        border-width: focus.has-focus ? 1px : 0px; border-color: Theme.text;
         Rectangle { x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px; width: 18px; height: 18px; border-radius: 9px; background: root.fixed ? Theme.secondary : root.checked && root.enabled ? Theme.switch-on-thumb : Theme.switch-off-thumb; animate x { duration: 100ms; } }
     }
     TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
@@ -361,7 +372,7 @@ export component Field inherits VerticalLayout {
         height: root.field-height;
         border-radius: Theme.radius-small;
         border-width: 1px;
-        border-color: input.has-focus ? Theme.accent : Theme.border;
+        border-color: Theme.border;
         background: Theme.field;
         property <length> inset: root.icon == "" ? 12px : 36px;
         if root.icon != "": UiIcon { name: root.icon; x: 12px; y: (parent.height - self.height) / 2; width: 16px; height: 16px; }
@@ -425,7 +436,9 @@ export component DialogActions inherits Rectangle {
 export component ThemedComboBox inherits Rectangle {
     in property <[string]> model;
     in property <bool> enabled: true;
+    in property <string> label;
     in-out property <int> current-index: 0;
+    callback selected(int);
     border-radius: Theme.radius-small;
     background: root.enabled ? Theme.field : Theme.disabled;
     clip: true;
@@ -434,24 +447,29 @@ export component ThemedComboBox inherits Rectangle {
     horizontal-stretch: 1;
     forward-focus: control;
 
-    // Keep Slint's keyboard navigation and accessibility for the selector.
+    // The pinned Fluent control paints a 3 px inner focus ring. Leave that paint
+    // outside the clip, including a pixel for fractional DPI rounding.
+    private property <length> clip-inset: 4px;
     control := ComboBox {
-        width: parent.width;
-        height: parent.height;
+        x: -root.clip-inset; y: -root.clip-inset;
+        width: parent.width + 2 * root.clip-inset;
+        height: parent.height + 2 * root.clip-inset;
         model: root.model;
         enabled: root.enabled;
         current-index <=> root.current-index;
+        accessible-label: root.label;
+        selected => { root.selected(self.current-index); }
     }
+    Rectangle { border-radius: root.border-radius; border-width: 1px; border-color: Theme.border; }
 }
 
 component CheckMark inherits Rectangle {
     in property <bool> checked;
-    in property <bool> focused;
     width: 16px;
     height: 16px;
     border-radius: 5px;
     border-width: 1px;
-    border-color: root.focused ? Theme.accent-hover : root.checked ? Theme.primary : Theme.muted;
+    border-color: root.checked ? Theme.primary : Theme.muted;
     background: root.checked ? Theme.primary : Theme.field;
     if root.checked: Path {
         x: 3px; y: 3px; width: 10px; height: 10px;
@@ -491,7 +509,7 @@ export component ThemedCheckBox inherits Rectangle {
         spacing: 8px;
         Rectangle {
             width: 16px;
-            CheckMark { y: (parent.height - self.height) / 2; checked: root.checked; focused: focus.has-focus; }
+            CheckMark { y: (parent.height - self.height) / 2; checked: root.checked; }
         }
         Text { text: root.text; color: Theme.text; font-size: 12px; min-width: 0px; overflow: elide; vertical-alignment: center; accessible-role: none; }
     }
@@ -518,7 +536,7 @@ export component ConnectionFilterCheck inherits Rectangle {
     forward-focus: focus;
     HorizontalLayout { padding-left: 5px; padding-right: 5px; spacing: 7px;
         Rectangle { width: 16px;
-            CheckMark { y: (parent.height - self.height) / 2; checked: root.option.checked; focused: focus.has-focus; }
+            CheckMark { y: (parent.height - self.height) / 2; checked: root.option.checked; }
         }
         Text { text: root.option.label; color: Theme.secondary; font-size: 11px; min-width: 0px; overflow: elide; vertical-alignment: center; accessible-role: none; }
     }

@@ -1,10 +1,10 @@
-//! A managed Xray instance with one loopback SOCKS inbound and one VLESS node.
+//! A managed Xray instance with loopback SOCKS listeners routed to individual VLESS nodes.
 
 use crate::{config::Protocol, dns::DomainCache};
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     io::{self, BufRead},
     net::{IpAddr, SocketAddr},
     path::Path,
@@ -26,19 +26,24 @@ pub(super) use self::windows::run_link_decoder;
 
 const ROW_LIMIT: usize = 256;
 const LINE_LIMIT: usize = 2048;
-const INBOUND: &str = "socks";
-const TUNNEL: &str = "vless";
 const DNS_INBOUND: &str = "module-dns";
 const DNS_TUNNEL: &str = "vless-dns";
 const DIRECT: &str = "direct";
 
-pub struct Settings<'a> {
-    pub socks_port: u16,
-    pub upstream: &'a str,
+pub struct Listener {
+    pub port_id: String,
+    pub profile_id: String,
+    pub port: u16,
+    pub upstream: String,
     pub upstream_port: u16,
     pub upstream_ip: Option<IpAddr>,
-    pub outbound: &'a Value,
+    pub outbound: Value,
+}
+
+pub struct Settings<'a> {
+    pub listeners: &'a [Listener],
     pub dns_servers: &'a [String],
+    pub dns_exit_profile_id: Option<&'a str>,
     pub direct_domains: &'a [String],
     pub direct_ips: &'a [String],
     pub geo_directory: &'a Path,
@@ -242,7 +247,7 @@ fn access_event(time: &str, message: &str) -> Option<ConnectionEvent> {
         .map(|(route, _)| route);
     let route = match detour.and_then(|route| route.split_ascii_whitespace().last()) {
         Some(DIRECT) => "Direct",
-        Some(TUNNEL) => "VLESS",
+        Some(tag) if tag.starts_with("out-") || tag == "vless" => "VLESS",
         Some(DNS_TUNNEL) => return None,
         _ => "—",
     };
@@ -316,24 +321,25 @@ fn read_output(
     Ok(())
 }
 
-fn upstream(settings: &Settings<'_>) -> Result<SocketAddr> {
+fn upstream(listener: &Listener) -> Result<SocketAddr> {
+    ensure!(listener.port != 0, "Choose a nonzero SOCKS port");
     ensure!(
-        settings.socks_port != 0,
-        "Choose a SOCKS port between 1 and 65535"
-    );
-    ensure!(
-        settings.upstream_port != 0,
+        listener.upstream_port != 0,
         "The VLESS server port is invalid"
     );
-    let ip = settings
+    let ip = listener
         .upstream_ip
-        .or_else(|| settings.upstream.parse().ok())
+        .or_else(|| listener.upstream.parse().ok())
         .context("Refresh VPN server addresses in X-RAY → DNS before starting Xray")?;
-    Ok(SocketAddr::new(ip, settings.upstream_port))
+    Ok(SocketAddr::new(ip, listener.upstream_port))
 }
 
-fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value, Vec<String>)> {
-    let input = settings.outbound;
+fn vless_outbound(
+    listener: &Listener,
+    address: SocketAddr,
+    custom_dns: bool,
+) -> Result<(Value, Vec<String>)> {
+    let input = &listener.outbound;
     let source = &input["settings"];
     let transport = &input["streamSettings"];
     let security = transport["security"].as_str();
@@ -366,7 +372,7 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
         json!({ "network": "raw", "security": "reality", "realitySettings": reality })
     } else {
         let tls = &transport["tlsSettings"];
-        let name = tls["serverName"].as_str().unwrap_or(settings.upstream);
+        let name = tls["serverName"].as_str().unwrap_or(&listener.upstream);
         ensure!(!name.is_empty(), "The VLESS profile has no TLS server name");
         let mut tls_settings = json!({ "serverName": name });
         if let Some(fingerprint) = tls["fingerprint"].as_str() {
@@ -384,6 +390,25 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
         }
         json!({ "network": "raw", "security": "tls", "tlsSettings": tls_settings })
     };
+    let vless = json!({
+        "tag": format!("out-{}", listener.profile_id),
+        "protocol": "vless",
+        "targetStrategy": if custom_dns { "ForceIP" } else { "AsIs" },
+        "settings": {
+            "address": address.ip(), "port": address.port(), "id": id,
+            "encryption": "none", "flow": flow,
+        },
+        "streamSettings": stream,
+        "mux": { "enabled": false },
+    });
+    Ok((vless, secrets))
+}
+
+fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
+    ensure!(
+        !settings.listeners.is_empty(),
+        "Turn on a profile in X-RAY → Profiles first"
+    );
     let custom_dns = !settings.dns_servers.is_empty();
     super::profile::validate_dns_servers(settings.dns_servers)?;
     ensure!(
@@ -398,33 +423,60 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
         "IP fallback must use geoip tags"
     );
     let has_direct = !settings.direct_domains.is_empty() || !settings.direct_ips.is_empty();
-    let mut inbound = json!({
-        "tag": INBOUND,
-        "listen": "127.0.0.1",
-        "port": settings.socks_port,
-        "protocol": "socks",
-        "settings": { "auth": "noauth", "udp": true, "ip": "127.0.0.1" },
-    });
-    if !settings.direct_domains.is_empty() {
-        inbound["sniffing"] = json!({
-            "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true
+    let mut ports = BTreeSet::new();
+    let mut port_ids = BTreeSet::new();
+    let mut profile_ids = BTreeSet::new();
+    let mut inbounds = Vec::new();
+    let mut outbounds = Vec::new();
+    let mut profile_routes = Vec::new();
+    let mut inbound_tags = Vec::new();
+    let mut secrets = Vec::new();
+    for listener in settings.listeners {
+        ensure!(
+            ports.insert(listener.port),
+            "Duplicate SOCKS port {}",
+            listener.port
+        );
+        ensure!(
+            !listener.profile_id.is_empty() && profile_ids.insert(&listener.profile_id),
+            "Missing or duplicate enabled profile ID"
+        );
+        ensure!(
+            !listener.port_id.is_empty() && port_ids.insert(&listener.port_id),
+            "Missing or duplicate enabled port ID"
+        );
+        let tag = format!("in-{}", listener.port_id);
+        let mut inbound = json!({
+            "tag": tag,
+            "listen": "127.0.0.1",
+            "port": listener.port,
+            "protocol": "socks",
+            "settings": { "auth": "noauth", "udp": true, "ip": "127.0.0.1" },
         });
+        if !settings.direct_domains.is_empty() {
+            inbound["sniffing"] = json!({
+                "enabled": true, "destOverride": ["http", "tls", "quic"], "routeOnly": true
+            });
+        }
+        let (outbound, credentials) = vless_outbound(listener, upstream(listener)?, custom_dns)?;
+        profile_routes
+            .push(json!({ "type": "field", "inboundTag": [tag], "outboundTag": outbound["tag"] }));
+        inbounds.push(inbound);
+        inbound_tags.push(tag);
+        outbounds.push(outbound);
+        secrets.extend(credentials);
     }
-    let vless = json!({
-        "tag": TUNNEL,
-        "protocol": "vless",
-        "targetStrategy": if custom_dns { "ForceIP" } else { "AsIs" },
-        "settings": {
-            "address": address.ip(), "port": address.port(), "id": id,
-            "encryption": "none", "flow": flow,
-        },
-        "streamSettings": stream,
-        "mux": { "enabled": false },
-    });
-    let mut outbounds = vec![vless.clone()];
     let mut routes = Vec::new();
     if custom_dns {
-        let mut dns_outbound = vless;
+        let exit_id = settings
+            .dns_exit_profile_id
+            .context("Choose a DNS exit profile in X-RAY → DNS.")?;
+        let dns_index = settings
+            .listeners
+            .iter()
+            .position(|listener| listener.profile_id == exit_id)
+            .context("The DNS exit profile is unavailable. Choose another in X-RAY → DNS.")?;
+        let mut dns_outbound = outbounds[dns_index].clone();
         dns_outbound["tag"] = json!(DNS_TUNNEL);
         // A DNS resolver hostname is resolved by the VPN server. Resolving it
         // through the local built-in DNS again would recurse.
@@ -445,15 +497,16 @@ fn configuration(settings: &Settings<'_>, address: SocketAddr) -> Result<(Value,
         ] {
             if !tags.is_empty() {
                 let mut rule =
-                    json!({ "type": "field", "inboundTag": [INBOUND], "outboundTag": DIRECT });
+                    json!({ "type": "field", "inboundTag": inbound_tags, "outboundTag": DIRECT });
                 rule[field] = json!(tags);
                 routes.push(rule);
             }
         }
     }
+    routes.extend(profile_routes);
     let mut config = json!({
         "log": { "loglevel": "info", "access": "", "error": "" },
-        "inbounds": [inbound],
+        "inbounds": inbounds,
         "outbounds": outbounds,
         "routing": { "domainStrategy": "AsIs", "rules": routes },
     });
@@ -472,7 +525,7 @@ fn geo_tag(tag: &str, kind: &str) -> bool {
 struct Allowance {
     generation: u64,
     identity: Arc<windows::Identity>,
-    upstream: SocketAddr,
+    upstreams: BTreeSet<SocketAddr>,
     geo_direct: bool,
 }
 
@@ -532,7 +585,7 @@ impl Bypass {
                 .as_ref()
                 .filter(|entry| entry.identity.pid() == pid)?;
             let allowed = entry.identity.alive()
-                && ((destination == entry.upstream && protocol == Protocol::Tcp)
+                && ((protocol == Protocol::Tcp && entry.upstreams.contains(&destination))
                     || (entry.geo_direct && matches!(protocol, Protocol::Tcp | Protocol::Udp)));
             Some((entry.generation, allowed))
         }
@@ -544,7 +597,12 @@ impl Bypass {
     }
 
     #[cfg(windows)]
-    fn activate(&self, identity: Arc<windows::Identity>, upstream: SocketAddr, geo_direct: bool) {
+    fn activate(
+        &self,
+        identity: Arc<windows::Identity>,
+        upstreams: BTreeSet<SocketAddr>,
+        geo_direct: bool,
+    ) {
         let pid = identity.pid();
         let generation = self
             .sequence
@@ -554,7 +612,7 @@ impl Bypass {
         *self.active.lock().unwrap() = Some(Allowance {
             generation,
             identity,
-            upstream,
+            upstreams,
             geo_direct,
         });
         self.generation.store(generation, Ordering::Release);
@@ -580,7 +638,31 @@ pub struct Runtime {
     child: Child,
     #[cfg(windows)]
     bypass: Arc<Bypass>,
+    #[cfg(windows)]
+    ports: Vec<u16>,
     started: Instant,
+}
+
+#[derive(Debug)]
+pub struct ListenerUnavailable {
+    pub port: u16,
+    reason: anyhow::Error,
+}
+
+impl std::error::Error for ListenerUnavailable {}
+
+impl std::fmt::Display for ListenerUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.reason)
+    }
+}
+
+pub fn check_listener_port(port: u16) -> Result<()> {
+    ensure!(port != 0, "Choose a nonzero SOCKS port");
+    #[cfg(windows)]
+    return windows::check_socks_port(port);
+    #[cfg(not(windows))]
+    anyhow::bail!("The Xray module is available on Windows");
 }
 
 impl Runtime {
@@ -592,28 +674,39 @@ impl Runtime {
     ) -> Result<Self> {
         #[cfg(windows)]
         {
-            windows::check_socks_port(settings.socks_port)?;
-            let address = upstream(&settings)?;
-            let (config, secrets) = configuration(&settings, address)?;
+            let (config, secrets) = configuration(&settings)?;
+            let mut ports = Vec::new();
+            let mut upstreams = BTreeSet::new();
+            for listener in settings.listeners {
+                check_listener_port(listener.port).map_err(|reason| ListenerUnavailable {
+                    port: listener.port,
+                    reason,
+                })?;
+                ports.push(listener.port);
+                upstreams.insert(upstream(listener)?);
+            }
+            let bytes = serde_json::to_vec(&config)?;
             let child = Child::spawn(installed, settings.geo_directory, &activity, secrets)?;
             bypass.activate(
                 child.identity().clone(),
-                address,
+                upstreams,
                 !settings.direct_domains.is_empty() || !settings.direct_ips.is_empty(),
             );
             let mut runtime = Self {
                 child,
                 bypass,
+                ports,
                 started: Instant::now(),
             };
-            let ready = runtime
-                .child
-                .start(serde_json::to_vec(&config)?)
-                .and_then(|()| {
+            let ready = runtime.child.start(bytes).and_then(|()| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                for &port in &runtime.ports {
                     runtime
                         .child
-                        .wait_socks(settings.socks_port, Duration::from_secs(5))
-                });
+                        .wait_socks(port, deadline.saturating_duration_since(Instant::now()))?;
+                }
+                Ok(())
+            });
             if ready.is_err() {
                 // Stop drains the child's output after it exits, so a fast
                 // failure cannot race ahead of the diagnostic reader.
@@ -632,6 +725,20 @@ impl Runtime {
         {
             let _ = (installed, settings, bypass, activity);
             anyhow::bail!("The Xray module is available on Windows")
+        }
+    }
+
+    pub fn owns_listener(&self, port: u16) -> bool {
+        #[cfg(windows)]
+        {
+            self.ports.contains(&port)
+                && self.child.identity().alive()
+                && windows::owns_loopback_listener(self.child.identity().pid(), port)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = port;
+            false
         }
     }
 
@@ -677,18 +784,24 @@ mod tests {
         let profile = profiles.selected().unwrap();
         let outbound = profile.outbound().unwrap();
         let address: SocketAddr = "192.0.2.1:443".parse().unwrap();
-        let settings = Settings {
-            socks_port: 2081,
-            upstream: &profile.host,
+        let listeners = [Listener {
+            port_id: "default".into(),
+            profile_id: profile.id.clone(),
+            port: 2081,
+            upstream: profile.host.clone(),
             upstream_port: profile.port,
             upstream_ip: Some(address.ip()),
-            outbound: &outbound,
+            outbound,
+        }];
+        let settings = Settings {
+            listeners: &listeners,
             dns_servers: &["tcp://192.0.2.53:53".into()],
+            dns_exit_profile_id: Some(&profile.id),
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: Path::new("."),
         };
-        let (config, secrets) = configuration(&settings, address).unwrap();
+        let (config, secrets) = configuration(&settings).unwrap();
         for index in [0, 1] {
             let node = &config["outbounds"][index];
             let stream = &node["streamSettings"];
@@ -716,12 +829,18 @@ mod tests {
                 "tlsSettings": {"serverName": "node.example", "allowInsecure": true}
             },
         });
-        let mut settings = Settings {
-            socks_port: 2081,
-            upstream: "node.example",
+        let mut listener = Listener {
+            port_id: "default".into(),
+            profile_id: "node".into(),
+            port: 2081,
+            upstream: "node.example".into(),
             upstream_port: 443,
             upstream_ip: Some("192.0.2.1".parse().unwrap()),
-            outbound: &profile,
+            outbound: profile,
+        };
+        let settings = Settings {
+            listeners: std::slice::from_ref(&listener),
+            dns_exit_profile_id: Some("node"),
             dns_servers: &[
                 "https://dns.example/dns-query".into(),
                 "tcp://192.0.2.53:8853".into(),
@@ -730,7 +849,7 @@ mod tests {
             direct_ips: &["geoip:ru".into()],
             geo_directory: Path::new("."),
         };
-        let (value, _) = configuration(&settings, upstream(&settings).unwrap()).unwrap();
+        let (value, _) = configuration(&settings).unwrap();
         assert_eq!(value["inbounds"][0]["listen"], "127.0.0.1");
         assert_eq!(value["inbounds"][0]["settings"]["udp"], true);
         assert_eq!(value["outbounds"][0]["settings"]["address"], "192.0.2.1");
@@ -746,13 +865,108 @@ mod tests {
         assert_eq!(value["routing"]["rules"][0]["outboundTag"], DNS_TUNNEL);
         assert_eq!(value["routing"]["rules"][1]["outboundTag"], DIRECT);
 
-        settings.upstream_ip = None;
-        assert!(upstream(&settings).is_err());
-        settings.upstream = "2001:db8::1";
+        listener.upstream_ip = None;
+        assert!(upstream(&listener).is_err());
+        listener.upstream = "2001:db8::1".into();
         assert_eq!(
-            upstream(&settings).unwrap(),
+            upstream(&listener).unwrap(),
             "[2001:db8::1]:443".parse().unwrap()
         );
+    }
+
+    #[test]
+    fn independent_ports_generate_independent_routes_and_redact_all_credentials() {
+        let listener = |id: &str, port_id: &str, port, upstream: &str| Listener {
+            port_id: port_id.into(),
+            profile_id: id.into(),
+            port,
+            upstream: upstream.into(),
+            upstream_port: 443,
+            upstream_ip: None,
+            outbound: json!({
+                "protocol": "vless",
+                "settings": { "id": format!("uuid-{id}"), "encryption": "none" },
+                "streamSettings": { "network": "tcp", "security": "tls" }
+            }),
+        };
+        let listeners = [
+            listener("us", "port-2", 2200, "192.0.2.4"),
+            listener("lv", "default", 2100, "192.0.2.3"),
+        ];
+        let settings = Settings {
+            listeners: &listeners,
+            dns_servers: &[],
+            dns_exit_profile_id: None,
+            direct_domains: &[],
+            direct_ips: &[],
+            geo_directory: Path::new("."),
+        };
+        let (config, secrets) = configuration(&settings).unwrap();
+        assert_eq!(config["inbounds"].as_array().unwrap().len(), 2);
+        assert_eq!(config["outbounds"].as_array().unwrap().len(), 2);
+        assert_eq!(config["routing"]["rules"].as_array().unwrap().len(), 2);
+        for (index, listener) in listeners.iter().enumerate() {
+            let inbound = &config["inbounds"][index];
+            let outbound = &config["outbounds"][index];
+            let rule = &config["routing"]["rules"][index];
+            assert_eq!(inbound["port"], listener.port);
+            assert_eq!(inbound["listen"], "127.0.0.1");
+            assert_eq!(inbound["settings"]["udp"], true);
+            assert_eq!(outbound["settings"]["address"], listener.upstream);
+            assert_eq!(
+                rule["inboundTag"],
+                json!([format!("in-{}", listener.port_id)])
+            );
+            assert_eq!(rule["inboundTag"][0], inbound["tag"]);
+            assert_eq!(rule["outboundTag"], format!("out-{}", listener.profile_id));
+            assert_eq!(rule["outboundTag"], outbound["tag"]);
+            assert!(secrets.contains(&format!("uuid-{}", listener.profile_id)));
+        }
+        let activity = Activity::default();
+        activity.receive("from udp:127.0.0.1:1 accepted udp:example.test:443 [in-us -> out-us]");
+        assert_eq!(activity.stats().proxied, 1);
+        let mut settings = Settings {
+            dns_servers: &["192.0.2.53".into()],
+            direct_domains: &["geosite:category-ru".into()],
+            ..settings
+        };
+        assert!(configuration(&settings).is_err());
+        settings.dns_exit_profile_id = Some("missing");
+        assert!(configuration(&settings).is_err());
+        settings.dns_exit_profile_id = Some("us");
+        let (config, _) = configuration(&settings).unwrap();
+        assert_eq!(config["outbounds"][2]["tag"], DNS_TUNNEL);
+        assert_eq!(
+            config["outbounds"][2]["settings"],
+            config["outbounds"][0]["settings"]
+        );
+        assert_eq!(config["outbounds"][2]["settings"]["address"], "192.0.2.4");
+        let rules = config["routing"]["rules"].as_array().unwrap();
+        assert_eq!(rules[0]["outboundTag"], DNS_TUNNEL);
+        assert_eq!(rules[1]["outboundTag"], DIRECT);
+        assert_eq!(rules[1]["inboundTag"], json!(["in-port-2", "in-default"]));
+        assert_eq!(rules[2]["outboundTag"], "out-us");
+        assert_eq!(rules[3]["outboundTag"], "out-lv");
+
+        let replacement = [
+            listener("new-us", "port-2", 2200, "192.0.2.5"),
+            listener("lv", "default", 2100, "192.0.2.3"),
+        ];
+        let plain_settings = Settings {
+            listeners: &replacement,
+            dns_servers: &[],
+            direct_domains: &[],
+            dns_exit_profile_id: None,
+            ..settings
+        };
+        let (switched, _) = configuration(&plain_settings).unwrap();
+        assert_eq!(switched["inbounds"][0]["tag"], "in-port-2");
+        assert_eq!(switched["routing"]["rules"][0]["outboundTag"], "out-new-us");
+        assert_eq!(
+            switched["routing"]["rules"][1]["inboundTag"],
+            json!(["in-default"])
+        );
+        assert_eq!(switched["routing"]["rules"][1]["outboundTag"], "out-lv");
     }
 
     #[test]
@@ -862,7 +1076,7 @@ mod tests {
     fn native_xray_opens_owned_loopback_socks_and_stops() {
         use std::{
             io::{Read, Write},
-            net::{Ipv4Addr, TcpListener, TcpStream},
+            net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket},
             thread,
         };
 
@@ -875,9 +1089,19 @@ mod tests {
             executable: fixture.into(),
             sha256,
         };
-        let socket = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = socket.local_addr().unwrap().port();
-        drop(socket);
+        let reserve = || TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let sockets = [reserve(), reserve()];
+        let mut ports = sockets
+            .each_ref()
+            .map(|socket| socket.local_addr().unwrap().port());
+        ports.sort_unstable();
+        let servers = [reserve(), reserve(), reserve()];
+        for server in &servers {
+            server.set_nonblocking(true).unwrap();
+        }
+        let resolver = reserve();
+        resolver.set_nonblocking(true).unwrap();
+        let resolver_address = resolver.local_addr().unwrap();
         let profile = json!({
             "protocol": "vless",
             "settings": {"id": "fixture", "encryption": "none", "flow": "xtls-rprx-vision"},
@@ -886,13 +1110,20 @@ mod tests {
                 "tlsSettings": {"serverName": "localhost"}
             },
         });
-        let settings = Settings {
-            socks_port: port,
-            upstream: "localhost",
-            upstream_port: 9,
+        let mut listeners = [0, 1].map(|index| Listener {
+            port_id: format!("port-{index}"),
+            profile_id: format!("local-{index}"),
+            port: ports[index],
+            upstream: "localhost".into(),
+            upstream_port: servers[index].local_addr().unwrap().port(),
             upstream_ip: Some(Ipv4Addr::LOCALHOST.into()),
-            outbound: &profile,
-            dns_servers: &["tcp://192.0.2.53:8853".into()],
+            outbound: profile.clone(),
+        });
+        drop(sockets);
+        let settings = Settings {
+            listeners: &listeners,
+            dns_servers: &[format!("tcp://{resolver_address}")],
+            dns_exit_profile_id: Some("local-1"),
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: installed.executable.parent().unwrap(),
@@ -911,7 +1142,7 @@ mod tests {
             });
         assert!(runtime.running().unwrap());
         let pid = runtime.child.identity().pid();
-        let endpoint = SocketAddr::from((Ipv4Addr::LOCALHOST, 9));
+        let endpoint = servers[0].local_addr().unwrap();
         assert_eq!(
             bypass.classify(pid, endpoint, Protocol::Tcp),
             Some((bypass.generation(), true))
@@ -921,33 +1152,184 @@ mod tests {
             Some((bypass.generation(), false))
         );
         assert_eq!(activity.stats().accepted, 0);
-        let mut socks = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
-        socks
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        socks.write_all(&[5, 1, 0]).unwrap();
-        let mut method = [0; 2];
-        socks.read_exact(&mut method).unwrap();
-        assert_eq!(method, [5, 0]);
-        // This request can only dial the configured loopback VLESS endpoint.
-        // The destination label below is from documentation space.
-        socks
-            .write_all(&[5, 1, 0, 1, 192, 0, 2, 9, 1, 187])
-            .unwrap();
+        let open_socks = |port| {
+            let mut socks = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            socks
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socks.write_all(&[5, 1, 0]).unwrap();
+            let mut method = [0; 2];
+            socks.read_exact(&mut method).unwrap();
+            assert_eq!(method, [5, 0]);
+            socks
+        };
+        let accept_tls = |server: &TcpListener| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match server.accept() {
+                    Ok((socket, _)) => {
+                        socket.set_nonblocking(false).unwrap();
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut header = [0; 1];
+                        match (&socket).read_exact(&mut header) {
+                            Ok(()) => {
+                                assert_eq!(header, [0x16], "expected a TLS handshake");
+                                return socket;
+                            }
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof
+                                ) && Instant::now() < deadline =>
+                            {
+                                continue;
+                            }
+                            Err(error) => {
+                                panic!("expected TLS on {:?}: {error}", server.local_addr())
+                            }
+                        }
+                    }
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("expected traffic on {:?}: {error}", server.local_addr()),
+                }
+            }
+        };
+        let connect_tcp = |port, server: &TcpListener| {
+            let mut socks = open_socks(port);
+            socks
+                .write_all(&[5, 1, 0, 1, 192, 0, 2, 9, 1, 187])
+                .unwrap();
+            socks.write_all(b"test payload").unwrap();
+            // Leave the handshake pending so retries cannot satisfy the DNS assertion.
+            (socks, accept_tls(server))
+        };
+        let connections = [0, 1].map(|index| {
+            assert!(runtime.owns_listener(ports[index]));
+            connect_tcp(ports[index], &servers[index])
+        });
         let until = Instant::now() + Duration::from_secs(2);
-        while activity.stats().accepted == 0 && Instant::now() < until {
+        while activity.stats().accepted < 2 && Instant::now() < until {
             thread::sleep(Duration::from_millis(10));
         }
         let events = activity.connections();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].destination, "192.0.2.9:443");
         assert_eq!(events[0].route, "VLESS");
         assert_eq!(events[0].protocol, "TCP");
-        assert_eq!(activity.stats().proxied, 1);
-        drop(socks);
+        assert_eq!(activity.stats().proxied, 2);
+
+        let mut socks = open_socks(ports[0]);
+        let domain = b"dns-egress.test";
+        let mut request = vec![5, 1, 0, 3, domain.len() as u8];
+        request.extend_from_slice(domain);
+        request.extend_from_slice(&443_u16.to_be_bytes());
+        socks.write_all(&request).unwrap();
+        socks.write_all(b"test payload").unwrap();
+        let dns_socket = accept_tls(&servers[1]);
+        assert!(
+            matches!(servers[0].accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        assert!(
+            matches!(resolver.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        let expected_route =
+            format!("accepted tcp:{resolver_address} [{DNS_INBOUND} -> {DNS_TUNNEL}]");
+        let until = Instant::now() + Duration::from_secs(2);
+        while !activity
+            .logs()
+            .iter()
+            .any(|line| line.message.contains(&expected_route))
+        {
+            assert!(
+                Instant::now() < until,
+                "missing DNS route to {resolver_address}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
         runtime.stop();
+        drop((connections, socks, dns_socket));
+        // A and AAAA queries can each have an upstream socket. Drop any
+        // queued sockets from the stopped generation before testing the next.
+        for server in &servers {
+            loop {
+                match server.accept() {
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("could not drain the stopped upstream: {error}"),
+                }
+            }
+        }
         assert!(!runtime.running().unwrap());
         assert_eq!(bypass.generation(), 0);
-        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok());
+        for port in ports {
+            assert!(!runtime.owns_listener(port));
+            assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok());
+        }
+
+        // Change just the profile behind the first named port. The same two
+        // client endpoints now reach the replacement and the untouched peer.
+        listeners[0].profile_id = "replacement".into();
+        listeners[0].upstream_port = servers[2].local_addr().unwrap().port();
+        let restarted_settings = || Settings {
+            listeners: &listeners,
+            dns_servers: &[],
+            dns_exit_profile_id: None,
+            direct_domains: &[],
+            direct_ips: &[],
+            geo_directory: installed.executable.parent().unwrap(),
+        };
+        let occupied = UdpSocket::bind((Ipv4Addr::LOCALHOST, ports[0])).unwrap();
+        let error = Runtime::start(
+            &installed,
+            restarted_settings(),
+            bypass.clone(),
+            activity.clone(),
+        )
+        .err()
+        .expect("a UDP port owned by another program must prevent startup");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("UDP port {}", ports[0]))
+        );
+        assert_eq!(
+            error.downcast_ref::<ListenerUnavailable>().unwrap().port,
+            ports[0]
+        );
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, ports[1])).is_ok());
+        drop(occupied);
+
+        let mut runtime =
+            Runtime::start(&installed, restarted_settings(), bypass, activity).unwrap();
+        let tcp = connect_tcp(ports[0], &servers[2]);
+        let mut control = open_socks(ports[1]);
+        control.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+        let mut reply = [0; 10];
+        control.read_exact(&mut reply).unwrap();
+        assert_eq!(reply[..8], [5, 0, 0, 1, 127, 0, 0, 1]);
+        let relay = (
+            Ipv4Addr::LOCALHOST,
+            u16::from_be_bytes([reply[8], reply[9]]),
+        );
+        let udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        udp.send_to(&[0, 0, 0, 1, 192, 0, 2, 8, 0, 80, 1], relay)
+            .unwrap();
+        let udp_upstream = accept_tls(&servers[1]);
+        assert!(
+            matches!(servers[0].accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        );
+        runtime.stop();
+        drop((tcp, control, udp_upstream));
+        for port in ports {
+            check_listener_port(port).unwrap();
+        }
     }
 }

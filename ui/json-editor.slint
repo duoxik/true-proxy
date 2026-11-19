@@ -20,7 +20,7 @@ export component JsonEditor inherits Rectangle {
     property <int> visible-lines: ceil(scroll.visible-height / root.line-height) + 4;
     changed first-line => { root.viewport(root.first-line, root.visible-lines); }
     changed visible-lines => { root.viewport(root.first-line, root.visible-lines); }
-    background: Theme.field; border-color: input.has-focus ? Theme.accent : Theme.border; border-width: 1px; border-radius: Theme.radius-medium;
+    background: Theme.field; border-color: Theme.border; border-width: 1px; border-radius: Theme.radius-medium;
     clip: true;
     vertical-stretch: 1;
     min-height: 180px;
