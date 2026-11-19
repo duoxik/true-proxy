@@ -3,6 +3,7 @@ mod appearance;
 mod fallback;
 mod json_highlight;
 mod logs;
+mod notice_backdrop;
 mod pending;
 pub(crate) mod preview;
 mod proxies;
@@ -154,12 +155,17 @@ fn clear_toast(ui: &MainWindow) {
 }
 
 fn show_toast(ui: &MainWindow, message: String, error: bool) {
+    show_toast_on_page(ui, message, error, -1);
+}
+
+fn show_toast_on_page(ui: &MainWindow, message: String, error: bool, page: i32) {
     let token = id();
     ui.set_toast_token(token.clone().into());
     ui.set_toast_error(error);
+    ui.set_toast_page(page);
     ui.set_toast(message.into());
     let weak = ui.as_weak();
-    slint::Timer::single_shot(Duration::from_secs(5), move || {
+    slint::Timer::single_shot(Duration::from_secs(4), move || {
         if let Some(ui) = weak.upgrade()
             && ui.get_toast_token() == token
         {
@@ -591,16 +597,16 @@ pub fn run() -> Result<()> {
     );
     let preview_arg = arguments.iter().position(|arg| arg == "--preview-ui");
     let interactive_preview = preview_arg.is_some();
-    let preview_page = match preview_arg
+    let preview_name = preview_arg
         .and_then(|index| arguments.get(index + 1))
-        .map(String::as_str)
-    {
+        .map(String::as_str);
+    let preview_page = match preview_name {
         Some("connections") => 3,
         Some("dashboard") => 0,
         Some("logs") => 5,
         Some("rules") => 1,
-        Some("xray") => 6,
-        Some("settings") => 4,
+        Some("xray" | "xray-notice" | "xray-notice-error") => 6,
+        Some("settings" | "appearance") => 4,
         _ => 2,
     };
     let diagnostic_preview = arguments
@@ -709,18 +715,24 @@ pub fn run() -> Result<()> {
         remember_routing(&state, &path, false)?;
     }
     let ui = MainWindow::new()?;
+    notice_backdrop::wire(&ui);
     ui.set_local_build(cfg!(debug_assertions));
     ui.set_local_test(local_test);
     if interactive_preview {
         ui.set_preview_ui(true);
         ui.set_page(preview_page);
     }
-    appearance::wire(
-        &ui,
+    let appearance_path = if interactive_preview {
+        let directory = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        Some(directory.join("TrueProxy-Preview").join("appearance.json"))
+    } else {
         preview
             .is_none()
-            .then(|| path.with_file_name("appearance.json")),
-    );
+            .then(|| path.with_file_name("appearance.json"))
+    };
+    appearance::wire(&ui, appearance_path);
     let _updates = match updating::wire(&ui, path.with_file_name("updates.json"), preview.is_some())
     {
         Ok(controller) => controller,
@@ -1285,7 +1297,47 @@ pub fn run() -> Result<()> {
         .is_none()
         .then(|| proxies::wire_automatic(&ui, state.clone(), statuses));
     if interactive_preview {
-        preview::populate_xray(&ui);
+        let restart_fixture = match preview_name {
+            Some("xray-notice") => Some(false),
+            Some("xray-notice-error") => Some(true),
+            _ => None,
+        };
+        if restart_fixture.is_some() {
+            preview::populate_xray_fixture(&ui, restart_fixture);
+        } else {
+            preview::populate_xray(&ui);
+        }
+        if matches!(
+            preview_name,
+            Some("appearance" | "proxy-notices" | "notification-center")
+        ) {
+            ui.set_update_available(true);
+            ui.set_update_version("0.12.13".into());
+            ui.set_update_text("Install the new version and reopen True Proxy.".into());
+            if preview_name != Some("appearance") {
+                ui.set_active(true);
+                ui.set_status("Sample data · Routing active".into());
+                ui.set_routing_pending(true);
+                ui.set_notice("Backup Proxy did not respond to the last check.".into());
+                let weak = ui.as_weak();
+                ui.on_restart_routing(move || {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.set_routing_pending(false);
+                    }
+                });
+            }
+            let weak = ui.as_weak();
+            ui.on_update_now(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_update_available(false);
+                }
+            });
+            if preview_name == Some("notification-center") {
+                // Let the new-message handler run before marking the fixture as hidden.
+                slint::platform::update_timers_and_animations();
+                ui.invoke_open_preview_notification_center();
+            }
+        }
     }
     if interactive_preview || !arguments.iter().any(|argument| argument == "--tray") {
         show_main_window(&ui)?;

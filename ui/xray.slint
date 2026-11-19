@@ -1,6 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
 import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
+import { FloatingNotice, NoticeBackdrop, NoticeShelf, NoticeEntry } from "notices.slint";
 
 export struct XrayProfileRow { id: string, name: string, summary: string, active: bool, port-index: int }
 export struct XraySubscriptionGroup { id: string, name: string, profiles: [XrayProfileRow], active-removed: bool }
@@ -12,6 +13,7 @@ export struct XrayPortRow {
 export struct XrayHostRow { host: string, address: string }
 export struct XrayConnectionRow { time: string, protocol: string, destination: string, observed-domain: string, source: string, route: string, detail: string }
 export struct XrayPortDraft { present: bool, value: string, error: string }
+export enum XrayRestartPhase { idle, restarting, restarted, failed }
 
 export global XrayModule {
     in property <bool> installed;
@@ -24,6 +26,12 @@ export global XrayModule {
     in property <bool> busy;
     in property <bool> running;
     in property <bool> pending;
+    in property <int> pending-revision;
+    in property <XrayRestartPhase> restart-phase;
+    in property <string> restart-error;
+    in-out property <bool> restart-collapsed;
+    out property <bool> restart-notice-active: self.installed && (self.pending || self.restart-phase != XrayRestartPhase.idle);
+    out property <color> restart-ink: self.restart-phase == XrayRestartPhase.failed ? Theme.danger : Theme.accent;
     in property <bool> settings-saving;
     in property <int> settings-revision;
     in property <string> settings-error;
@@ -99,7 +107,7 @@ export global XrayModule {
     callback process-port-edits;
     callback port-owners-changed;
     callback finish-port-edit(string, bool, int, string);
-    changed section => { self.flush-port-edit(); }
+    changed section => { self.flush-port-edit(); NoticeBackdrop.invalidate(); }
     callback settings-edited;
     callback commit-settings;
     callback refresh-hosts;
@@ -924,6 +932,7 @@ component XrayEventLine inherits Rectangle {
 }
 
 component XrayConnections inherits SurfaceCard {
+    in property <length> notice-clearance;
     min-width: 0px;
     min-height: 0px;
     vertical-stretch: 1;
@@ -971,7 +980,7 @@ component XrayConnections inherits SurfaceCard {
             content-height: max(self.visible-height, entries.preferred-height);
             entries := VerticalLayout {
                 padding-right: Theme.scroll-gutter;
-                padding-bottom: 8px;
+                padding-bottom: 8px + root.notice-clearance;
                 alignment: start;
                 if XrayModule.connections.length == 0: EmptyState {
                     icon: "activity";
@@ -985,6 +994,7 @@ component XrayConnections inherits SurfaceCard {
 
 export component XrayView inherits VerticalLayout {
     in property <bool> preview-ui;
+    in property <length> notice-clearance;
     private property <string> reveal-id;
     min-width: 0px;
     min-height: 0px;
@@ -999,25 +1009,6 @@ export component XrayView inherits VerticalLayout {
         action-enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.port-save-pending && !XrayModule.settings-saving && XrayModule.settings-error == ""));
         action => { XrayModule.toggle(); }
     }
-    if XrayModule.pending: Rectangle {
-        height: pending-content.preferred-height;
-        background: Theme.warning-surface;
-        border-radius: Theme.radius-medium;
-        pending-content := HorizontalLayout {
-            padding: 12px;
-            spacing: 14px;
-            Text { text: "Restart to apply Xray configuration changes. Xray will pause briefly and its proxy connections will close."; color: Theme.warning; font-size: 12px; vertical-alignment: center; wrap: word-wrap; min-width: 0px; }
-            ActionButton {
-                label: "Restart";
-                height: 34px;
-                enabled: XrayModule.running && !XrayModule.busy && !XrayModule.port-save-pending && !XrayModule.settings-saving && XrayModule.settings-error == "";
-                clicked => { XrayModule.restart(); }
-            }
-        }
-    }
-    if XrayModule.settings-error != "": XrayNotice { message: XrayModule.settings-error; error: true; }
-    if XrayModule.error != "": XrayNotice { message: XrayModule.error; error: true; }
-    if XrayModule.error == "" && XrayModule.status != "": XrayNotice { message: XrayModule.status; }
     if XrayModule.section < 5: settings-scroll := ScrollView {
         min-height: 0px;
         vertical-stretch: 1;
@@ -1026,7 +1017,7 @@ export component XrayView inherits VerticalLayout {
         content-height: max(self.visible-height, section-content.preferred-height);
         section-content := VerticalLayout {
             alignment: start;
-            padding-bottom: 12px;
+            padding-bottom: 12px + root.notice-clearance;
             if XrayModule.section == 0: XrayDashboard {
                 open-general => { settings-scroll.content-y = 0px; XrayModule.section = 2; XrayModule.refresh-activity(); }
                 open-profiles => {
@@ -1055,7 +1046,7 @@ export component XrayView inherits VerticalLayout {
             if XrayModule.section == 4: XrayFallbacks {}
         }
     }
-    if XrayModule.section == 5: XrayConnections {}
+    if XrayModule.section == 5: XrayConnections { notice-clearance: root.notice-clearance; }
     if XrayModule.section == 6: LogStreamView {
         title: "Xray log stream";
         backend-label: "Core";
@@ -1067,8 +1058,86 @@ export component XrayView inherits VerticalLayout {
         errors-only <=> XrayModule.log-errors-only;
         source <=> XrayModule.log-source;
         follow <=> XrayModule.log-follow;
+        notice-clearance: root.notice-clearance;
         filter => { XrayModule.filter-logs(); }
         set-recording(record) => { XrayModule.set-log-recording(record); }
         clear => { XrayModule.clear-logs(); }
+    }
+}
+
+export component XrayNotices inherits NoticeShelf {
+    in property <bool> current-page;
+    in property <string> toast;
+    in property <bool> toast-error;
+    out property <[NoticeEntry]> hidden-entries: XrayModule.installed
+        ? [restart-notice.entry, settings-notice.entry, status-notice.entry] : [];
+    out property <bool> has-hidden: XrayModule.installed && (restart-notice.entry.hidden
+        || settings-notice.entry.hidden || status-notice.entry.hidden);
+    out property <bool> restart-pulse: restart-notice.pulsing;
+    out property <color> indicator-ink: restart-notice.entry.hidden ? XrayModule.restart-ink : Theme.accent;
+    callback hidden;
+    callback open-section(int);
+
+    public function entry-action(index: int, secondary: bool) {
+        if index == 0 {
+            if secondary { restart-notice.secondary-action(); }
+            else { restart-notice.action(); }
+        }
+    }
+
+    private property <bool> in-scope: root.current-page && XrayModule.installed;
+    private property <bool> failed: XrayModule.restart-phase == XrayRestartPhase.failed;
+    private property <bool> restarting: XrayModule.restart-phase == XrayRestartPhase.restarting;
+    private property <bool> restarted: XrayModule.restart-phase == XrayRestartPhase.restarted;
+
+    FloatingNotice {
+        in-scope: root.in-scope;
+        active: root.toast != "";
+        message: root.toast;
+        icon: root.toast-error ? "info" : "check";
+        ink: root.toast-error ? Theme.danger : Theme.accent;
+        icon-surface: root.toast-error ? Theme.danger-soft : Theme.accent-soft;
+        can-hide: false;
+    }
+    status-notice := FloatingNotice {
+        in-scope: root.in-scope;
+        active: XrayModule.error != "" || (XrayModule.status != "" && XrayModule.restart-phase == XrayRestartPhase.idle);
+        title: XrayModule.error != "" ? "Xray error" : "";
+        list-title: XrayModule.error != "" ? "Xray error" : "Xray status";
+        message: XrayModule.error != "" ? XrayModule.error : XrayModule.status;
+        icon: "info";
+        ink: XrayModule.error != "" ? Theme.danger : Theme.accent;
+        icon-surface: XrayModule.error != "" ? Theme.danger-soft : Theme.accent-soft;
+        hidden => { root.hidden(); }
+    }
+    settings-notice := FloatingNotice {
+        in-scope: root.in-scope;
+        active: XrayModule.settings-error != "";
+        title: "Review Xray settings";
+        message: XrayModule.settings-error;
+        icon: "info";
+        ink: Theme.danger;
+        icon-surface: Theme.danger-soft;
+        hidden => { root.hidden(); }
+    }
+    restart-notice := FloatingNotice {
+        in-scope: root.in-scope;
+        active: XrayModule.restart-notice-active;
+        collapsed <=> XrayModule.restart-collapsed;
+        change-revision: XrayModule.pending-revision;
+        title: root.restarting ? "Restarting Xray…" : root.restarted ? "Restarted" : root.failed ? "Xray restart failed" : "Restart Xray to apply changes";
+        message: root.failed ? XrayModule.restart-error
+            : root.restarted || root.restarting ? "" : "Xray pauses briefly and its proxy connections close.";
+        icon: root.restarted ? "check" : "refresh";
+        ink: XrayModule.restart-ink;
+        icon-surface: root.failed ? Theme.danger-soft : Theme.accent-soft;
+        working: root.restarting;
+        can-hide: !root.restarting && !root.restarted;
+        action-label: root.restarted ? "" : root.failed ? "Retry" : "Restart";
+        action-enabled: (XrayModule.running || root.failed) && !XrayModule.busy && !XrayModule.port-save-pending && !XrayModule.settings-saving && XrayModule.settings-error == "";
+        secondary-label: root.failed ? "View logs" : "";
+        action => { XrayModule.restart(); }
+        secondary-action => { root.open-section(6); }
+        hidden => { root.hidden(); }
     }
 }

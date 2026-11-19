@@ -6,11 +6,20 @@ use true_proxy::{
 };
 
 /// Explicit fixtures for the isolated local UI preview; never a core process.
-#[cfg(windows)]
 pub(crate) fn populate_xray(ui: &crate::MainWindow) {
-    use crate::XrayModule;
+    populate_xray_fixture(ui, None);
+}
+
+#[cfg(windows)]
+pub(crate) fn populate_xray_fixture(ui: &crate::MainWindow, restart_fixture: Option<bool>) {
+    use super::xray::{finish_restart, same_runtime_settings};
+    use crate::{XrayModule, XrayRestartPhase};
     use slint::ComponentHandle;
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        time::Duration,
+    };
     use true_proxy::xray::profile::Settings;
     let xray = ui.global::<XrayModule>();
     let settings: Settings = serde_json::from_value(serde_json::json!({
@@ -33,13 +42,69 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     xray.set_version("26.10.31".into());
     xray.set_hpwnr_installed(true);
     xray.set_hpwnr_version("1.0.3".into());
-    fn refresh(ui: &crate::MainWindow, settings: &Settings) {
+    let applied = Rc::new(RefCell::new(
+        restart_fixture.map(|_| settings.borrow().clone()),
+    ));
+    if restart_fixture.is_some() {
+        xray.set_section(1);
+        xray.set_running(true);
+        settings
+            .borrow_mut()
+            .toggle_profile("preview-us-east")
+            .expect("valid fixture profile");
+    }
+    let previous = RefCell::new(settings.borrow().clone());
+    let snapshot = applied.clone();
+    let refresh = Rc::new(move |ui: &crate::MainWindow, settings: &Settings| {
+        if let Some(applied) = snapshot.borrow().as_ref() {
+            let xray = ui.global::<XrayModule>();
+            let pending = !same_runtime_settings(applied, settings);
+            if pending && !same_runtime_settings(&previous.borrow(), settings) {
+                xray.set_pending_revision(xray.get_pending_revision().wrapping_add(1));
+            }
+            xray.set_pending(pending);
+            previous.replace(settings.clone());
+        }
         super::xray::show_profiles(ui, settings);
         super::xray::show_preview_ports(ui, settings, None);
-    }
+    });
     refresh(ui, &settings.borrow());
+    if let Some(fail_first) = restart_fixture {
+        let weak = ui.as_weak();
+        let settings = settings.clone();
+        let applied = applied.clone();
+        let fail = Cell::new(fail_first);
+        xray.on_restart(move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let xray = ui.global::<XrayModule>();
+            xray.set_busy(true);
+            xray.set_restart_phase(XrayRestartPhase::Restarting);
+            let weak = weak.clone();
+            let settings = settings.clone();
+            let applied = applied.clone();
+            let fail = fail.replace(false);
+            slint::Timer::single_shot(Duration::from_millis(750), move || {
+                let Some(ui) = weak.upgrade() else { return };
+                let xray = ui.global::<XrayModule>();
+                xray.set_busy(false);
+                let error = if fail {
+                    let error = "Sample error: the local SOCKS port is already in use.";
+                    xray.set_log_text(error.into());
+                    xray.set_log_total(1);
+                    xray.set_log_visible_count(1);
+                    error
+                } else {
+                    applied.replace(Some(settings.borrow().clone()));
+                    xray.set_pending(false);
+                    ""
+                };
+                finish_restart(&ui, error.into());
+            });
+        });
+    }
     let model = settings.clone();
     let weak = ui.as_weak();
+    let refresh_settings = refresh.clone();
     xray.on_settings_edited(move || {
         let Some(ui) = weak.upgrade() else { return };
         let xray = ui.global::<XrayModule>();
@@ -48,12 +113,14 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
                 let mut settings = model.borrow_mut();
                 settings.dns = dns;
                 xray.set_settings_error("".into());
+                refresh_settings(&ui, &settings);
             }
             Err(error) => xray.set_settings_error(error.to_string().into()),
         }
     });
     let model = settings.clone();
     let weak = ui.as_weak();
+    let refresh_profile = refresh.clone();
     let change_profile = Rc::new(
         move |id: slint::SharedString, port: Option<slint::SharedString>| {
             let Some(ui) = weak.upgrade() else { return };
@@ -71,13 +138,13 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
                             .find(|p| p.id == id.as_str())
                             .unwrap();
                         let port = settings.port(&selected.port_id).unwrap();
-                        super::show_toast(
+                        super::xray::toast(
                             &ui,
                             format!("Replaced {previous} on {}", port.name),
                             false,
                         );
                     }
-                    refresh(&ui, &settings);
+                    refresh_profile(&ui, &settings);
                 }
                 Err(error) => ui
                     .global::<XrayModule>()
@@ -89,12 +156,13 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     xray.on_activate_profile(move |id| toggle(id, None));
     xray.on_assign_profile_port(move |id, port| change_profile(id, Some(port)));
     let model = settings.clone();
+    let refresh_port = refresh.clone();
     super::xray::wire_port_editor(ui, move |ui, edit, revision| {
         let mut settings = model.borrow_mut();
         let result = edit.apply(&mut settings, &[]);
         let xray = ui.global::<XrayModule>();
         if result.is_ok() {
-            refresh(ui, &settings);
+            refresh_port(ui, &settings);
         }
         drop(settings);
         xray.invoke_finish_port_edit(
@@ -110,11 +178,12 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     });
     let model = settings.clone();
     let weak = ui.as_weak();
+    let refresh_port = refresh.clone();
     xray.on_add_port(move || {
         let Some(ui) = weak.upgrade() else { return };
         let mut settings = model.borrow_mut();
         match settings.add_port(&[]) {
-            Ok(_) => refresh(&ui, &settings),
+            Ok(_) => refresh_port(&ui, &settings),
             Err(error) => ui
                 .global::<XrayModule>()
                 .set_error(error.to_string().into()),
@@ -122,13 +191,14 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
     });
     let model = settings.clone();
     let weak = ui.as_weak();
+    let refresh_port = refresh.clone();
     xray.on_remove_port(move |id| {
         let Some(ui) = weak.upgrade() else { return };
         let mut settings = model.borrow_mut();
         if let Err(error) = settings.remove_port(&id) {
             super::xray::show_preview_ports(&ui, &settings, Some(&(id.into(), error.to_string())));
         } else {
-            refresh(&ui, &settings);
+            refresh_port(&ui, &settings);
         }
     });
     let weak = ui.as_weak();
@@ -196,7 +266,7 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn populate_xray(_ui: &crate::MainWindow) {}
+pub(crate) fn populate_xray_fixture(_ui: &crate::MainWindow, _restart_fixture: Option<bool>) {}
 
 pub(super) fn populate_logs(stats: &Statistics) {
     use LogLevel::{Error, Info, Verbose};

@@ -82,6 +82,7 @@ component ProxySummary inherits Rectangle {
 }
 
 export component DashboardView inherits ScrollView {
+    in property <length> notice-clearance;
     in property <bool> active;
     in property <bool> busy;
     in property <string> status;
@@ -105,7 +106,7 @@ export component DashboardView inherits ScrollView {
     content-width: self.visible-width;
     content-height: max(self.visible-height, content.preferred-height);
     content := VerticalLayout {
-        alignment: start; spacing: 20px; padding-right: 3px; padding-bottom: 16px;
+        alignment: start; spacing: 20px; padding-right: 3px; padding-bottom: 16px + root.notice-clearance;
         HorizontalLayout {
             height: 70px; spacing: 20px;
             SessionCard { active: root.active; status: root.status; uptime: root.uptime; }

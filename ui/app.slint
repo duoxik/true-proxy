@@ -1,6 +1,6 @@
 import { DashboardView } from "dashboard.slint";
 import { PageHeader, FormCard, SurfaceCard, PanelToolbar, TableHeading, EmptyState, DialogHeader, DialogActions } from "common.slint";
-import { ScrollView, Palette } from "std-widgets.slint";
+import { ScrollView, Palette, Slider } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
 import { Theme, UiIcon, ActionButton, RuleSwitch, Field, ThemedCheckBox, ThemedComboBox, ProxyRow, RuleRow, LogRow, ProcessChoice, ProcessSummary, ConnectionFilterOption } from "common.slint";
@@ -9,8 +9,10 @@ import { ConnectionsView, ConnectionMonitor } from "connections.slint";
 export { ConnectionMonitor }
 import { LogsView, TechnicalLogs } from "logs.slint";
 export { TechnicalLogs }
-import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser } from "xray.slint";
-export { XrayModule, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser }
+import { XrayModule, XrayModuleCard, HpwnrModuleCard, XrayView, XrayNotices, XrayRestartPhase, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser } from "xray.slint";
+import { FloatingNotice, NoticeBackdrop, NoticeCenter, NoticePanel, NoticeShelf } from "notices.slint";
+export { NoticeBackdrop }
+export { XrayModule, XrayRestartPhase, XrayProfileRow, XraySubscriptionGroup, XrayHostRow, XrayConnectionRow, XrayPortRow, XrayPortUser }
 
 component NavItem inherits Rectangle {
     in property <string> label;
@@ -681,12 +683,94 @@ component CidrEditor inherits Rectangle {
     }
 }
 
+component AppearanceSlider inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> unit;
+    in property <int> maximum;
+    in-out property <int> amount;
+    callback committed;
+    height: 32px;
+    spacing: 12px;
+    cross-axis-alignment: center;
+    changed amount => { control.value = root.amount; }
+
+    function commit(next: float) {
+        root.amount = round(clamp(next, 0, root.maximum));
+        control.value = root.amount;
+        root.committed();
+    }
+    Text {
+        text: root.label;
+        width: 144px;
+        color: Theme.text;
+        font-size: 13px;
+        accessible-role: none;
+    }
+    Rectangle {
+        min-width: 64px;
+        horizontal-stretch: 1;
+        height: 28px;
+        control := Slider {
+            width: parent.width;
+            height: parent.height;
+            minimum: 0;
+            maximum: root.maximum;
+            step: 1;
+            value: root.amount;
+            accessible-label: root.label;
+            accessible-value-step: 1;
+            changed(next) => { root.amount = round(next); }
+            released(next) => { root.commit(next); }
+            accessible-action-set-value(next) => { if next.is-float() { root.commit(next.to-float()); } }
+            accessible-action-increment => { root.commit(root.amount + 1); }
+            accessible-action-decrement => { root.commit(root.amount - 1); }
+        }
+        // Keep the native slider's hit target, keyboard handling and accessibility.
+        Rectangle {
+            background: Theme.surface;
+            rail := Rectangle {
+                x: 10px;
+                width: parent.width - 20px;
+                height: 4px;
+                border-radius: 2px;
+                background: Theme.switch-off;
+                Rectangle {
+                    x: 0px;
+                    width: parent.width * root.amount / root.maximum;
+                    border-radius: parent.border-radius;
+                    background: Theme.accent;
+                }
+            }
+            Rectangle {
+                width: 18px; height: self.width;
+                x: rail.x + rail.width * root.amount / root.maximum - self.width / 2;
+                border-radius: self.width / 2;
+                border-width: 1px;
+                border-color: control.has-focus ? Theme.accent : Theme.border;
+                background: Theme.surface;
+                Rectangle { width: 10px; height: self.width; border-radius: self.width / 2; background: Theme.accent; }
+            }
+        }
+    }
+    Text {
+        text: root.amount + root.unit;
+        width: 42px;
+        horizontal-alignment: right;
+        color: Theme.secondary;
+        font-size: 13px;
+        accessible-role: none;
+    }
+}
+
 export component MainWindow inherits Window {
     icon: @image-url("../assets/icon.svg");
     title: root.preview-ui ? "True Proxy · Local UI Preview" : root.local-test ? "True Proxy · Local Test" : root.local-build ? "True Proxy · Local build" : "True Proxy";
     preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
     in-out property <bool> dark-theme <=> Theme.dark;
+    in-out property <int> notice-transparency <=> NoticeBackdrop.transparency;
+    in-out property <int> notice-blur <=> NoticeBackdrop.blur;
+    in-out property <bool> reduce-motion <=> Theme.reduce-motion;
     out property <color> caption-color: Theme.sidebar;
     init => { Palette.color-scheme = root.dark-theme ? ColorScheme.dark : ColorScheme.light; }
     changed dark-theme => {
@@ -695,6 +779,7 @@ export component MainWindow inherits Window {
     }
     in-out property <int> page: 0;
     changed page => {
+        NoticeBackdrop.invalidate();
         root.sync-connection-observation();
         if root.page != 6 { XrayModule.flush-port-edit(); }
     }
@@ -702,7 +787,9 @@ export component MainWindow inherits Window {
     in property <bool> local-build: false;
     in property <bool> local-test: false;
     in-out property <int> settings-section: 0;
+    changed settings-section => { NoticeBackdrop.invalidate(); }
     in-out property <int> dialog: 0;
+    changed dialog => { NoticeBackdrop.invalidate(); }
     in property <bool> active: false;
     in property <bool> busy: false;
     in property <bool> routing-pending: false;
@@ -716,6 +803,8 @@ export component MainWindow inherits Window {
     in property <string> toast;
     in property <bool> toast-error: false;
     in property <string> toast-token;
+    in property <int> toast-page: -1;
+    private property <bool> app-notices-in-scope: root.page != 6 && root.dialog == 0;
     in property <bool> probe-busy: false;
     in-out property <bool> autostart-enabled: false;
     in property <bool> autostart-busy: false;
@@ -814,6 +903,7 @@ export component MainWindow inherits Window {
     callback select-fallback(int, string);
     callback set-autostart(bool);
     callback choose-theme(bool);
+    callback save-notice-appearance;
     callback hide-window;
     callback sync-connection-observation;
     callback suspend-connection-observation;
@@ -915,11 +1005,19 @@ export component MainWindow inherits Window {
                         vertical-stretch: 0;
                         HorizontalLayout {
                             spacing: 8px;
+                            cross-axis-alignment: center;
                             if root.active: Rectangle {
                                 width: 10px;
-                                Rectangle { width: 10px; height: 10px; y: 3px; border-radius: 5px; background: Theme.accent; }
+                                height: 10px;
+                                border-radius: 5px;
+                                background: Theme.accent;
                             }
-                            Text { text: root.status; color: Theme.text; font-size: 11px; wrap: word-wrap; height: self.preferred-height; }
+                            Text { text: root.status; color: Theme.text; font-size: 11px; wrap: word-wrap; height: self.preferred-height; min-width: 0px; horizontal-stretch: 1; }
+                            notifications := NoticeCenter {
+                                has-hidden: xray-notices.has-hidden || routing-notice.entry.hidden || update-notice.entry.hidden || general-notice.entry.hidden;
+                                indicator-ink: xray-notices.indicator-ink;
+                                pulse: xray-notices.restart-pulse;
+                            }
                         }
                     }
                 }
@@ -944,48 +1042,8 @@ export component MainWindow inherits Window {
                         else if root.page == 2 { root.add-proxy(); }
                     }
                 }
-                if root.notice != "": Rectangle {
-                    height: max(48px, notice-content.preferred-height);
-                    border-radius: Theme.radius-medium;
-                    background: Theme.warning-surface;
-                    notice-content := HorizontalLayout {
-                        padding: 10px;
-                        spacing: 8px;
-                        Text { text: root.notice; wrap: word-wrap; min-width: 0px; max-height: 64px; overflow: elide; color: Theme.warning; font-size: 12px; }
-                        ActionButton { label: "×"; accessible-label: "Dismiss notification"; min-width: 30px; max-width: 30px; height: 30px; clicked => { root.notice = ""; } }
-                    }
-                }
-                if root.update-available: Rectangle {
-                    height: update-content.preferred-height;
-                    border-radius: Theme.radius-medium;
-                    background: Theme.accent-soft;
-                    update-content := HorizontalLayout {
-                        padding: 12px;
-                        spacing: 14px;
-                        VerticalLayout { min-width: 0px; spacing: 4px;
-                            Text { text: "True Proxy " + root.update-version + " is available"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                            Text { text: root.update-text; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
-                        }
-                        ActionButton {
-                            label: root.update-busy ? "Please wait…" : "Install and Restart";
-                            primary: true;
-                            enabled: !root.update-busy && !root.busy;
-                            clicked => { root.update-now(); }
-                        }
-                    }
-                }
-                if root.routing-pending: Rectangle {
-                    height: pending-content.preferred-height;
-                    background: Theme.warning-surface;
-                    border-radius: Theme.radius-medium;
-                    pending-content := HorizontalLayout {
-                        padding: 12px;
-                        spacing: 14px;
-                        Text { text: "Restart to apply configuration changes. Routing will pause briefly and proxy connections will close."; color: Theme.warning; font-size: 12px; vertical-alignment: center; wrap: word-wrap; min-width: 0px; }
-                        ActionButton { label: "Restart"; height: 34px; enabled: root.active && !root.busy; clicked => { root.restart-routing(); } }
-                    }
-                }
                 if root.page == 0: DashboardView {
+                    notice-clearance: app-notices.clearance;
                     active: root.active; busy: root.busy; status: root.status; uptime: root.uptime;
                     connection-count: root.connection-count; enabled-rule-count: root.enabled-rule-count;
                     proxies: root.proxies; rules: root.rules; fallback-label: root.fallback-label;
@@ -1063,6 +1121,7 @@ export component MainWindow inherits Window {
                                 rules-content := VerticalLayout {
                                     alignment: start;
                                     spacing: 0px;
+                                    padding-bottom: app-notices.clearance;
                                     local-network-card := RuleLine {
                                         priority: 1;
                                         name: "Local";
@@ -1216,6 +1275,7 @@ export component MainWindow inherits Window {
                             proxy-content := VerticalLayout {
                                 alignment: start;
                                 spacing: 0px;
+                                padding-bottom: app-notices.clearance;
                                 if root.visible-proxies.length == 0: EmptyState {
                                     icon: "server";
                                     title: root.proxies.length == 0 ? "No SOCKS5 proxies configured" : "No matching proxies";
@@ -1240,9 +1300,9 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                if root.page == 3: ConnectionsView { preview-ui: root.preview-ui; }
-                if root.page == 5: LogsView { }
-                if root.page == 6 && XrayModule.installed: XrayView { preview-ui: root.preview-ui; }
+                if root.page == 3: ConnectionsView { preview-ui: root.preview-ui; notice-clearance: app-notices.clearance; }
+                if root.page == 5: LogsView { notice-clearance: app-notices.clearance; }
+                if root.page == 6 && XrayModule.installed: XrayView { preview-ui: root.preview-ui; notice-clearance: xray-notices.clearance; }
                 if root.page == 4: settings-scroll := ScrollView {
                         horizontal-scrollbar-policy: always-off;
                         content-width: self.visible-width;
@@ -1251,7 +1311,7 @@ export component MainWindow inherits Window {
                             alignment: start;
                             spacing: 16px;
                             padding-right: 3px;
-                            padding-bottom: 14px;
+                            padding-bottom: 14px + app-notices.clearance;
                             if root.settings-section == 2: XrayModuleCard {}
                             if root.settings-section == 2: HpwnrModuleCard {}
                             if root.settings-section == 0: VerticalLayout {
@@ -1277,11 +1337,24 @@ export component MainWindow inherits Window {
                                         x: 0px; y: 0px;
                                         width: preferences.appearance-width;
                                         height: preferences.two-columns ? preferences.row-height : self.content-height;
-                                        title: "Appearance"; icon: "sun"; caption: "Choose the application theme.";
+                                        title: "Appearance"; icon: "sun";
                                         HorizontalLayout {
                                             alignment: start; spacing: 8px;
                                             ActionButton { label: "Light"; icon: "sun"; accessible-label: "Light theme"; primary: !root.dark-theme; height: 40px; clicked => { root.choose-theme(false); } }
                                             ActionButton { label: "Dark"; icon: "moon"; accessible-label: "Dark theme"; primary: root.dark-theme; height: 40px; clicked => { root.choose-theme(true); } }
+                                        }
+                                        VerticalLayout {
+                                            spacing: 4px;
+                                            AppearanceSlider {
+                                                label: "Notification transparency"; unit: "%"; maximum: 100;
+                                                amount <=> root.notice-transparency;
+                                                committed => { root.save-notice-appearance(); }
+                                            }
+                                            AppearanceSlider {
+                                                label: "Background blur"; unit: " px"; maximum: 24;
+                                                amount <=> root.notice-blur;
+                                                committed => { root.save-notice-appearance(); }
+                                            }
                                         }
                                     }
                                     startup := FormCard {
@@ -1327,6 +1400,85 @@ export component MainWindow inherits Window {
         }
     }
 
+    out property <bool> floating-notices-visible: root.dialog == 0 && !notifications.opened
+        && (app-notices.height > 0px || xray-notices.height > 0px || app-toast.height > 0px);
+    app-notices := NoticeShelf {
+        host-width: root.width;
+        host-height: root.height;
+        general-notice := FloatingNotice {
+            in-scope: root.app-notices-in-scope;
+            active: root.notice != "";
+            message: root.notice;
+            list-title: "True Proxy";
+            list-action-label: "Dismiss";
+            icon: "info";
+            ink: Theme.warning;
+            icon-surface: Theme.warning-surface;
+            changed message => { self.collapsed = false; }
+            hidden => { notifications.focus(); }
+        }
+        update-notice := FloatingNotice {
+            in-scope: root.app-notices-in-scope;
+            active: root.update-available;
+            title: "True Proxy " + root.update-version + " is available";
+            message: root.update-text;
+            icon: "download";
+            action-label: root.update-busy ? "Please wait…" : "Install and Restart";
+            action-enabled: !root.update-busy && !root.busy;
+            action => { root.update-now(); }
+            hidden => { notifications.focus(); }
+        }
+        routing-notice := FloatingNotice {
+            in-scope: root.app-notices-in-scope && root.page != 4;
+            active: root.routing-pending;
+            title: "Restart routing to apply changes";
+            message: "Routing pauses briefly and proxy connections close.";
+            icon: "refresh";
+            action-label: "Restart";
+            action-enabled: root.active && !root.busy;
+            action => { root.restart-routing(); }
+            hidden => { notifications.focus(); }
+        }
+    }
+    xray-notices := XrayNotices {
+        host-width: root.width;
+        host-height: root.height;
+        current-page: root.page == 6;
+        toast: root.toast-page == 6 ? root.toast : "";
+        toast-error: root.toast-error;
+        hidden => { notifications.focus(); }
+        open-section(section) => {
+            notifications.close();
+            XrayModule.section = section;
+            if root.page == 6 { XrayModule.refresh-activity(); }
+            else { root.page = 6; }
+        }
+    }
+
+    public function open-preview-notification-center() {
+        routing-notice.collapsed = root.routing-pending;
+        update-notice.collapsed = root.update-available;
+        general-notice.collapsed = root.notice != "";
+        if !notifications.opened { notifications.clicked(); }
+    }
+
+    if notifications.opened && root.dialog == 0: Rectangle {
+        TouchArea { clicked => { notifications.close(); } }
+        NoticePanel {
+            x: 16px;
+            y: notifications.absolute-position.y - self.height - 8px;
+            has-hidden: notifications.has-hidden;
+            app-entries: [routing-notice.entry, update-notice.entry, general-notice.entry];
+            module-entries: xray-notices.hidden-entries;
+            close => { notifications.close(); }
+            entry-action(module, index, secondary) => {
+                if module { xray-notices.entry-action(index, secondary); }
+                else if index == 0 { routing-notice.action(); }
+                else if index == 1 { update-notice.action(); }
+                else if index == 2 { root.notice = ""; }
+            }
+        }
+    }
 
     if root.dialog == 1 || root.dialog == 2: Rectangle {
         background: Theme.overlay;
@@ -1595,9 +1747,19 @@ export component MainWindow inherits Window {
             }
         }
     }
-    if root.toast != "": Rectangle { width: min(400px, parent.width - 24px); height: 76px; x: (parent.width - self.width) / 2; y: parent.height - self.height - 16px;
-        background: root.toast-error ? Theme.warning-surface : Theme.accent-soft; border-color: Theme.border; border-width: 1px; border-radius: Theme.radius-medium;
-        Text { x: 12px; width: parent.width - 24px; text: root.toast; color: root.toast-error ? Theme.danger : Theme.success; font-size: 12px; wrap: word-wrap; horizontal-alignment: center; vertical-alignment: center; }
+    app-toast := NoticeShelf {
+        host-width: root.width;
+        host-height: root.height;
+        bottom-offset: 24px + app-notices.height;
+        FloatingNotice {
+            in-scope: root.page != 6;
+            active: root.toast-page == -1 && root.toast != "";
+            message: root.toast;
+            icon: root.toast-error ? "info" : "check";
+            ink: root.toast-error ? Theme.danger : Theme.accent;
+            icon-surface: root.toast-error ? Theme.danger-soft : Theme.accent-soft;
+            can-hide: false;
+        }
     }
 }
 

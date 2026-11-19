@@ -302,6 +302,7 @@ export global ConnectionMonitor {
 }
 
 export component ConnectionsView inherits VerticalLayout {
+    in property <length> notice-clearance;
     in property <bool> preview-ui;
     min-width: 0px;
     spacing: 20px;
@@ -400,7 +401,7 @@ export component ConnectionsView inherits VerticalLayout {
                 content-height: max(self.visible-height, connection-content.preferred-height);
                 connection-content := VerticalLayout {
                     padding-right: Theme.scroll-gutter;
-                    padding-bottom: 8px;
+                    padding-bottom: 8px + root.notice-clearance;
                     alignment: start;
                     if ConnectionMonitor.process-summaries.length == 0: EmptyState {
                         icon: "activity";

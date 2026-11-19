@@ -4478,6 +4478,7 @@ dependencies = [
  "anyhow",
  "base64",
  "i-slint-backend-testing",
+ "image",
  "ipnet",
  "libloading 0.9.0",
  "percent-encoding",
