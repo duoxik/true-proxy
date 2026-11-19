@@ -1820,7 +1820,7 @@ mod tests {
 
     #[test]
     fn a_cold_start_bind_error_identifies_only_the_occupied_listener() {
-        use std::net::{Ipv4Addr, UdpSocket};
+        use std::net::{Ipv4Addr, TcpListener};
         let directory = std::env::temp_dir().join(format!("xray-occupied-{}", super::super::id()));
         let mut controller = Controller::load(
             directory.clone(),
@@ -1832,49 +1832,49 @@ mod tests {
         for host in ["192.0.2.1", "192.0.2.2"] {
             controller.settings.import(&format!("vless://00000000-0000-4000-8000-000000000001@{host}:443?security=tls&type=tcp#Node")).unwrap();
         }
-        let first_port = controller.settings.default_port().id.clone();
-        let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let number = free.local_addr().unwrap().port();
-        drop(free);
+        // Keep the first protocol checked at startup occupied for the whole test.
+        let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let occupied_number = occupied.local_addr().unwrap().port();
+        let blocked_port = controller.settings.add_port(&[]).unwrap();
+        let healthy_port = controller.settings.add_port(&[]).unwrap();
+        let first = controller.settings.profiles[0].id.clone();
+        let second = controller.settings.profiles[1].id.clone();
         controller
             .settings
-            .set_port_number(&first_port, number, &[])
+            .set_profile_port(&first, &blocked_port)
             .unwrap();
-        let other = controller.settings.add_port(&[]).unwrap();
-        let profile = controller.settings.profiles[1].id.clone();
         controller
             .settings
-            .set_profile_port(&profile, &other)
+            .set_profile_port(&second, &healthy_port)
             .unwrap();
-        controller.settings.toggle_profile(&profile).unwrap();
-        let occupied = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        controller.settings.toggle_profile(&second).unwrap();
+        assert_eq!(controller.settings.enabled_profiles().count(), 2);
         // A different program acquired this saved endpoint before startup.
         controller
             .settings
             .ports
             .iter_mut()
-            .find(|port| port.id == other)
+            .find(|port| port.id == blocked_port)
             .unwrap()
-            .number = occupied.local_addr().unwrap().port();
+            .number = occupied_number;
         controller.installed = Some(Installed {
             version: "fixture".into(),
             executable: directory.join("unused.exe"),
             sha256: String::new(),
         });
         let error = controller.set_running(true).unwrap_err();
-        assert!(
-            error
-                .downcast_ref::<runtime::ListenerUnavailable>()
-                .is_some()
-        );
+        let unavailable = error
+            .downcast_ref::<runtime::ListenerUnavailable>()
+            .unwrap();
+        assert_eq!(unavailable.port, occupied_number);
         assert_eq!(controller.failed_ports.len(), 1);
-        assert_eq!(controller.failed_ports[0].id, other);
+        let failed = &controller.failed_ports[0];
+        assert_eq!(failed.id, blocked_port);
+        assert_eq!(failed.number, occupied_number);
+        let reason = failed.error.as_deref().unwrap();
         assert!(
-            controller.failed_ports[0]
-                .error
-                .as_deref()
-                .unwrap()
-                .contains("UDP")
+            reason.contains(&format!("TCP port {occupied_number} is unavailable")),
+            "{reason}"
         );
         drop(occupied);
     }
