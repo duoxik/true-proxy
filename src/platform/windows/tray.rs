@@ -377,6 +377,10 @@ pub fn activate_existing() -> bool {
     !hwnd.is_null() && unsafe { PostMessageW(hwnd, OPEN_MESSAGE, 0, 0) } != 0
 }
 
+pub fn has_live_window() -> bool {
+    !unsafe { FindWindowW(CLASS, ptr::null()) }.is_null()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

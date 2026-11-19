@@ -222,18 +222,16 @@ impl Settings {
     pub fn dns_exit_warning(&self) -> Option<String> {
         let Some(id) = &self.dns_exit_profile_id else {
             return (!self.dns.is_empty()).then(|| {
-                "Custom Tunnel DNS needs an exit profile. Choose one in X-RAY → General.".into()
+                "Custom Tunnel DNS needs an exit profile. Choose one in X-RAY → DNS.".into()
             });
         };
         match self.profiles.iter().find(|profile| &profile.id == id) {
             Some(profile) if profile.enabled => None,
             Some(profile) => Some(format!(
-                "The DNS exit profile “{}” is disabled. Enable it or choose another in X-RAY → General.",
+                "The DNS exit profile “{}” is disabled. Enable it or choose another in X-RAY → DNS.",
                 profile.name
             )),
-            None => {
-                Some("The DNS exit profile was removed. Choose another in X-RAY → General.".into())
-            }
+            None => Some("The DNS exit profile was removed. Choose another in X-RAY → DNS.".into()),
         }
     }
 

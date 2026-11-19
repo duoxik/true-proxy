@@ -584,6 +584,11 @@ fn worker(
 
 pub fn run() -> Result<()> {
     let arguments = std::env::args().collect::<Vec<_>>();
+    let local_test = arguments.iter().any(|arg| arg == "--local-test");
+    ensure!(
+        !local_test || cfg!(all(windows, debug_assertions)),
+        "Local testing requires the Windows development build."
+    );
     let preview_arg = arguments.iter().position(|arg| arg == "--preview-ui");
     let interactive_preview = preview_arg.is_some();
     let preview_page = match preview_arg
@@ -608,8 +613,19 @@ pub fn run() -> Result<()> {
     let preview = interactive_directory
         .as_ref()
         .or(diagnostic_preview.as_ref());
+    ensure!(
+        !local_test || preview.is_none(),
+        "Local testing and sample preview are separate launch modes."
+    );
     #[cfg(windows)]
-    if preview.is_none() && platform::windows::tray::activate_existing() {
+    if local_test {
+        ensure!(
+            !platform::windows::tray::has_live_window(),
+            "Exit True Proxy from its tray icon before starting the local test build."
+        );
+    }
+    #[cfg(windows)]
+    if !local_test && preview.is_none() && platform::windows::tray::activate_existing() {
         return Ok(());
     }
     #[cfg(windows)]
@@ -638,6 +654,19 @@ pub fn run() -> Result<()> {
     } else if let Some(dir) = preview {
         std::fs::create_dir_all(dir)?;
         dir.join("config.json")
+    } else if local_test {
+        let installed = Config::path()?;
+        let path = installed
+            .parent()
+            .and_then(std::path::Path::parent)
+            .context("Missing local application data directory")?
+            .join("TrueProxy-LocalTest")
+            .join("config.json");
+        ensure!(
+            path.is_file(),
+            "Run Test-Local.cmd to copy your True Proxy configuration first."
+        );
+        path
     } else {
         Config::path()?
     };
@@ -672,15 +701,16 @@ pub fn run() -> Result<()> {
     } else {
         Config::load(&path)?
     };
-    let paused = arguments.iter().any(|a| a == "--paused");
+    let paused = local_test || arguments.iter().any(|a| a == "--paused");
     let auto_start = preview.is_none()
         && should_start(&config, paused, arguments.iter().any(|a| a == "--enable"));
     let state = ProfileState::new(config);
-    if preview.is_none() && paused {
+    if preview.is_none() && paused && !local_test {
         remember_routing(&state, &path, false)?;
     }
     let ui = MainWindow::new()?;
     ui.set_local_build(cfg!(debug_assertions));
+    ui.set_local_test(local_test);
     if interactive_preview {
         ui.set_preview_ui(true);
         ui.set_page(preview_page);
@@ -740,6 +770,10 @@ pub fn run() -> Result<()> {
                     ui.set_notice(
                         "Windows startup settings are read-only in UI preview mode.".into(),
                     );
+                    return;
+                }
+                if local_test {
+                    ui.set_autostart_enabled(false);
                     return;
                 }
                 if sender.try_send(Command::Autostart(Some(enabled))).is_ok() {
@@ -809,7 +843,7 @@ pub fn run() -> Result<()> {
                 is_preview,
             )
         })?;
-    if preview.is_none() {
+    if preview.is_none() && !local_test {
         ui.set_autostart_busy(true);
         sender.send(Command::Autostart(None))?;
     }

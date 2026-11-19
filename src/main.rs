@@ -154,6 +154,7 @@ fn main() {
     }
     if let Err(error) = app::run() {
         true_proxy::platform::show_error(&format!("{error:#}"));
+        std::process::exit(1);
     }
 }
 
@@ -640,6 +641,18 @@ mod ui_tests {
         });
         ui.show().unwrap();
         click(&ui, "Xray General");
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "DNS exits through")
+                .next()
+                .is_none()
+        );
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Open DNS")
+                .next()
+                .is_none()
+        );
+        click(&ui, "Xray DNS");
+        assert_eq!(xray.get_section(), 3);
         assert!(xray.get_dns_exit_error().is_empty());
         assert_eq!(xray.get_dns_exit_profiles().row_count(), 2);
         xray.invoke_activate_profile("preview-backup".into());
@@ -647,6 +660,10 @@ mod ui_tests {
         xray.invoke_settings_edited();
         assert!(!xray.get_dns_exit_error().is_empty());
         assert_eq!(xray.get_dns_exit_profiles().row_count(), 3);
+
+        click(&ui, "Xray General");
+        click(&ui, "Open DNS");
+        assert_eq!(xray.get_section(), 3);
 
         let dropdown = ElementHandle::find_by_accessible_label(&ui, "DNS exits through")
             .find(|element| element.accessible_value().is_some())

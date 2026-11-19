@@ -464,12 +464,12 @@ fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
     if custom_dns {
         let exit_id = settings
             .dns_exit_profile_id
-            .context("Choose a DNS exit profile in X-RAY → General.")?;
+            .context("Choose a DNS exit profile in X-RAY → DNS.")?;
         let dns_index = settings
             .listeners
             .iter()
             .position(|listener| listener.profile_id == exit_id)
-            .context("The DNS exit profile is unavailable. Choose another in X-RAY → General.")?;
+            .context("The DNS exit profile is unavailable. Choose another in X-RAY → DNS.")?;
         let mut dns_outbound = outbounds[dns_index].clone();
         dns_outbound["tag"] = json!(DNS_TUNNEL);
         // A DNS resolver hostname is resolved by the VPN server. Resolving it

@@ -125,14 +125,19 @@ component XrayCard inherits FormCard {}
 component XrayNotice inherits Rectangle {
     in property <string> message;
     in property <bool> error;
+    in property <string> action-label;
+    callback action;
     min-width: 0px;
     height: notice.preferred-height;
     vertical-stretch: 0;
     border-radius: Theme.radius-small;
     background: root.error ? Theme.danger-soft : Theme.accent-soft;
-    notice := VerticalLayout {
+    notice := HorizontalLayout {
         padding: 10px;
-        XrayNote { text: root.message; color: root.error ? Theme.danger : Theme.text; }
+        spacing: 8px;
+        cross-axis-alignment: center;
+        XrayNote { text: root.message; color: root.error ? Theme.danger : Theme.text; horizontal-stretch: 1; }
+        if root.action-label != "": TextLink { label: root.action-label; clicked => { root.action(); } }
     }
 }
 
@@ -514,10 +519,9 @@ component XrayActivePorts inherits XrayCard {
     }
 }
 
-component XrayGeneral inherits VerticalLayout {
+component XrayDns inherits VerticalLayout {
     alignment: start;
     spacing: 12px;
-    XrayActivePorts {}
     XrayCard {
         title: "Tunnel DNS"; icon: "globe";
         caption: "Use Default or enter resolver IPs, TCP DNS URLs, or HTTPS DoH URLs separated by commas.";
@@ -547,27 +551,26 @@ component XrayGeneral inherits VerticalLayout {
         if XrayModule.dns-exit-error != "": XrayNotice { message: XrayModule.dns-exit-error; error: true; }
         if XrayModule.dns-exit-error == "" && XrayModule.dns-exit-warning != "": XrayNote { text: XrayModule.dns-exit-warning; color: Theme.warning; }
     }
-}
+    XrayCard {
+        title: "VPN server hosts"; icon: "server";
+        action-label: "Refresh"; action-icon: "refresh";
+        action-enabled: !XrayModule.busy && XrayModule.hosts.length > 0;
+        action => { XrayModule.refresh-hosts(); }
+        caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original server name (SNI).";
 
-component XrayDns inherits XrayCard {
-    title: "VPN server hosts"; icon: "server";
-    action-label: "Refresh"; action-icon: "refresh";
-    action-enabled: !XrayModule.busy && XrayModule.hosts.length > 0;
-    action => { XrayModule.refresh-hosts(); }
-    caption: "True Proxy resolves these names using Windows DNS when profiles change or you select Refresh. Xray connects to the saved IP and keeps the original server name (SNI).";
-
-    if XrayModule.hosts.length == 0: XrayNote { text: "No VPN server hostnames."; }
-    if XrayModule.hosts.length > 0: HorizontalLayout {
-        spacing: 8px;
-        height: 24px;
-        Text { text: "HOST"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
-        Text { text: "ADDRESS"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
-    }
-    for entry in XrayModule.hosts: HorizontalLayout {
-        spacing: 8px;
-        height: 30px;
-        Text { text: entry.host; color: Theme.text; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
-        Text { text: entry.address; color: Theme.secondary; font-family: "Consolas"; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+        if XrayModule.hosts.length == 0: XrayNote { text: "No VPN server hostnames."; }
+        if XrayModule.hosts.length > 0: HorizontalLayout {
+            spacing: 8px;
+            height: 24px;
+            Text { text: "HOST"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+            Text { text: "ADDRESS"; color: Theme.secondary; font-size: 10px; vertical-alignment: center; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+        }
+        for entry in XrayModule.hosts: HorizontalLayout {
+            spacing: 8px;
+            height: 30px;
+            Text { text: entry.host; color: Theme.text; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+            Text { text: entry.address; color: Theme.secondary; font-family: "Consolas"; vertical-alignment: center; overflow: elide; min-width: 0px; preferred-width: 0px; horizontal-stretch: 1; }
+        }
     }
 }
 
@@ -836,7 +839,7 @@ export component XrayView inherits VerticalLayout {
     spacing: 20px;
     PageHeader {
         title: ["X-RAY Dashboard", "X-RAY Profiles", "X-RAY General", "X-RAY DNS", "X-RAY Fallbacks", "X-RAY Connections", "X-RAY Logs"][XrayModule.section];
-        subtitle: ["Manage your tunnels, local ports and connection profiles.", "Import profiles and manage your subscriptions.", "Configure tunnel DNS and view local SOCKS5 ports.", "Resolve and refresh VPN server hosts.", "Choose traffic that bypasses the tunnel.", "Inspect connection events reported by Xray-core.", "Review and filter Xray-core diagnostics."][XrayModule.section];
+        subtitle: ["Manage your tunnels, local ports and connection profiles.", "Import profiles and manage your subscriptions.", "View active local SOCKS5 ports.", "Configure tunnel DNS and refresh VPN server hosts.", "Choose traffic that bypasses the tunnel.", "Inspect connection events reported by Xray-core.", "Review and filter Xray-core diagnostics."][XrayModule.section];
         badge: root.preview-ui ? "Sample data" : "";
         action-label: XrayModule.running ? "Stop Xray" : "Start Xray";
         action-icon: XrayModule.running ? "stop" : "play";
@@ -860,7 +863,12 @@ export component XrayView inherits VerticalLayout {
         }
     }
     if XrayModule.settings-error != "": XrayNotice { message: XrayModule.settings-error; error: true; }
-    if XrayModule.section != 2 && XrayModule.dns-exit-error != "": XrayNotice { message: XrayModule.dns-exit-error; error: true; }
+    if XrayModule.section != 3 && (XrayModule.dns-exit-error != "" || (XrayModule.section == 2 && XrayModule.dns-exit-warning != "")): XrayNotice {
+        message: XrayModule.dns-exit-warning;
+        error: true;
+        action-label: "Open DNS";
+        action => { XrayModule.section = 3; XrayModule.refresh-activity(); }
+    }
     if XrayModule.error != "": XrayNotice { message: XrayModule.error; error: true; }
     if XrayModule.error == "" && XrayModule.status != "": XrayNotice { message: XrayModule.status; }
     if XrayModule.section < 5: settings-scroll := ScrollView {
@@ -881,7 +889,7 @@ export component XrayView inherits VerticalLayout {
                 }
             }
             if XrayModule.section == 1: XrayProfiles {}
-            if XrayModule.section == 2: XrayGeneral {}
+            if XrayModule.section == 2: XrayActivePorts {}
             if XrayModule.section == 3: XrayDns {}
             if XrayModule.section == 4: XrayFallbacks {}
         }

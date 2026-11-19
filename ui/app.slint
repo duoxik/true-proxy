@@ -639,7 +639,7 @@ component ProxyTableColumns inherits HorizontalLayout {
 
 export component MainWindow inherits Window {
     icon: @image-url("../assets/icon.svg");
-    title: root.preview-ui ? "True Proxy · Local UI Preview" : root.local-build ? "True Proxy · Local build" : "True Proxy";
+    title: root.preview-ui ? "True Proxy · Local UI Preview" : root.local-test ? "True Proxy · Local Test" : root.local-build ? "True Proxy · Local build" : "True Proxy";
     preferred-width: 1240px; preferred-height: 780px; min-width: 960px; min-height: 640px;
     background: Theme.background; default-font-family: "Segoe UI"; default-font-size: 13px;
     in-out property <bool> dark-theme <=> Theme.dark;
@@ -656,6 +656,7 @@ export component MainWindow inherits Window {
     }
     in property <bool> preview-ui: false;
     in property <bool> local-build: false;
+    in property <bool> local-test: false;
     in-out property <int> settings-section: 0;
     in-out property <int> dialog: 0;
     in property <bool> active: false;
@@ -1248,9 +1249,9 @@ export component MainWindow inherits Window {
                                         HorizontalLayout {
                                             spacing: 8px;
                                             Text { text: "Launch at Windows sign-in"; color: Theme.text; font-size: 12px; wrap: word-wrap; min-width: 0px; vertical-alignment: center; horizontal-stretch: 1; }
-                                            RuleSwitch { label: "Start when I sign in to Windows"; checked: root.autostart-enabled; enabled: !root.autostart-busy; toggled => { root.autostart-enabled = !root.autostart-enabled; root.set-autostart(root.autostart-enabled); } }
+                                            RuleSwitch { label: "Start when I sign in to Windows"; checked: root.autostart-enabled; enabled: !root.autostart-busy && !root.local-test; toggled => { root.autostart-enabled = !root.autostart-enabled; root.set-autostart(root.autostart-enabled); } }
                                         }
-                                        Text { text: root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
+                                        Text { text: root.local-test ? "Windows startup is managed by the installed app." : root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing."; color: Theme.secondary; font-size: 12px; wrap: word-wrap; height: self.preferred-height; }
                                     }
                                 }
                                 FormCard {
