@@ -3,7 +3,7 @@ param(
     [string]$Task = 'check',
     [string]$PackageDirectory = 'dist\TrueProxy',
     [string]$PackageArchive = 'dist\TrueProxy-windows-x64.zip',
-    [ValidateSet('xray', 'dashboard', 'rules', 'proxies', 'connections', 'logs', 'settings')]
+    [ValidateSet('xray', 'dashboard', 'rules', 'proxies', 'connections', 'logs', 'settings', 'appearance', 'notification-center', 'proxy-notices', 'xray-notice', 'xray-notice-error')]
     [string]$Page = 'xray'
 )
 $ErrorActionPreference = 'Stop'

@@ -1,4 +1,4 @@
-use crate::MainWindow;
+use crate::{MainWindow, NoticeBackdrop};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use slint::{
@@ -14,9 +14,11 @@ use slint::{
     winit_030::winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey},
 };
 use std::{
+    cell::Cell,
     fs::{self, File},
     io::{ErrorKind, Read, Write},
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 /// Invalidate the full opaque surface only when it may have been discarded.
@@ -25,19 +27,46 @@ pub fn refresh(ui: &MainWindow) {
     ui.set_surface_fresh(!ui.get_surface_fresh());
     ui.window().request_redraw();
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 struct Preferences {
     dark_theme: bool,
+    notice_transparency: i32,
+    notice_blur: i32,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { dark_theme: true }
+        Self {
+            dark_theme: true,
+            notice_transparency: 48,
+            notice_blur: 9,
+        }
     }
 }
 
 impl Preferences {
+    fn bounded(mut self) -> Self {
+        self.notice_transparency = self.notice_transparency.clamp(0, 100);
+        self.notice_blur = self.notice_blur.clamp(0, 24);
+        self
+    }
+
+    fn current(ui: &MainWindow) -> Self {
+        Self {
+            dark_theme: ui.get_dark_theme(),
+            notice_transparency: ui.get_notice_transparency(),
+            notice_blur: ui.get_notice_blur(),
+        }
+        .bounded()
+    }
+
+    fn apply(self, ui: &MainWindow) {
+        ui.set_dark_theme(self.dark_theme);
+        ui.set_notice_transparency(self.notice_transparency);
+        ui.set_notice_blur(self.notice_blur);
+    }
+
     fn load(path: &Path) -> Result<Self> {
         let file = match File::open(path) {
             Ok(file) => file,
@@ -50,7 +79,9 @@ impl Preferences {
             contents.len() <= 4096,
             "Appearance preferences exceed 4 KiB"
         );
-        serde_json::from_slice(&contents).context("Could not read appearance preferences")
+        let preferences: Self =
+            serde_json::from_slice(&contents).context("Could not read appearance preferences")?;
+        Ok(preferences.bounded())
     }
 
     fn save(&self, path: &Path) -> Result<()> {
@@ -58,7 +89,7 @@ impl Preferences {
             path.parent()
                 .context("Missing appearance preferences directory")?,
         )?;
-        let temporary = path.with_extension("tmp");
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
         let mut file = File::create(&temporary)?;
         file.write_all(&serde_json::to_vec(self)?)?;
         file.sync_all()?;
@@ -100,37 +131,102 @@ pub(super) fn apply_native_theme(ui: &MainWindow) {
     }
 }
 
-fn wire_theme(ui: &MainWindow, path: Option<PathBuf>) {
+fn wire_preferences(ui: &MainWindow, path: Option<PathBuf>) {
     if let Some(path) = path.as_deref() {
         match Preferences::load(path) {
-            Ok(preferences) => ui.set_dark_theme(preferences.dark_theme),
+            Ok(preferences) => preferences.apply(ui),
             Err(error) => super::report(ui, Err(error)),
         }
     }
+    let saved = Cell::new(Preferences::current(ui));
+    let commit = Rc::new(move |ui: &MainWindow, preferences: Preferences| {
+        if preferences != saved.get()
+            && let Some(path) = &path
+            && let Err(error) = preferences.save(path)
+        {
+            saved.get().apply(ui);
+            super::report(ui, Err(error));
+            return false;
+        }
+        saved.set(preferences);
+        preferences.apply(ui);
+        true
+    });
+    let save_notice = commit.clone();
+    let weak = ui.as_weak();
+    ui.on_save_notice_appearance(move || {
+        if let Some(ui) = weak.upgrade() {
+            save_notice(&ui, Preferences::current(&ui));
+        }
+    });
     let weak = ui.as_weak();
     ui.on_choose_theme(move |dark_theme| {
         let Some(ui) = weak.upgrade() else { return };
         if ui.get_dark_theme() == dark_theme {
             return;
         }
-        if let Some(path) = &path
-            && let Err(error) = (Preferences { dark_theme }).save(path)
-        {
-            super::report(&ui, Err(error));
-            return;
+        let preferences = Preferences {
+            dark_theme,
+            ..Preferences::current(&ui)
+        };
+        if commit(&ui, preferences) {
+            apply_native_theme(&ui);
+            refresh(&ui);
         }
-        ui.set_dark_theme(dark_theme);
-        apply_native_theme(&ui);
-        refresh(&ui);
     });
 }
 
+#[cfg(windows)]
+fn refresh_motion_preference(ui: &MainWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+    };
+    let mut enabled = 1i32;
+    // SAFETY: this read-only query expects a writable BOOL.
+    let result = unsafe {
+        SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, (&raw mut enabled).cast(), 0)
+    };
+    if result != 0 {
+        ui.set_reduce_motion(enabled == 0);
+    }
+}
+
 pub fn wire(ui: &MainWindow, preferences_path: Option<PathBuf>) {
-    wire_theme(ui, preferences_path);
+    wire_preferences(ui, preferences_path);
+    #[cfg(windows)]
+    refresh_motion_preference(ui);
     let weak = ui.as_weak();
     #[cfg(windows)]
     let mut modifiers = ModifiersState::empty();
+    let backdrop_refresh = slint::Timer::default();
     ui.window().on_winit_window_event(move |_window, event| {
+        // Refresh a floating card once the underlying page finishes scrolling or editing.
+        if matches!(
+            event,
+            WindowEvent::MouseWheel { .. }
+                | WindowEvent::MouseInput {
+                    state: slint::winit_030::winit::event::ElementState::Released,
+                    ..
+                }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+        ) && let Some(ui) = weak.upgrade()
+            && ui.get_floating_notices_visible()
+        {
+            let weak = ui.as_weak();
+            backdrop_refresh.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(150),
+                move || {
+                    if let Some(ui) = weak.upgrade()
+                        && ui.window().is_visible()
+                        && ui.get_floating_notices_visible()
+                    {
+                        ui.global::<NoticeBackdrop>().invoke_invalidate();
+                    }
+                },
+            );
+        }
         if let WindowEvent::ThemeChanged(theme) = event
             && let Some(ui) = weak.upgrade()
             && (*theme == WindowTheme::Dark) != ui.get_dark_theme()
@@ -167,10 +263,15 @@ pub fn wire(ui: &MainWindow, preferences_path: Option<PathBuf>) {
                 | WindowEvent::ScaleFactorChanged { .. }
         ) && let Some(ui) = weak.upgrade()
         {
+            #[cfg(windows)]
+            if matches!(event, WindowEvent::Focused(true)) {
+                refresh_motion_preference(&ui);
+            }
             if matches!(event, WindowEvent::Resized(size) if size.width == 0 || size.height == 0) {
                 ui.invoke_suspend_connection_observation();
             } else {
                 refresh(&ui);
+                ui.global::<NoticeBackdrop>().invoke_invalidate();
                 ui.invoke_sync_connection_observation();
             }
         }
@@ -249,15 +350,17 @@ mod tests {
     use slint::platform::{Key as SlintKey, PointerEventButton};
 
     #[test]
-    fn theme_switches_from_settings_and_survives_a_new_window() {
+    fn theme_and_notice_settings_migrate_and_survive_a_new_window() {
         i_slint_backend_testing::init_no_event_loop();
         let directory =
             std::env::temp_dir().join(format!("true-proxy-appearance-{}", super::super::id()));
         let path = directory.join("appearance.json");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(&path, br#"{"dark_theme":true}"#).unwrap();
         let window = || {
             let ui = MainWindow::new().unwrap();
             ui.window().set_size(slint::LogicalSize::new(1240., 780.));
-            wire_theme(&ui, Some(path.clone()));
+            wire_preferences(&ui, Some(path.clone()));
             ui.set_page(4);
             ui.show().unwrap();
             ui
@@ -271,12 +374,58 @@ mod tests {
 
         let ui = window();
         assert!(ui.get_dark_theme());
+        assert_eq!(
+            (ui.get_notice_transparency(), ui.get_notice_blur()),
+            (48, 9)
+        );
+        let slider = |ui: &MainWindow, label| {
+            ElementHandle::find_by_accessible_label(ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::Slider))
+                .unwrap()
+        };
+        let press_key = |ui: &MainWindow, key: SlintKey| {
+            ui.window()
+                .dispatch_event(SlintWindowEvent::KeyPressed { text: key.into() });
+            ui.window()
+                .dispatch_event(SlintWindowEvent::KeyReleased { text: key.into() });
+        };
+        let transparency = slider(&ui, "Notification transparency");
+        let origin = transparency.absolute_position();
+        let size = transparency.size();
+        let position =
+            slint::LogicalPosition::new(origin.x + size.width * 0.75, origin.y + size.height / 2.);
+        let button = PointerEventButton::Left;
+        ui.window()
+            .dispatch_event(SlintWindowEvent::PointerMoved { position });
+        ui.window()
+            .dispatch_event(SlintWindowEvent::PointerPressed { position, button });
+        let chosen = ui.get_notice_transparency();
+        assert!((70..=80).contains(&chosen));
+        assert_eq!(Preferences::load(&path).unwrap().notice_transparency, 48);
+        ui.window()
+            .dispatch_event(SlintWindowEvent::PointerReleased { position, button });
+        assert_eq!(
+            Preferences::load(&path).unwrap().notice_transparency,
+            chosen
+        );
+        slider(&ui, "Background blur").mock_single_click(button);
+        press_key(&ui, SlintKey::End);
+        assert_eq!(Preferences::load(&path).unwrap().notice_blur, 24);
         click(&ui, "Light theme");
         assert!(!ui.get_dark_theme() && !Preferences::load(&path).unwrap().dark_theme);
         ui.hide().unwrap();
 
         let ui = window();
         assert!(!ui.get_dark_theme());
+        assert_eq!(
+            (ui.get_notice_transparency(), ui.get_notice_blur()),
+            (chosen, 24)
+        );
+        slider(&ui, "Background blur").mock_single_click(button);
+        press_key(&ui, SlintKey::Home);
+        let saved = Preferences::load(&path).unwrap();
+        assert!(!saved.dark_theme);
+        assert_eq!((saved.notice_transparency, saved.notice_blur), (chosen, 0));
         click(&ui, "Dark theme");
         assert!(ui.get_dark_theme() && Preferences::load(&path).unwrap().dark_theme);
         std::fs::remove_file(path).unwrap();

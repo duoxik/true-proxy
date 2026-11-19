@@ -8,6 +8,7 @@
     "server": "server",
     "rules": "list-filter",
     "activity": "activity",
+    "bell": "bell",
     "settings": "settings",
     "plus": "plus",
     "more": "ellipsis",

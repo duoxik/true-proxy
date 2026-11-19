@@ -33,6 +33,7 @@ component LogFilterGroup inherits Rectangle {
 }
 
 export component LogStreamView inherits SurfaceCard {
+    in property <length> notice-clearance;
     in property <string> title: "Live log stream";
     in property <string> backend-label: "Backend";
     in property <string> connections-label: "Connections";
@@ -71,6 +72,7 @@ export component LogStreamView inherits SurfaceCard {
     changed displayed-text => { root.follow-latest(); }
     changed follow => { root.follow-latest(); }
     changed height => { root.follow-latest(); }
+    changed notice-clearance => { root.follow-latest(); }
 
     VerticalLayout {
         PanelToolbar {
@@ -172,7 +174,7 @@ export component LogStreamView inherits SurfaceCard {
             min-height: 0px;
             horizontal-scrollbar-policy: always-off;
             content-width: self.visible-width;
-            content-height: max(self.visible-height, log-text.preferred-height + 16px);
+            content-height: max(self.visible-height, log-text.preferred-height + 16px + root.notice-clearance);
 
             if root.displayed-text == "": Text {
                 x: 14px;

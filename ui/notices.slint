@@ -1,0 +1,424 @@
+import { ScrollView, Spinner } from "std-widgets.slint";
+import { ActionButton, Theme, UiIcon } from "common.slint";
+
+export struct NoticeEntry {
+    hidden: bool,
+    icon: string,
+    title: string,
+    message: string,
+    ink: color,
+    action-label: string,
+    action-enabled: bool,
+    secondary-label: string,
+}
+
+export global NoticeBackdrop {
+    in-out property <int> transparency: 48;
+    in-out property <int> blur: 9;
+    in-out property <bool> capturing;
+    out property <int> revision;
+    public function invalidate() { self.revision += 1; }
+    callback sample(length, length, length, length, length) -> image;
+}
+
+struct BackdropRegion { x: length, y: length, width: length, height: length, dark: bool, revision: int, blur: int }
+
+component NoticeSurface inherits Rectangle {
+    in property <bool> active: true;
+    in property <bool> outlined;
+    // Sample at the resting position throughout the card's entrance animation.
+    in property <length> offset-y;
+    accessible-role: none;
+    if NoticeBackdrop.blur > 0 && NoticeBackdrop.transparency > 0: blurred := Image {
+        width: parent.width;
+        height: parent.height;
+        image-fit: fill;
+        private property <BackdropRegion> region: {
+            x: root.absolute-position.x, y: root.absolute-position.y - root.offset-y,
+            width: root.width, height: root.height, dark: Theme.dark,
+            revision: NoticeBackdrop.revision, blur: NoticeBackdrop.blur
+        };
+        private property <BackdropRegion> sampled;
+        Timer {
+            running: root.active && root.width > 0px && root.height > 0px && blurred.sampled != blurred.region;
+            interval: 70ms;
+            triggered => {
+                blurred.sampled = blurred.region;
+                blurred.source = NoticeBackdrop.sample(blurred.sampled.x, blurred.sampled.y,
+                    blurred.sampled.width, blurred.sampled.height, Theme.radius-medium);
+            }
+        }
+    }
+    Rectangle {
+        border-radius: Theme.radius-medium;
+        border-width: root.outlined ? 1px : 0px;
+        border-color: Theme.text.with-alpha(0.08);
+        background: Theme.notice-surface.with-alpha(1.0 - clamp(NoticeBackdrop.transparency, 0, 100) / 100.0);
+    }
+}
+
+component NoticeDot inherits Rectangle {
+    in property <color> ink: Theme.accent;
+    in property <bool> pulse;
+    width: 14px;
+    height: 14px;
+    border-radius: self.width / 2;
+    background: root.ink.with-alpha(root.pulse ? 0.6 : 0.21);
+    animate background { duration: 180ms; easing: ease-out; }
+    Rectangle {
+        width: 7px;
+        height: 7px;
+        border-radius: self.width / 2;
+        background: root.ink;
+    }
+}
+
+export component NoticeShelf inherits Rectangle {
+    in property <length> host-width;
+    in property <length> host-height;
+    in property <length> bottom-offset: 24px;
+    out property <length> clearance: self.height > 0px ? max(72px, self.height) : 0px;
+    width: 500px;
+    height: stack.preferred-height;
+    x: root.host-width - self.width - 24px;
+    y: root.host-height - self.height - root.bottom-offset;
+    opacity: NoticeBackdrop.capturing ? 0 : 1;
+
+    stack := VerticalLayout {
+        spacing: 0px;
+        @children
+    }
+}
+
+export component FloatingNotice inherits Rectangle {
+    in property <bool> in-scope;
+    in property <bool> active;
+    in property <string> title;
+    in property <string> message;
+    in property <string> icon;
+    in property <color> ink: Theme.accent;
+    in property <color> icon-surface: Theme.accent-soft;
+    in property <bool> working;
+    in property <string> action-label;
+    in property <bool> action-enabled: true;
+    in property <string> secondary-label;
+    in property <bool> can-hide: true;
+    in property <string> list-title: root.title;
+    in property <string> list-action-label: root.action-label;
+    in property <int> change-revision;
+    in-out property <bool> collapsed;
+    out property <bool> pulsing;
+    out property <NoticeEntry> entry: {
+        hidden: root.active && root.collapsed,
+        icon: root.icon,
+        title: root.list-title,
+        message: root.message,
+        ink: root.ink,
+        action-label: root.list-action-label,
+        action-enabled: root.action-enabled && !root.working,
+        secondary-label: root.secondary-label,
+    };
+    callback action;
+    callback secondary-action;
+    callback hidden;
+
+    private property <bool> show-card: root.in-scope && root.active && !root.collapsed;
+    private property <length> card-offset: root.show-card || Theme.reduce-motion ? 0px : 12px;
+    animate card-offset { duration: 200ms; easing: ease-out; }
+    height: root.show-card ? card.height + 8px : 0px;
+
+    changed active => {
+        if !root.active {
+            root.collapsed = false;
+            root.pulsing = false;
+        }
+    }
+    changed change-revision => {
+        if root.entry.hidden && !root.pulsing {
+            root.pulsing = true;
+        }
+    }
+    Timer {
+        running: root.pulsing;
+        interval: 220ms;
+        triggered => { root.pulsing = false; }
+    }
+
+    function hide-card() {
+        root.collapsed = true;
+        root.hidden();
+    }
+
+    card := Rectangle {
+        width: parent.width;
+        height: max(60px, card-layout.preferred-height);
+        x: 0px;
+        y: parent.height - self.height + root.card-offset;
+        opacity: root.show-card ? 1 : 0;
+        visible: root.in-scope && (root.show-card || self.opacity > 0);
+        animate opacity { duration: 200ms; easing: ease-out; }
+        accessible-role: groupbox;
+        accessible-label: root.title == "" ? root.message : root.title + (root.message == "" ? "" : ". " + root.message);
+        accessible-live-region: polite;
+
+        if card.visible: NoticeSurface { active: root.show-card; offset-y: root.card-offset; }
+        TouchArea { enabled: root.show-card; }
+        card-keys := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            enabled: root.show-card;
+            // Only children take focus. Unhandled keys from those children bubble here.
+            forward-focus: hide;
+            key-pressed(event) => {
+                if event.text == Key.Escape && root.can-hide {
+                    root.hide-card();
+                    return accept;
+                }
+                return reject;
+            }
+            card-layout := HorizontalLayout {
+                padding: 10px;
+                spacing: 10px;
+                cross-axis-alignment: center;
+                if root.icon != "": Rectangle {
+                    width: 34px;
+                    height: 34px;
+                    border-radius: Theme.radius-small;
+                    background: root.icon-surface;
+                    if root.working && root.show-card && !Theme.reduce-motion: Spinner {
+                        indeterminate: true;
+                        width: 18px;
+                        height: 18px;
+                        accessible-role: none;
+                    }
+                    if !root.working || Theme.reduce-motion || !root.show-card: UiIcon {
+                        name: root.icon;
+                        ink: root.ink;
+                        width: 16px;
+                        height: 16px;
+                    }
+                }
+                VerticalLayout {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    if root.title != "": Text {
+                        text: root.title;
+                        color: Theme.text;
+                        font-size: 14px;
+                        font-weight: 700;
+                        wrap: word-wrap;
+                        accessible-role: none;
+                    }
+                    if root.message != "": Text {
+                        text: root.message;
+                        color: Theme.secondary;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        max-height: 64px;
+                        overflow: elide;
+                        accessible-role: none;
+                    }
+                }
+                if root.secondary-label != "": ActionButton {
+                    label: root.secondary-label;
+                    height: 34px;
+                    enabled: root.show-card;
+                    clicked => { root.secondary-action(); }
+                }
+                if root.action-label != "": ActionButton {
+                    label: root.action-label;
+                    primary: true;
+                    height: 34px;
+                    enabled: root.show-card && root.action-enabled && !root.working;
+                    ink: self.enabled ? Theme.primary-text : Theme.secondary;
+                    primary-fill: root.ink;
+                    clicked => { root.action(); }
+                }
+                hide := ActionButton {
+                    icon: "close";
+                    icon-only: true;
+                    quiet: true;
+                    height: 34px;
+                    visible: root.can-hide;
+                    enabled: root.show-card && root.can-hide;
+                    accessible-label: "Hide in notifications";
+                    clicked => { root.hide-card(); }
+                }
+            }
+        }
+    }
+
+}
+
+component NoticeListRow inherits Rectangle {
+    in property <NoticeEntry> entry;
+    callback action(bool);
+    height: root.entry.hidden ? max(68px, row.preferred-height) : 0px;
+    visible: root.entry.hidden;
+    row := HorizontalLayout {
+        width: root.width;
+        height: root.height;
+        padding-left: 16px;
+        padding-right: 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 12px;
+        cross-axis-alignment: center;
+        Rectangle {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: root.entry.ink.with-alpha(0.08);
+            UiIcon {
+                name: root.entry.icon;
+                ink: root.entry.ink;
+                width: 16px;
+                height: 16px;
+            }
+        }
+        VerticalLayout {
+            min-width: 0px;
+            horizontal-stretch: 1;
+            spacing: 2px;
+            notice-title := Text {
+                text: root.entry.title;
+                color: Theme.text;
+                font-weight: 600;
+                font-size: 14px;
+                min-width: 0px;
+                wrap: word-wrap;
+            }
+            if root.entry.message != "": Text {
+                text: root.entry.message;
+                color: Theme.secondary;
+                font-size: 12px;
+                min-width: 0px;
+                wrap: word-wrap;
+                overflow: elide;
+            }
+        }
+        if root.entry.secondary-label != "": ActionButton {
+            label: root.entry.secondary-label;
+            accessible-label: self.label + " · " + root.entry.title;
+            quiet: true;
+            ink: Theme.secondary;
+            height: 32px;
+            clicked => { root.action(true); }
+        }
+        if root.entry.action-label != "": ActionButton {
+            enabled: root.entry.action-enabled;
+            label: root.entry.action-label;
+            accessible-label: self.label + " · " + root.entry.title;
+            height: 32px;
+            border-radius: 8px;
+            clicked => { root.action(false); }
+        }
+    }
+}
+
+export component NoticeCenter inherits ActionButton {
+    in property <bool> has-hidden;
+    in property <bool> pulse;
+    in property <color> indicator-ink: Theme.accent;
+    out property <bool> opened;
+
+    label: "Notifications";
+    icon: "bell";
+    icon-only: true;
+    width: 36px;
+    height: 36px;
+    quiet: true;
+    icon-ink: root.has-hidden ? root.indicator-ink : Theme.secondary;
+    accessible-description: root.has-hidden ? "Hidden notifications available" : "No hidden notifications";
+    accessible-expanded: root.opened;
+    clicked => { if root.opened { root.close(); } else { root.opened = true; } }
+    public function close() {
+        if root.opened {
+            root.opened = false;
+            root.focus();
+        }
+    }
+
+    if root.has-hidden: NoticeDot {
+        width: 12px;
+        height: 12px;
+        x: parent.width - self.width - 1px;
+        y: 1px;
+        ink: root.indicator-ink;
+        pulse: root.pulse;
+    }
+}
+
+export component NoticePanel inherits Rectangle {
+    in property <[NoticeEntry]> app-entries;
+    in property <[NoticeEntry]> module-entries;
+    in property <bool> has-hidden;
+    callback entry-action(bool, int, bool);
+    callback close;
+    width: 592px;
+    height: min(414px, 54px + entries.preferred-height);
+    opacity: NoticeBackdrop.capturing ? 0 : 1;
+    accessible-role: groupbox;
+    accessible-label: "Hidden notifications";
+    init => { panel-keys.focus(); }
+
+    NoticeSurface { outlined: true; }
+    TouchArea {}
+    panel-keys := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            return reject;
+        }
+        VerticalLayout {
+            padding: 1px;
+            padding-bottom: 5px;
+            HorizontalLayout {
+                height: 48px;
+                padding-left: 16px;
+                padding-right: 8px;
+                cross-axis-alignment: center;
+                Text {
+                    text: "Notifications";
+                    color: Theme.text;
+                    font-size: 15px;
+                    font-weight: 600;
+                    horizontal-stretch: 1;
+                }
+                close-button := ActionButton {
+                    label: "Close notifications";
+                    icon: "close"; icon-only: true; quiet: true;
+                    icon-ink: Theme.secondary;
+                    height: 32px;
+                    clicked => { root.close(); }
+                }
+            }
+            notice-scroll := ScrollView {
+                min-height: 0px;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: entries.preferred-height;
+                entries := VerticalLayout {
+                    width: notice-scroll.visible-width;
+                    alignment: start;
+                    spacing: 0px;
+                    if !root.has-hidden: Text {
+                        height: 40px;
+                        text: "No hidden notifications";
+                        color: Theme.secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    for entry[index] in root.app-entries: NoticeListRow {
+                        entry: entry;
+                        action(secondary) => { panel-keys.focus(); root.entry-action(false, index, secondary); }
+                    }
+                    for entry[index] in root.module-entries: NoticeListRow {
+                        entry: entry;
+                        action(secondary) => { panel-keys.focus(); root.entry-action(true, index, secondary); }
+                    }
+                }
+            }
+        }
+    }
+}

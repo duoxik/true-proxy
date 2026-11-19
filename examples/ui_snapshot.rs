@@ -24,6 +24,8 @@ use std::{
 slint::include_modules!();
 #[path = "../src/app/json_highlight.rs"]
 mod json_highlight;
+#[path = "../src/app/notice_backdrop.rs"]
+mod notice_backdrop;
 
 struct MemoryWindow {
     window: Window,
@@ -141,6 +143,7 @@ fn main() -> Result<()> {
     .map_err(|error| anyhow::anyhow!("Memory platform: {error}"))?;
 
     let ui = MainWindow::new()?;
+    notice_backdrop::wire(&ui);
     ui.set_dark_theme(false);
     let main_adapter = windows
         .borrow()
@@ -442,6 +445,16 @@ fn main() -> Result<()> {
 
 #[cfg(windows)]
 fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) -> Result<()> {
+    // Let the software renderer lay out the new material, finish its entrance
+    // and process the debounced backdrop capture before recording each sample.
+    let save_notice = |name: &str| -> Result<()> {
+        for _ in 0..3 {
+            slint::platform::update_timers_and_animations();
+            adapter.window.take_snapshot()?;
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        save(adapter, &destination.join(name))
+    };
     ui.set_page(4);
     ui.set_settings_section(2);
     save(adapter, &destination.join("xray-modules.png"))?;
@@ -611,6 +624,56 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         save(adapter, &destination.join(format!("xray-{name}.png")))?;
     }
     xray.set_section(1);
+    xray.set_status("".into());
+    xray.set_pending(true);
+    ui.set_dark_theme(true);
+    save_notice("xray-restart-dark.png")?;
+    ui.set_dark_theme(false);
+    save_notice("xray-restart-light.png")?;
+    xray.set_restart_collapsed(true);
+    save_notice("xray-restart-hidden.png")?;
+    ui.set_page(2);
+    save(adapter, &destination.join("xray-restart-outside.png"))?;
+    let bell =
+        i_slint_backend_testing::ElementHandle::find_by_element_id(ui, "MainWindow::notifications")
+            .next()
+            .context("Notifications button not found")?;
+    let bell_position = bell.absolute_position();
+    let bell_size = bell.size();
+    let position = slint::LogicalPosition::new(
+        bell_position.x + bell_size.width / 2.,
+        bell_position.y + bell_size.height / 2.,
+    );
+    let button = slint::platform::PointerEventButton::Left;
+    ui.window()
+        .dispatch_event(WindowEvent::PointerPressed { position, button });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerReleased { position, button });
+    save_notice("notifications-light.png")?;
+    ui.set_dark_theme(true);
+    save_notice("notifications-dark.png")?;
+    ui.set_update_version("0.12.13".into());
+    ui.set_update_text("Install the new version and reopen True Proxy.".into());
+    ui.set_update_available(true);
+    ui.set_notice("Work did not respond to the last check.".into());
+    slint::platform::update_timers_and_animations();
+    ui.invoke_open_preview_notification_center();
+    save_notice("notification-list-dark.png")?;
+    ui.set_dark_theme(false);
+    save_notice("notification-list-light.png")?;
+    ui.set_update_available(false);
+    ui.set_notice("".into());
+    ui.window().dispatch_event(WindowEvent::KeyPressed {
+        text: slint::platform::Key::Escape.into(),
+    });
+    ui.set_dark_theme(false);
+    ui.set_page(6);
+    xray.set_restart_collapsed(false);
+    xray.set_restart_phase(XrayRestartPhase::Failed);
+    xray.set_restart_error("The local SOCKS port is already in use.".into());
+    save_notice("xray-restart-failed.png")?;
+    xray.set_pending(false);
+    xray.set_restart_phase(XrayRestartPhase::Idle);
     xray.set_hpwnr_required(true);
     xray.set_profile_input("v2raytun://crypt/example-fixture".into());
     save(adapter, &destination.join("hpwnr-import-confirmation.png"))?;
@@ -625,14 +688,11 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     xray.set_hpwnr_version("".into());
     ui.set_page(0);
     ui.set_update_available(true);
-    ui.set_update_version("999.0.0".into());
+    ui.set_update_version("0.12.13".into());
     ui.set_update_text(
         "Install and restart automatically. Active proxy connections will close briefly.".into(),
     );
-    save(
-        adapter,
-        &destination.join("update-while-routing-active.png"),
-    )?;
+    save_notice("update-while-routing-active.png")?;
     ui.set_update_available(false);
     Ok(())
 }

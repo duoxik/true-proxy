@@ -1,7 +1,7 @@
 use super::{model, uptime};
 use crate::{
     MainWindow, XrayConnectionRow, XrayHostRow, XrayModule, XrayPortRow, XrayPortUser,
-    XrayProfileRow, XraySubscriptionGroup,
+    XrayProfileRow, XrayRestartPhase, XraySubscriptionGroup,
 };
 use anyhow::{Context, Result, ensure};
 use slint::{ComponentHandle, Model, ModelRc, SharedString};
@@ -20,6 +20,8 @@ use true_proxy::xray::{
     runtime::{self, Activity, Bypass, Runtime},
 };
 
+#[cfg(test)]
+mod notice_tests;
 mod port_editor;
 
 use port_editor::PortEdit;
@@ -30,7 +32,7 @@ enum Command {
     CheckUpdates,
     InstallUpdate,
     Toggle,
-    Restart,
+    Restart { retry: bool },
     Import(String),
     InstallHpwnr(Option<String>),
     CheckHpwnrUpdates,
@@ -48,6 +50,11 @@ enum Command {
     RefreshGeo,
     LoadGeoTags,
     Record(bool),
+}
+
+enum RuntimeAction {
+    Restart,
+    Toggle,
 }
 
 struct SettingsDraft {
@@ -139,7 +146,7 @@ impl Command {
 type GeoCatalog = (Vec<String>, Vec<String>);
 type SharedGeoCatalog = Arc<Mutex<Option<GeoCatalog>>>;
 
-fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
+pub(super) fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
     applied
         .ports
         .iter()
@@ -196,6 +203,7 @@ struct Controller {
     bypass: Arc<Bypass>,
     activity: Arc<Activity>,
     pending: bool,
+    pending_revision: i32,
     status: String,
     geo_status: String,
     geo_catalog: SharedGeoCatalog,
@@ -238,6 +246,7 @@ impl Controller {
             bypass,
             activity,
             pending: false,
+            pending_revision: 0,
             status,
             geo_status: String::new(),
             geo_catalog,
@@ -257,10 +266,19 @@ impl Controller {
 
     fn save_settings(&mut self, next: Settings, runtime_change: bool) -> Result<()> {
         next.save(&self.settings_path)?;
-        if let Some(applied) = &self.applied {
-            self.pending = !same_runtime_settings(applied, &next) || runtime_change;
+        let pending = self
+            .applied
+            .as_ref()
+            .map(|applied| !same_runtime_settings(applied, &next) || runtime_change);
+        let changed = (pending == Some(true) || !self.failed_ports.is_empty())
+            && !same_runtime_settings(&self.settings, &next);
+        if let Some(pending) = pending {
+            self.pending = pending;
+            if self.pending && (changed || runtime_change) {
+                self.pending_revision = self.pending_revision.wrapping_add(1);
+            }
         }
-        if !self.failed_ports.is_empty() && !same_runtime_settings(&self.settings, &next) {
+        if !self.failed_ports.is_empty() && changed {
             self.failed_ports.clear();
         }
         self.delete_error = None;
@@ -350,8 +368,8 @@ impl Controller {
                 self.latest = available.then_some(release);
             }
             Command::Toggle => self.set_running(self.runtime.is_none())?,
-            Command::Restart => {
-                ensure!(self.runtime.is_some(), "Xray is already stopped.");
+            Command::Restart { retry } => {
+                ensure!(retry || self.runtime.is_some(), "Xray is already stopped.");
                 check_dns_exit(&self.settings)?;
                 for profile in self.settings.enabled_profiles() {
                     let port = self.settings.effective_port(profile);
@@ -826,6 +844,7 @@ struct View {
     latest: String,
     status: String,
     pending: bool,
+    pending_revision: i32,
     ports: Vec<LivePort>,
     delete_error: Option<(String, String)>,
     next_free: Option<u16>,
@@ -851,6 +870,7 @@ impl View {
                 .map_or_else(String::new, |release| release.version.clone()),
             status: controller.status.clone(),
             pending: controller.pending,
+            pending_revision: controller.pending_revision,
             ports: controller
                 .applied
                 .iter()
@@ -890,7 +910,15 @@ impl View {
         xray.set_latest_version(self.latest.into());
         xray.set_running(self.started.is_some());
         xray.set_status(self.status.into());
+        if !self.pending
+            && xray.get_pending()
+            && xray.get_restart_phase() == XrayRestartPhase::Failed
+        {
+            xray.set_restart_phase(XrayRestartPhase::Idle);
+            xray.set_restart_error("".into());
+        }
         xray.set_pending(self.pending);
+        xray.set_pending_revision(self.pending_revision);
         show_ports(
             ui,
             &self.settings,
@@ -1088,6 +1116,30 @@ fn refresh_geo_suggestions(xray: &XrayModule<'_>) {
     xray.invoke_filter_geo_tags(true, xray.get_geo_site_query());
 }
 
+pub(super) fn finish_restart(ui: &MainWindow, error: String) {
+    let xray = ui.global::<XrayModule>();
+    if !error.is_empty() {
+        xray.set_restart_error(error.into());
+        xray.set_restart_phase(XrayRestartPhase::Failed);
+        return;
+    }
+    xray.set_restart_error("".into());
+    xray.set_restart_phase(XrayRestartPhase::Restarted);
+    let weak = ui.as_weak();
+    slint::Timer::single_shot(Duration::from_secs(1), move || {
+        if let Some(ui) = weak.upgrade() {
+            let xray = ui.global::<XrayModule>();
+            if xray.get_restart_phase() == XrayRestartPhase::Restarted {
+                xray.set_restart_phase(XrayRestartPhase::Idle);
+            }
+        }
+    });
+}
+
+pub(super) fn toast(ui: &MainWindow, message: String, error: bool) {
+    super::show_toast_on_page(ui, message, error, 6);
+}
+
 fn spawn_worker(
     mut controller: Controller,
     weak: slint::Weak<MainWindow>,
@@ -1135,55 +1187,68 @@ fn spawn_worker(
                 } else {
                     Duration::from_secs(60)
                 };
-                let (result, command_done, manages_core, hpwnr, revision, port_edit) =
-                    match receiver.recv_timeout(interval) {
-                        Ok(command) => {
-                            let port_edit = match &command {
-                                Command::SavePort(edit, revision) => {
-                                    Some((edit.id.clone(), edit.number, *revision))
-                                }
-                                _ => None,
-                            };
-                            let catalog_only = matches!(command, Command::LoadGeoTags);
-                            let manages_core = command.manages_core();
-                            let hpwnr = matches!(
-                                command,
-                                Command::InstallHpwnr(_)
-                                    | Command::CheckHpwnrUpdates
-                                    | Command::UpdateHpwnr
-                            );
-                            let revision = match &command {
-                                Command::SaveDraft(revision, _) => Some(*revision),
-                                _ => None,
-                            };
-                            let error = controller
-                                .perform(command)
-                                .err()
-                                .map_or_else(String::new, |error| error.to_string());
-                            if catalog_only {
-                                let weak = weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = weak.upgrade() {
-                                        refresh_geo_suggestions(&ui.global::<XrayModule>());
-                                    }
-                                });
-                                continue;
+                let (
+                    result,
+                    command_done,
+                    manages_core,
+                    hpwnr,
+                    revision,
+                    port_edit,
+                    runtime_action,
+                ) = match receiver.recv_timeout(interval) {
+                    Ok(command) => {
+                        let port_edit = match &command {
+                            Command::SavePort(edit, revision) => {
+                                Some((edit.id.clone(), edit.number, *revision))
                             }
-                            let command_done = port_edit.is_none();
-                            (
-                                Some(error),
-                                command_done,
-                                manages_core,
-                                hpwnr,
-                                revision,
-                                port_edit,
-                            )
+                            _ => None,
+                        };
+                        let catalog_only = matches!(command, Command::LoadGeoTags);
+                        let runtime_action = match command {
+                            Command::Restart { .. } => Some(RuntimeAction::Restart),
+                            Command::Toggle => Some(RuntimeAction::Toggle),
+                            _ => None,
+                        };
+                        let manages_core = command.manages_core();
+                        let hpwnr = matches!(
+                            command,
+                            Command::InstallHpwnr(_)
+                                | Command::CheckHpwnrUpdates
+                                | Command::UpdateHpwnr
+                        );
+                        let revision = match &command {
+                            Command::SaveDraft(revision, _) => Some(*revision),
+                            _ => None,
+                        };
+                        let error = controller
+                            .perform(command)
+                            .err()
+                            .map_or_else(String::new, |error| error.to_string());
+                        if catalog_only {
+                            let weak = weak.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = weak.upgrade() {
+                                    refresh_geo_suggestions(&ui.global::<XrayModule>());
+                                }
+                            });
+                            continue;
                         }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                            (controller.poll(), false, false, false, None, None)
-                        }
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    };
+                        let command_done = port_edit.is_none();
+                        (
+                            Some(error),
+                            command_done,
+                            manages_core,
+                            hpwnr,
+                            revision,
+                            port_edit,
+                            runtime_action,
+                        )
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        (controller.poll(), false, false, false, None, None, None)
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 if let Some(error) = result {
                     let replacement = controller.replacement.take();
                     let view = View::new(&controller);
@@ -1193,7 +1258,7 @@ fn spawn_worker(
                         if let Some(ui) = weak.upgrade() {
                             view.apply(&ui, command_done);
                             if let Some(message) = replacement {
-                                super::show_toast(&ui, message, false);
+                                toast(&ui, message, false);
                             }
                             let xray = ui.global::<XrayModule>();
                             let port_done = port_edit.is_some();
@@ -1209,7 +1274,15 @@ fn spawn_worker(
                                     xray.set_settings_saving(false);
                                     xray.set_settings_error(error.into());
                                 }
+                            } else if matches!(runtime_action, Some(RuntimeAction::Restart)) {
+                                finish_restart(&ui, error);
                             } else {
+                                if matches!(runtime_action, Some(RuntimeAction::Toggle))
+                                    && error.is_empty()
+                                {
+                                    xray.set_restart_phase(XrayRestartPhase::Idle);
+                                    xray.set_restart_error("".into());
+                                }
                                 set_error(&xray, manages_core, hpwnr, error);
                             }
                             if command_done || port_done {
@@ -1298,6 +1371,7 @@ pub(super) fn wire(
                 return;
             }
             let manages_core = command.manages_core();
+            let restarting = matches!(command, Command::Restart { .. });
             let checking_hpwnr = matches!(command, Command::CheckHpwnrUpdates);
             let hpwnr = matches!(
                 command,
@@ -1305,10 +1379,15 @@ pub(super) fn wire(
             );
             if queue(command) {
                 xray.set_busy(true);
+                if restarting {
+                    xray.set_restart_phase(XrayRestartPhase::Restarting);
+                }
                 set_error(&xray, manages_core, hpwnr, String::new());
                 if checking_hpwnr {
                     xray.set_hpwnr_update_status("Checking for updates…".into());
                 }
+            } else if restarting {
+                finish_restart(&ui, "The Xray module worker is unavailable".into());
             } else {
                 set_error(
                     &xray,
@@ -1333,7 +1412,20 @@ pub(super) fn wire(
     bind!(on_check_updates, Command::CheckUpdates);
     bind!(on_install_update, Command::InstallUpdate);
     bind!(on_toggle, Command::Toggle);
-    bind!(on_restart, Command::Restart);
+    let restart = send.clone();
+    let weak = ui.as_weak();
+    xray.on_restart(move || {
+        if let Some(ui) = weak.upgrade() {
+            let xray = ui.global::<XrayModule>();
+            if xray.get_restart_notice_active()
+                && xray.get_restart_phase() != XrayRestartPhase::Restarted
+            {
+                restart(Command::Restart {
+                    retry: xray.get_restart_phase() == XrayRestartPhase::Failed,
+                });
+            }
+        }
+    });
     let weak = ui.as_weak();
     let save = send.clone();
     xray.on_save_dns_exit(move |id| {
