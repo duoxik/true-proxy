@@ -536,6 +536,9 @@ impl Controller {
         check_dns_exit(&self.settings)?;
         if let Err(error) = self.start() {
             self.failed_ports = live_ports(&self.settings, Some(format!("{error:#}")));
+            if let Some(failed) = error.downcast_ref::<runtime::ListenerUnavailable>() {
+                self.failed_ports.retain(|port| port.number == failed.port);
+            }
             return Err(self.remember_failure(error));
         }
         if let Err(error) = self.remember_enabled(true) {
@@ -1811,6 +1814,67 @@ mod tests {
         );
         drop(occupied);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn a_cold_start_bind_error_identifies_only_the_occupied_listener() {
+        use std::net::{Ipv4Addr, UdpSocket};
+        let directory = std::env::temp_dir().join(format!("xray-occupied-{}", super::super::id()));
+        let mut controller = Controller::load(
+            directory.clone(),
+            Arc::new(Bypass::default()),
+            Arc::new(Activity::default()),
+            SharedGeoCatalog::default(),
+        )
+        .unwrap();
+        for host in ["192.0.2.1", "192.0.2.2"] {
+            controller.settings.import(&format!("vless://00000000-0000-4000-8000-000000000001@{host}:443?security=tls&type=tcp#Node")).unwrap();
+        }
+        let first_port = controller.settings.default_port().id.clone();
+        let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let number = free.local_addr().unwrap().port();
+        drop(free);
+        controller
+            .settings
+            .set_port_number(&first_port, number, &[])
+            .unwrap();
+        let other = controller.settings.add_port(&[]).unwrap();
+        let profile = controller.settings.profiles[1].id.clone();
+        controller
+            .settings
+            .set_profile_port(&profile, &other)
+            .unwrap();
+        controller.settings.toggle_profile(&profile).unwrap();
+        let occupied = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        // A different program acquired this saved endpoint before startup.
+        controller
+            .settings
+            .ports
+            .iter_mut()
+            .find(|port| port.id == other)
+            .unwrap()
+            .number = occupied.local_addr().unwrap().port();
+        controller.installed = Some(Installed {
+            version: "fixture".into(),
+            executable: directory.join("unused.exe"),
+            sha256: String::new(),
+        });
+        let error = controller.set_running(true).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<runtime::ListenerUnavailable>()
+                .is_some()
+        );
+        assert_eq!(controller.failed_ports.len(), 1);
+        assert_eq!(controller.failed_ports[0].id, other);
+        assert!(
+            controller.failed_ports[0]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("UDP")
+        );
+        drop(occupied);
     }
 
     #[test]

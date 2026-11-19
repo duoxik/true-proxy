@@ -881,15 +881,20 @@ mod ui_tests {
         let target = || {
             ElementHandle::find_by_accessible_label(&ui, "Activate Server 30")
                 .find(|e| e.accessible_role() == Some(AccessibleRole::Switch))
-                .unwrap()
         };
-        assert!(target().absolute_position().y > 640.);
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Activate Server 1")
+                .next()
+                .is_some()
+        );
+        assert!(target().is_none_or(|row| row.absolute_position().y > 640.));
         xray.set_section(2);
         click(&ui, "Open profile Server 30");
         assert_eq!(xray.get_section(), 1);
-        // Instantiate the requested row and let its deferred reveal run after layout.
-        let target = target();
+        // Flush the new page's layout before advancing the one-shot reveal.
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::ZERO);
         i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+        let target = target().expect("the linked profile is visible after navigation");
         let y = target.absolute_position().y;
         assert!(y >= 90. && y + target.size().height <= 640., "row y={y}");
         ui.window().dispatch_event(WindowEvent::KeyPressed {

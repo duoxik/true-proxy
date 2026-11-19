@@ -643,6 +643,20 @@ pub struct Runtime {
     started: Instant,
 }
 
+#[derive(Debug)]
+pub struct ListenerUnavailable {
+    pub port: u16,
+    reason: anyhow::Error,
+}
+
+impl std::error::Error for ListenerUnavailable {}
+
+impl std::fmt::Display for ListenerUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.reason)
+    }
+}
+
 pub fn check_listener_port(port: u16) -> Result<()> {
     ensure!(port != 0, "Choose a nonzero SOCKS port");
     #[cfg(windows)]
@@ -664,7 +678,10 @@ impl Runtime {
             let mut ports = Vec::new();
             let mut upstreams = BTreeSet::new();
             for listener in settings.listeners {
-                check_listener_port(listener.port)?;
+                check_listener_port(listener.port).map_err(|reason| ListenerUnavailable {
+                    port: listener.port,
+                    reason,
+                })?;
                 ports.push(listener.port);
                 upstreams.insert(upstream(listener)?);
             }
@@ -1282,6 +1299,10 @@ mod tests {
             error
                 .to_string()
                 .contains(&format!("UDP port {}", ports[0]))
+        );
+        assert_eq!(
+            error.downcast_ref::<ListenerUnavailable>().unwrap().port,
+            ports[0]
         );
         assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, ports[1])).is_ok());
         drop(occupied);
