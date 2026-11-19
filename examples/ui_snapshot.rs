@@ -495,6 +495,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     }]));
     xray.set_enabled_count(2);
     xray.set_listener_summary("2 ports listening".into());
+    xray.set_default_port_label("Default · 2081".into());
     xray.set_port_labels(model(vec![
         "Default · 2081".into(),
         "US · 2082".into(),

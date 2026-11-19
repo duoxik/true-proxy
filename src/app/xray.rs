@@ -731,6 +731,8 @@ fn show_ports(
         ports => format!("{} ports listening", ports.len()),
     };
     xray.set_listener_summary(summary.into());
+    let default = settings.default_port();
+    xray.set_default_port_label(format!("{} · {}", default.name, default.number).into());
     xray.set_listening_numbers(model(listening));
     for port in &settings.ports {
         labels.push(format!("{} · {}", port.name, port.number).into());

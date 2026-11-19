@@ -1,4 +1,4 @@
-import { ComboBox, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, ThemedComboBox, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
 
@@ -45,6 +45,7 @@ export global XrayModule {
     in property <[string]> port-labels;
     in property <[int]> listening-numbers;
     in property <string> next-free-port;
+    in property <string> default-port-label;
     in property <string> listener-summary;
     in property <int> port-draft-revision;
     in property <bool> port-save-pending;
@@ -230,7 +231,7 @@ component PortField inherits Rectangle {
     border-width: 1px;
     border-radius: Theme.radius-small;
     background: Theme.field;
-    border-color: root.error != "" ? Theme.danger : input.has-focus ? Theme.accent : Theme.border;
+    border-color: root.error != "" ? Theme.danger : Theme.border;
     forward-focus: input;
     input := TextInput {
         x: 10px; width: parent.width - 20px; height: parent.height;
@@ -258,48 +259,106 @@ component PortField inherits Rectangle {
     }
 }
 
-component ProfilePortSelector inherits Rectangle {
-    in property <XrayProfileRow> profile;
-    private property <int> saved-index: root.profile.port-index;
-    private property <bool> accented: select.enabled && root.saved-index >= 0
-        && root.saved-index < XrayModule.ports.length && !XrayModule.ports[root.saved-index].is-default;
-    changed saved-index => { select.current-index = root.saved-index; }
-    width: 170px; height: 36px;
-    border-radius: Theme.radius-small; clip: true;
-    forward-focus: select;
-    // Preserve the native popup, accessibility and arrow keys; paint the closed face in the app palette.
-    select := ComboBox {
-        width: parent.width; height: parent.height;
-        accessible-label: "Port for " + root.profile.name;
-        enabled: XrayModule.ports.length > 1 && !XrayModule.busy;
-        model: XrayModule.port-labels;
-        current-index: root.saved-index;
-        selected => {
-            if self.current-index >= 0 && self.current-index < XrayModule.ports.length {
-                XrayModule.assign-profile-port(root.profile.id, XrayModule.ports[self.current-index].id);
-            }
-            self.current-index = root.saved-index;
+component ProfilePortChoice inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback choose;
+    height: 34px;
+    border-radius: 6px;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.choose(); }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 9px; spacing: 8px; cross-axis-alignment: center;
+        Text {
+            text: root.label; color: Theme.text; font-size: 13px;
+            min-width: 0px; horizontal-stretch: 1; overflow: elide; accessible-role: none;
+        }
+        Rectangle {
+            width: 15px; height: 15px;
+            if root.selected: UiIcon { name: "check"; width: 15px; height: 15px; ink: Theme.accent; }
         }
     }
-    Rectangle {
-        width: parent.width; height: parent.height;
-        border-width: 1px; border-radius: Theme.radius-small;
-        border-color: select.has-focus ? Theme.accent : root.accented ? Theme.accent.with-alpha(0.55) : Theme.border;
-        background: select.enabled ? Theme.field : Theme.disabled;
-        HorizontalLayout {
-            padding-left: 12px; padding-right: 10px; spacing: 6px; cross-axis-alignment: center;
-            Text {
-                text: XrayModule.port-labels[root.saved-index];
-                color: !select.enabled ? Theme.disabled-text : root.accented ? Theme.accent : Theme.text;
-                font-size: 13px; min-width: 0px; horizontal-stretch: 1; overflow: elide;
-                accessible-role: none;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.choose(); } }
+}
+
+component ProfilePortSelector inherits Rectangle {
+    in property <XrayProfileRow> profile;
+    in property <length> viewport-bottom;
+    private property <bool> enabled: XrayModule.ports.length > 1 && !XrayModule.busy;
+    private property <int> saved-index: root.profile.port-index;
+    private property <bool> accented: root.enabled && root.saved-index >= 0
+        && root.saved-index < XrayModule.ports.length && !XrayModule.ports[root.saved-index].is-default;
+    private property <color> ink: !root.enabled ? Theme.disabled-text : root.accented ? Theme.accent : Theme.text;
+    private property <length> space-below: max(0px, root.viewport-bottom - root.absolute-position.y - root.height - 5px);
+    private property <length> space-above: max(0px, root.absolute-position.y - 5px);
+    private property <length> row-height: 34px;
+    private property <length> preferred-menu-height: min(6, XrayModule.ports.length) * root.row-height + 10px;
+    private property <bool> opens-above: root.preferred-menu-height > root.space-below && root.space-above > root.space-below;
+
+    width: 170px; height: 36px;
+    border-radius: Theme.radius-small; border-width: 1px;
+    border-color: menu.is-open ? Theme.accent : root.accented ? Theme.accent.with-alpha(0.55)
+        : root.enabled && touch.has-hover ? Theme.muted : Theme.border;
+    background: !root.enabled ? Theme.disabled : touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : Theme.field;
+    accessible-role: combobox;
+    accessible-label: "Port for " + root.profile.name;
+    accessible-value: XrayModule.port-labels[root.saved-index];
+    accessible-enabled: root.enabled;
+    accessible-expandable: root.enabled;
+    accessible-expanded: menu.is-open;
+    accessible-action-expand => { if root.enabled { menu.show(); } }
+    changed enabled => { if !root.enabled && menu.is-open { menu.close(); } }
+
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 10px; spacing: 6px; cross-axis-alignment: center;
+        Text {
+            text: XrayModule.port-labels[root.saved-index]; color: root.ink; font-size: 13px;
+            min-width: 0px; horizontal-stretch: 1; overflow: elide; accessible-role: none;
+        }
+        UiIcon { name: menu.is-open ? "chevron-up" : "chevron-down"; width: 15px; height: 15px; ink: root.ink; }
+    }
+    touch := TouchArea {
+        enabled: root.enabled; mouse-cursor: pointer;
+        clicked => { if menu.is-open { menu.close(); } else { menu.show(); } }
+    }
+    menu := PopupWindow {
+        x: 0px; y: root.opens-above ? -self.height - 5px : root.height + 5px;
+        width: 208px;
+        height: min(root.preferred-menu-height, root.opens-above ? root.space-above : root.space-below);
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Theme.surface; border-radius: Theme.radius-small;
+            border-width: 1px; border-color: Theme.dark ? Theme.switch-off : Theme.border;
+            port-menu-scroll := ScrollView {
+                x: 5px; y: 5px; width: parent.width - 10px; height: parent.height - 10px;
+                horizontal-scrollbar-policy: always-off;
+                content-width: self.visible-width;
+                content-height: XrayModule.ports.length * root.row-height;
+                content-y: -min(max(0, root.saved-index - 2) * root.row-height, max(0px, self.content-height - self.visible-height));
+                VerticalLayout {
+                    alignment: start;
+                    padding-right: XrayModule.ports.length * root.row-height > menu.height - 10px ? Theme.scroll-gutter : 0px;
+                    for port[index] in XrayModule.ports: ProfilePortChoice {
+                        label: XrayModule.port-labels[index]; selected: index == root.saved-index;
+                        height: root.row-height;
+                        choose => {
+                            // Closing the popup releases the row's references to the selector.
+                            if root.enabled && index != root.saved-index {
+                                XrayModule.assign-profile-port(root.profile.id, port.id);
+                            }
+                            menu.close();
+                        }
+                    }
+                }
             }
-            UiIcon { name: "chevron-down"; width: 15px; height: 15px; ink: !select.enabled ? Theme.disabled-text : root.accented ? Theme.accent : Theme.secondary; }
         }
     }
 }
 
 component XrayProfileItem inherits Rectangle {
+    in property <length> viewport-bottom;
     in property <XrayProfileRow> profile;
     in property <bool> compact;
     in property <string> reveal-id;
@@ -328,7 +387,7 @@ component XrayProfileItem inherits Rectangle {
             color: root.profile.active ? Theme.accent : Theme.muted;
             font-size: 11px; horizontal-stretch: 0;
         }
-        if !root.compact: ProfilePortSelector { profile: root.profile; }
+        if !root.compact: ProfilePortSelector { profile: root.profile; viewport-bottom: root.viewport-bottom; }
         if !root.compact: ActionButton {
             label: "Remove " + root.profile.name;
             icon: "trash"; icon-only: true; quiet: true; icon-ink: Theme.muted;
@@ -427,6 +486,7 @@ component XrayDashboard inherits VerticalLayout {
 }
 
 component ProfileContainer inherits XrayCard {
+    in property <length> viewport-bottom;
     in property <string> owner;
     in property <string> group-name;
     in property <string> reveal-id;
@@ -448,12 +508,13 @@ component ProfileContainer inherits XrayCard {
     if root.active-removed: XrayNotice { message: "Active profile removed"; error: true; }
     if root.rows.length == 0: XrayNote { text: root.owner == "" ? "No manually imported profiles." : "No profiles in this subscription."; }
     for row in root.rows: XrayProfileItem {
-        profile: row; reveal-id: root.reveal-id;
+        profile: row; reveal-id: root.reveal-id; viewport-bottom: root.viewport-bottom;
         reveal-position(y) => { root.reveal-position(y); }
     }
 }
 
 component XrayProfiles inherits VerticalLayout {
+    in property <length> viewport-bottom;
     in property <string> reveal-id;
     callback reveal-position(length);
     alignment: start;
@@ -486,11 +547,11 @@ component XrayProfiles inherits VerticalLayout {
     }
     for group in XrayModule.subscriptions: ProfileContainer {
         owner: group.id; group-name: group.name; reveal-id: root.reveal-id;
-        active-removed: group.active-removed; rows: group.profiles;
+        active-removed: group.active-removed; rows: group.profiles; viewport-bottom: root.viewport-bottom;
         reveal-position(y) => { root.reveal-position(y); }
     }
     ProfileContainer {
-        group-name: "Manual Profiles"; rows: XrayModule.profiles; reveal-id: root.reveal-id;
+        group-name: "Manual Profiles"; rows: XrayModule.profiles; reveal-id: root.reveal-id; viewport-bottom: root.viewport-bottom;
         reveal-position(y) => { root.reveal-position(y); }
     }
     XrayNote { text: "Turning a profile on switches off only the active one on the same port."; }
@@ -511,7 +572,7 @@ component PortUserLink inherits Rectangle {
         font-size: 12px; font-weight: 600; overflow: elide; vertical-alignment: center;
         accessible-role: none;
     }
-    Rectangle { x: 0px; y: parent.height - 3px; height: 1px; background: touch.has-hover || focus.has-focus ? Theme.danger : transparent; }
+    Rectangle { x: 0px; y: parent.height - 3px; height: 1px; background: touch.has-hover ? Theme.danger : transparent; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { focus.focus(); root.open(root.user.id); } }
     focus := FocusScope { width: 0px; key-pressed(event) => {
         if event.text == Key.Return || event.text == Key.Space { root.open(root.user.id); return accept; }
@@ -538,16 +599,9 @@ component PortTableLine inherits VerticalLayout {
         Rectangle {
             min-width: 0px; preferred-width: 0px; horizontal-stretch: 1.7; height: 36px;
             if root.heading: PortCellText { x: 0px; width: parent.width; text: "Name"; }
-            if !root.heading: HorizontalLayout {
-                spacing: 6px; cross-axis-alignment: center;
-                PortField {
-                    horizontal-stretch: 1; port-id: root.port.id; saved: root.port.name;
-                    label: "Port name for " + root.port.name;
-                }
-                if root.port.is-default: Rectangle {
-                    width: 48px; height: 20px; border-radius: 10px; background: Theme.accent-soft;
-                    Text { text: "Default"; color: Theme.accent; font-size: 10px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
-                }
+            if !root.heading: PortField {
+                port-id: root.port.id; saved: root.port.name;
+                label: "Port name for " + root.port.name;
             }
         }
         Rectangle {
@@ -584,12 +638,11 @@ component PortTableLine inherits VerticalLayout {
         }
         Rectangle {
             width: 36px; height: 36px;
-            if !root.heading: ActionButton {
+            if !root.heading && !root.port.is-default: ActionButton {
                 label: "Remove port " + root.port.name; icon: "trash"; icon-only: true; quiet: true;
-                height: 36px; enabled: !root.port.is-default && !XrayModule.busy;
-                icon-ink: root.port.is-default ? Theme.switch-off : Theme.muted;
+                height: 36px; enabled: !XrayModule.busy; icon-ink: Theme.muted;
                 clicked => { XrayModule.remove-port(root.port.id); }
-                Tooltip { text: root.port.is-default ? @markdown("The Default port is permanent.") : @markdown("Delete port"); }
+                Tooltip { text: @markdown("Delete port"); }
             }
         }
     }
@@ -617,7 +670,8 @@ component PortTableLine inherits VerticalLayout {
 component XrayPorts inherits XrayCard {
     callback open-profile(string);
     title: "Ports"; icon: "network";
-    caption: "New profiles use the Default port. Rename it or change its number if you like.";
+    caption: XrayModule.default-port-label == "" ? "New profiles use the default port." : "New profiles use";
+    caption-emphasis: XrayModule.default-port-label == "" ? "" : XrayModule.default-port-label + ".";
     action-label: "Add port"; action-icon: "plus"; outlined-action: true;
     action-enabled: !XrayModule.busy;
     action => { XrayModule.add-port(); }
@@ -725,7 +779,7 @@ component XrayGeoSuggestion inherits Rectangle {
     callback select;
     height: 30px;
     border-radius: Theme.radius-small;
-    background: touch.pressed ? Theme.pressed : touch.has-hover || focus.has-focus ? Theme.surface-hover : Theme.surface;
+    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : Theme.surface;
     accessible-role: button;
     accessible-label: "Add " + root.kind + " " + root.tag;
     accessible-enabled: !XrayModule.busy;
@@ -1005,6 +1059,7 @@ export component XrayView inherits VerticalLayout {
                 }
             }
             if XrayModule.section == 1: XrayProfiles {
+                viewport-bottom: settings-scroll.absolute-position.y + settings-scroll.height;
                 reveal-id: root.reveal-id;
                 reveal-position(y) => {
                     let offset = settings-scroll.content-y + settings-scroll.absolute-position.y - y + 12px;

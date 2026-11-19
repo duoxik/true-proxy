@@ -728,6 +728,16 @@ mod ui_tests {
                 .dispatch_event(WindowEvent::KeyPressed { text: key.into() })
         };
         let first = || xray.get_ports().row_data(0).unwrap();
+        let assert_caption = |name: &str, number: &str| {
+            let caption = format!("New profiles use {name} · {number}.");
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, &caption)
+                    .next()
+                    .is_some(),
+                "Missing Ports caption: {caption}"
+            );
+        };
+        assert_caption("Default", "2081");
         field("Port name for Default").mock_single_click(PointerEventButton::Left);
         replace("US");
         assert!(
@@ -747,6 +757,7 @@ mod ui_tests {
         assert_eq!(first().name, "Default");
         key(Key::Return);
         assert_eq!(first().name, "Latvia");
+        assert_caption("Latvia", "2081");
         field("Port name for Latvia").mock_single_click(PointerEventButton::Left);
         replace("Baltic");
         field("Port number for US").mock_single_click(PointerEventButton::Left);
@@ -775,6 +786,12 @@ mod ui_tests {
             number
         );
         assert_eq!(first().id, "default");
+        let new_number = xray.get_next_free_port();
+        field("Port number for Baltic").mock_single_click(PointerEventButton::Left);
+        replace(new_number.as_str());
+        key(Key::Return);
+        assert_eq!(first().number, new_number);
+        assert_caption("Baltic", new_number.as_str());
         click(&ui, "Add port");
         let added = xray.get_ports().row_data(2).unwrap();
         click(&ui, &format!("Remove port {}", added.name));
@@ -785,39 +802,97 @@ mod ui_tests {
         assert!(us.delete_error.contains("Backup tunnel"));
         click(&ui, "Open profile Backup tunnel");
         assert_eq!(xray.get_section(), 1);
+        click(&ui, "Xray Ports");
+        assert_caption("Baltic", new_number.as_str());
     }
 
     #[cfg(windows)]
     #[test]
     fn profile_selects_a_named_port_and_disables_the_selector_when_only_default_remains() {
+        use slint::platform::{Key, WindowEvent};
+
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         app::preview::populate_xray(&ui);
-        let xray = ui.global::<XrayModule>();
         ui.show().unwrap();
         click(&ui, "Xray Profiles");
-        let selector = || {
-            ElementHandle::find_by_accessible_label(&ui, "Port for Backup tunnel")
-                .find(|e| e.accessible_value().is_some())
-                .expect("Backup tunnel port selector")
+
+        let selector = |name: &str| {
+            ElementHandle::find_by_accessible_label(&ui, &format!("Port for {name}"))
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Combobox))
+                .expect("Profile port selector")
         };
-        assert_eq!(selector().accessible_value().as_deref(), Some("US · 2082"));
-        selector().mock_single_click(PointerEventButton::Left);
-        ElementHandle::find_by_accessible_label(&ui, "Default · 2081")
-            .next()
+        let option = |label: &str| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|e| e.accessible_role() == Some(AccessibleRole::Button))
+        };
+        let press = |key: Key| {
+            let text: slint::SharedString = key.into();
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        };
+        let backup = || selector("Backup tunnel");
+        let selected = || backup().accessible_value().unwrap();
+        let us = "US · 2082";
+        let default = "Default · 2081";
+        assert_eq!(selected().as_str(), us);
+
+        backup().mock_single_click(PointerEventButton::Left);
+        assert_eq!(backup().accessible_expanded(), Some(true));
+        assert!(option(default).is_some());
+        for key in [Key::UpArrow, Key::DownArrow, Key::Return, Key::Space] {
+            press(key);
+            assert_eq!(selected().as_str(), us);
+            assert!(option(default).is_some());
+        }
+
+        // Click the profile name area beside the trigger, outside the popup.
+        let origin = backup().absolute_position();
+        let position =
+            slint::LogicalPosition::new(origin.x - 24., origin.y + backup().size().height / 2.);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position,
+            button: PointerEventButton::Left,
+        });
+        assert_eq!(selected().as_str(), us);
+        assert_eq!(backup().accessible_expanded(), Some(false));
+        assert!(option(default).is_none());
+        for key in [Key::Space, Key::Return, Key::UpArrow, Key::DownArrow] {
+            press(key);
+            assert_eq!(selected().as_str(), us);
+            assert!(option(default).is_none());
+        }
+
+        backup().mock_single_click(PointerEventButton::Left);
+        option(default)
             .unwrap()
             .mock_single_click(PointerEventButton::Left);
-        assert_eq!(
-            selector().accessible_value().as_deref(),
-            Some("Default · 2081")
-        );
-        xray.invoke_assign_profile_port("preview-us-east".into(), "default".into());
-        xray.invoke_remove_port("us".into());
-        assert_eq!(xray.get_ports().row_count(), 1);
-        assert_eq!(selector().accessible_enabled(), Some(false));
-        selector().mock_single_click(PointerEventButton::Left);
-        assert_ne!(selector().accessible_expanded(), Some(true));
+        assert_eq!(selected().as_str(), default);
+        assert_eq!(backup().accessible_expanded(), Some(false));
+        assert!(option(default).is_none());
+
+        selector("US East").mock_single_click(PointerEventButton::Left);
+        option(default)
+            .unwrap()
+            .mock_single_click(PointerEventButton::Left);
+        click(&ui, "Xray Ports");
+        click(&ui, "Remove port US");
+        assert_eq!(ui.global::<XrayModule>().get_ports().row_count(), 1);
+        click(&ui, "Xray Profiles");
+        assert_eq!(backup().accessible_enabled(), Some(false));
+        backup().mock_single_click(PointerEventButton::Left);
+        assert_eq!(backup().accessible_expanded(), Some(false));
+        assert!(option(default).is_none());
+        assert_eq!(selected().as_str(), default);
     }
     #[test]
     fn bound_profile_link_reveals_and_focuses_its_row_in_a_long_subscription() {

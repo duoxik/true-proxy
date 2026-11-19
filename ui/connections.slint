@@ -13,7 +13,7 @@ component ConnectionFilterMenu inherits Rectangle {
     height: 34px;
     border-radius: Theme.radius-small;
     border-width: 1px;
-    border-color: menu.is-open || focus.has-focus ? Theme.accent : Theme.border;
+    border-color: menu.is-open ? Theme.accent : Theme.border;
     background: menu.is-open || touch.has-hover ? Theme.accent-soft : Theme.surface;
     accessible-role: button;
     accessible-expanded: menu.is-open;
@@ -224,8 +224,6 @@ component JournalGroup inherits Rectangle {
         spacing: 0px;
         Rectangle {
             height: 40px;
-            border-width: header-focus.has-focus ? 1px : 0px;
-            border-color: Theme.accent;
             background: header-touch.has-hover ? Theme.surface-hover : root.process.expanded ? Theme.accent-soft : root.stripe ? Theme.field : Theme.surface;
             accessible-role: button;
             accessible-label: "Connections for " + root.process.name;
