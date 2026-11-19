@@ -529,14 +529,6 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         },
     ]));
     xray.set_dns("https://resolver.example.test/dns-query".into());
-    xray.set_dns_exit_profiles(model(vec![
-        "Not selected".into(),
-        "Primary · :2081".into(),
-        "Regional · :2082".into(),
-    ]));
-    xray.set_dns_exit_profile_ids(model(vec!["".into(), "primary".into(), "regional".into()]));
-    xray.set_dns_exit_profile_id("regional".into());
-    xray.set_dns_exit_index(2);
     xray.set_hosts(model(vec![
         XrayHostRow {
             host: "backup.example.test".into(),

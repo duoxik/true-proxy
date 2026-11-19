@@ -4,7 +4,7 @@ use crate::{config::Protocol, dns::DomainCache};
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     io::{self, BufRead},
     net::{IpAddr, SocketAddr},
     path::Path,
@@ -27,7 +27,6 @@ pub(super) use self::windows::run_link_decoder;
 const ROW_LIMIT: usize = 256;
 const LINE_LIMIT: usize = 2048;
 const DNS_INBOUND: &str = "module-dns";
-const DNS_TUNNEL: &str = "vless-dns";
 const DIRECT: &str = "direct";
 
 pub struct Listener {
@@ -43,7 +42,6 @@ pub struct Listener {
 pub struct Settings<'a> {
     pub listeners: &'a [Listener],
     pub dns_servers: &'a [String],
-    pub dns_exit_profile_id: Option<&'a str>,
     pub direct_domains: &'a [String],
     pub direct_ips: &'a [String],
     pub geo_directory: &'a Path,
@@ -245,10 +243,12 @@ fn access_event(time: &str, message: &str) -> Option<ConnectionEvent> {
         .and_then(|tail| tail.strip_prefix('['))
         .and_then(|tail| tail.split_once(']'))
         .map(|(route, _)| route);
+    if detour.and_then(|route| route.split_ascii_whitespace().next()) == Some(DNS_INBOUND) {
+        return None;
+    }
     let route = match detour.and_then(|route| route.split_ascii_whitespace().last()) {
         Some(DIRECT) => "Direct",
         Some(tag) if tag.starts_with("out-") || tag == "vless" => "VLESS",
-        Some(DNS_TUNNEL) => return None,
         _ => "—",
     };
     let (protocol, destination) = match target.split_once(':') {
@@ -404,13 +404,90 @@ fn vless_outbound(
     Ok((vless, secrets))
 }
 
-fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
+struct PreparedConfig {
+    json: Value,
+    unresolved_dns: Vec<String>,
+    secrets: Vec<String>,
+    dns_endpoints: Vec<(SocketAddr, Protocol)>,
+}
+
+#[derive(Default)]
+struct Resolvers {
+    servers: Vec<String>,
+    hosts: BTreeMap<String, String>,
+    endpoints: Vec<(SocketAddr, Protocol)>,
+}
+
+impl Resolvers {
+    fn prepare(
+        servers: &[String],
+        resolve: impl FnOnce(BTreeSet<String>) -> BTreeMap<String, IpAddr>,
+    ) -> Result<Self> {
+        super::profile::validate_dns_servers(servers)?;
+        let mut resolvers = Self::default();
+        let mut targets = Vec::new();
+        let mut domains = BTreeSet::new();
+        for server in servers {
+            if let Ok(ip) = server.parse::<IpAddr>() {
+                targets.push((
+                    server.clone(),
+                    match ip {
+                        IpAddr::V4(ip) => url::Host::Ipv4(ip),
+                        IpAddr::V6(ip) => url::Host::Ipv6(ip),
+                    },
+                    53,
+                    Protocol::Udp,
+                ));
+            } else {
+                let url = url::Url::parse(server)?;
+                let host = url::Host::parse(url.host_str().context("Missing DNS resolver host")?)?;
+                if let url::Host::Domain(name) = &host {
+                    domains.insert(name.clone());
+                }
+                let port = url
+                    .port()
+                    .unwrap_or(if url.scheme() == "https" { 443 } else { 53 });
+                targets.push((url.to_string(), host, port, Protocol::Tcp));
+            }
+        }
+        // Pin bootstrap results in Xray as well as WinDivert. A second system
+        // lookup could pick a different CDN address than the one we allowed.
+        let bootstrap = resolve(domains);
+        for (server, host, port, protocol) in targets {
+            resolvers.servers.push(server);
+            let ip = match host {
+                url::Host::Ipv4(ip) => ip.into(),
+                url::Host::Ipv6(ip) => ip.into(),
+                url::Host::Domain(name) => {
+                    let Some(&ip) = bootstrap.get(&name) else {
+                        // SERVFAIL this bootstrap lookup. Other resolvers and
+                        // already-resolved SOCKS destinations can still work.
+                        resolvers.hosts.insert(name, "#2".into());
+                        continue;
+                    };
+                    resolvers.hosts.insert(name, ip.to_string());
+                    ip
+                }
+            };
+            resolvers
+                .endpoints
+                .push((SocketAddr::new(ip.to_canonical(), port), protocol));
+        }
+        Ok(resolvers)
+    }
+}
+
+fn configuration(settings: &Settings<'_>) -> Result<PreparedConfig> {
     ensure!(
         !settings.listeners.is_empty(),
         "Turn on a profile in X-RAY → Profiles first"
     );
     let custom_dns = !settings.dns_servers.is_empty();
-    super::profile::validate_dns_servers(settings.dns_servers)?;
+    let dns = Resolvers::prepare(settings.dns_servers, |domains| {
+        let mut hosts = BTreeMap::new();
+        super::profile::resolve_addresses(domains.into_iter(), &mut hosts);
+        hosts
+    })?;
     ensure!(
         settings
             .direct_domains
@@ -468,25 +545,9 @@ fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
     }
     let mut routes = Vec::new();
     if custom_dns {
-        let exit_id = settings
-            .dns_exit_profile_id
-            .context("Choose a DNS exit profile in X-RAY → DNS.")?;
-        let dns_index = settings
-            .listeners
-            .iter()
-            .position(|listener| listener.profile_id == exit_id)
-            .context("The DNS exit profile is unavailable. Choose another in X-RAY → DNS.")?;
-        let mut dns_outbound = outbounds[dns_index].clone();
-        dns_outbound["tag"] = json!(DNS_TUNNEL);
-        // A DNS resolver hostname is resolved by the VPN server. Resolving it
-        // through the local built-in DNS again would recurse.
-        dns_outbound["targetStrategy"] = json!("AsIs");
-        outbounds.push(dns_outbound);
-        routes.push(
-            json!({ "type": "field", "inboundTag": [DNS_INBOUND], "outboundTag": DNS_TUNNEL }),
-        );
+        routes.push(json!({ "type": "field", "inboundTag": [DNS_INBOUND], "outboundTag": DIRECT }));
     }
-    if has_direct {
+    if has_direct || custom_dns {
         outbounds.push(json!({
             "tag": DIRECT, "protocol": "freedom",
             "streamSettings": { "sockopt": { "domainStrategy": if custom_dns { "ForceIP" } else { "AsIs" } } }
@@ -511,9 +572,18 @@ fn configuration(settings: &Settings<'_>) -> Result<(Value, Vec<String>)> {
         "routing": { "domainStrategy": "AsIs", "rules": routes },
     });
     if custom_dns {
-        config["dns"] = json!({ "tag": DNS_INBOUND, "servers": settings.dns_servers });
+        config["dns"] = json!({ "tag": DNS_INBOUND, "servers": dns.servers, "hosts": dns.hosts });
     }
-    Ok((config, secrets))
+    Ok(PreparedConfig {
+        json: config,
+        unresolved_dns: dns
+            .hosts
+            .into_iter()
+            .filter_map(|(name, ip)| (ip == "#2").then_some(name))
+            .collect(),
+        secrets,
+        dns_endpoints: dns.endpoints,
+    })
 }
 
 fn geo_tag(tag: &str, kind: &str) -> bool {
@@ -526,6 +596,7 @@ struct Allowance {
     generation: u64,
     identity: Arc<windows::Identity>,
     upstreams: BTreeSet<SocketAddr>,
+    dns_endpoints: Vec<(SocketAddr, Protocol)>,
     geo_direct: bool,
 }
 
@@ -586,6 +657,7 @@ impl Bypass {
                 .filter(|entry| entry.identity.pid() == pid)?;
             let allowed = entry.identity.alive()
                 && ((protocol == Protocol::Tcp && entry.upstreams.contains(&destination))
+                    || entry.dns_endpoints.contains(&(destination, protocol))
                     || (entry.geo_direct && matches!(protocol, Protocol::Tcp | Protocol::Udp)));
             Some((entry.generation, allowed))
         }
@@ -601,6 +673,7 @@ impl Bypass {
         &self,
         identity: Arc<windows::Identity>,
         upstreams: BTreeSet<SocketAddr>,
+        dns_endpoints: Vec<(SocketAddr, Protocol)>,
         geo_direct: bool,
     ) {
         let pid = identity.pid();
@@ -613,6 +686,7 @@ impl Bypass {
             generation,
             identity,
             upstreams,
+            dns_endpoints,
             geo_direct,
         });
         self.generation.store(generation, Ordering::Release);
@@ -674,7 +748,7 @@ impl Runtime {
     ) -> Result<Self> {
         #[cfg(windows)]
         {
-            let (config, secrets) = configuration(&settings)?;
+            let config = configuration(&settings)?;
             let mut ports = Vec::new();
             let mut upstreams = BTreeSet::new();
             for listener in settings.listeners {
@@ -685,11 +759,18 @@ impl Runtime {
                 ports.push(listener.port);
                 upstreams.insert(upstream(listener)?);
             }
-            let bytes = serde_json::to_vec(&config)?;
-            let child = Child::spawn(installed, settings.geo_directory, &activity, secrets)?;
+            let bytes = serde_json::to_vec(&config.json)?;
+            let child = Child::spawn(installed, settings.geo_directory, &activity, config.secrets)?;
+            if !config.unresolved_dns.is_empty() {
+                activity.receive(&format!(
+                    "[Warning] Windows could not resolve these DNS resolvers: {}. Restart Xray to retry.",
+                    config.unresolved_dns.join(", ")
+                ));
+            }
             bypass.activate(
                 child.identity().clone(),
                 upstreams,
+                config.dns_endpoints,
                 !settings.direct_domains.is_empty() || !settings.direct_ips.is_empty(),
             );
             let mut runtime = Self {
@@ -777,7 +858,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn imported_reality_profile_reaches_the_tunnel_and_dns_outbounds() {
+    fn imported_reality_settings_apply_only_to_the_tunnel() {
         let link = "vless://00000000-0000-4000-8000-000000000001@vpn.example.test:443?type=tcp&security=reality&sni=cover.example.test&fp=firefox&pbk=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI&flow=xtls-rprx-vision#Reality";
         let mut profiles = super::super::profile::Settings::default();
         profiles.import(link).unwrap();
@@ -796,27 +877,29 @@ mod tests {
         let settings = Settings {
             listeners: &listeners,
             dns_servers: &["tcp://192.0.2.53:53".into()],
-            dns_exit_profile_id: Some(&profile.id),
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: Path::new("."),
         };
-        let (config, secrets) = configuration(&settings).unwrap();
-        for index in [0, 1] {
-            let node = &config["outbounds"][index];
-            let stream = &node["streamSettings"];
-            assert_eq!(node["settings"]["address"], "192.0.2.1");
-            assert_eq!(node["settings"]["flow"], "xtls-rprx-vision");
-            assert_eq!(stream["security"], "reality");
-            assert_eq!(
-                stream["realitySettings"]["serverName"],
-                "cover.example.test"
-            );
-            assert_eq!(stream["realitySettings"]["fingerprint"], "firefox");
-            assert_eq!(stream["realitySettings"]["password"], secrets[1]);
-            assert_eq!(stream["realitySettings"]["shortId"], "");
-            assert!(stream.get("tlsSettings").is_none());
-        }
+        let PreparedConfig {
+            json: config,
+            secrets,
+            ..
+        } = configuration(&settings).unwrap();
+        assert_eq!(config["outbounds"][1]["protocol"], "freedom");
+        let node = &config["outbounds"][0];
+        let stream = &node["streamSettings"];
+        assert_eq!(node["settings"]["address"], "192.0.2.1");
+        assert_eq!(node["settings"]["flow"], "xtls-rprx-vision");
+        assert_eq!(stream["security"], "reality");
+        assert_eq!(
+            stream["realitySettings"]["serverName"],
+            "cover.example.test"
+        );
+        assert_eq!(stream["realitySettings"]["fingerprint"], "firefox");
+        assert_eq!(stream["realitySettings"]["password"], secrets[1]);
+        assert_eq!(stream["realitySettings"]["shortId"], "");
+        assert!(stream.get("tlsSettings").is_none());
     }
 
     #[test]
@@ -840,29 +923,54 @@ mod tests {
         };
         let settings = Settings {
             listeners: std::slice::from_ref(&listener),
-            dns_exit_profile_id: Some("node"),
             dns_servers: &[
-                "https://dns.example/dns-query".into(),
+                "https://localhost:8443/dns-query".into(),
                 "tcp://192.0.2.53:8853".into(),
+                "2001:db8::53".into(),
+                "https://[2001:db8::1]/dns-query".into(),
             ],
             direct_domains: &["geosite:category-ru".into()],
             direct_ips: &["geoip:ru".into()],
             geo_directory: Path::new("."),
         };
-        let (value, _) = configuration(&settings).unwrap();
+        let PreparedConfig {
+            json: value,
+            dns_endpoints,
+            ..
+        } = configuration(&settings).unwrap();
+        let bootstrap: IpAddr = value["dns"]["hosts"]["localhost"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(bootstrap.is_loopback());
+        assert_eq!(
+            dns_endpoints,
+            vec![
+                (SocketAddr::new(bootstrap, 8443), Protocol::Tcp),
+                ("192.0.2.53:8853".parse().unwrap(), Protocol::Tcp),
+                ("[2001:db8::53]:53".parse().unwrap(), Protocol::Udp),
+                ("[2001:db8::1]:443".parse().unwrap(), Protocol::Tcp),
+            ]
+        );
+        assert_eq!(value["dns"]["servers"], json!(settings.dns_servers));
         assert_eq!(value["inbounds"][0]["listen"], "127.0.0.1");
         assert_eq!(value["inbounds"][0]["settings"]["udp"], true);
         assert_eq!(value["outbounds"][0]["settings"]["address"], "192.0.2.1");
         let tls = &value["outbounds"][0]["streamSettings"]["tlsSettings"];
         assert_eq!(tls["serverName"], "node.example");
         assert!(tls.get("allowInsecure").is_none());
-        assert_eq!(value["outbounds"][1]["targetStrategy"], "AsIs");
-        assert_eq!(value["dns"]["servers"][1], "tcp://192.0.2.53:8853");
+        assert_eq!(value["outbounds"][0]["targetStrategy"], "ForceIP");
+        assert_eq!(value["outbounds"][1]["protocol"], "freedom");
+        assert_eq!(
+            value["outbounds"][1]["streamSettings"]["sockopt"]["domainStrategy"],
+            "ForceIP"
+        );
         assert_eq!(
             value["routing"]["rules"][0]["inboundTag"],
             json!([DNS_INBOUND])
         );
-        assert_eq!(value["routing"]["rules"][0]["outboundTag"], DNS_TUNNEL);
+        assert_eq!(value["routing"]["rules"][0]["outboundTag"], DIRECT);
         assert_eq!(value["routing"]["rules"][1]["outboundTag"], DIRECT);
 
         listener.upstream_ip = None;
@@ -872,6 +980,17 @@ mod tests {
             upstream(&listener).unwrap(),
             "[2001:db8::1]:443".parse().unwrap()
         );
+    }
+
+    #[test]
+    fn unavailable_resolver_hostname_does_not_prevent_startup() {
+        let failed = "https://resolver.invalid/dns-query".to_owned();
+        for servers in [vec![failed.clone()], vec![failed, "192.0.2.53".into()]] {
+            let dns = Resolvers::prepare(&servers, |_| BTreeMap::new()).unwrap();
+            assert_eq!(dns.servers, servers);
+            assert_eq!(dns.hosts["resolver.invalid"], "#2");
+            assert_eq!(dns.endpoints.len(), servers.len() - 1);
+        }
     }
 
     #[test]
@@ -896,12 +1015,15 @@ mod tests {
         let settings = Settings {
             listeners: &listeners,
             dns_servers: &[],
-            dns_exit_profile_id: None,
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: Path::new("."),
         };
-        let (config, secrets) = configuration(&settings).unwrap();
+        let PreparedConfig {
+            json: config,
+            secrets,
+            ..
+        } = configuration(&settings).unwrap();
         assert_eq!(config["inbounds"].as_array().unwrap().len(), 2);
         assert_eq!(config["outbounds"].as_array().unwrap().len(), 2);
         assert_eq!(config["routing"]["rules"].as_array().unwrap().len(), 2);
@@ -925,24 +1047,17 @@ mod tests {
         let activity = Activity::default();
         activity.receive("from udp:127.0.0.1:1 accepted udp:example.test:443 [in-us -> out-us]");
         assert_eq!(activity.stats().proxied, 1);
-        let mut settings = Settings {
+        let settings = Settings {
             dns_servers: &["192.0.2.53".into()],
             direct_domains: &["geosite:category-ru".into()],
             ..settings
         };
-        assert!(configuration(&settings).is_err());
-        settings.dns_exit_profile_id = Some("missing");
-        assert!(configuration(&settings).is_err());
-        settings.dns_exit_profile_id = Some("us");
-        let (config, _) = configuration(&settings).unwrap();
-        assert_eq!(config["outbounds"][2]["tag"], DNS_TUNNEL);
-        assert_eq!(
-            config["outbounds"][2]["settings"],
-            config["outbounds"][0]["settings"]
-        );
-        assert_eq!(config["outbounds"][2]["settings"]["address"], "192.0.2.4");
+        let config = configuration(&settings).unwrap().json;
+        assert_eq!(config["outbounds"].as_array().unwrap().len(), 3);
+        assert_eq!(config["outbounds"][2]["tag"], DIRECT);
+        assert_eq!(config["outbounds"][2]["protocol"], "freedom");
         let rules = config["routing"]["rules"].as_array().unwrap();
-        assert_eq!(rules[0]["outboundTag"], DNS_TUNNEL);
+        assert_eq!(rules[0]["outboundTag"], DIRECT);
         assert_eq!(rules[1]["outboundTag"], DIRECT);
         assert_eq!(rules[1]["inboundTag"], json!(["in-port-2", "in-default"]));
         assert_eq!(rules[2]["outboundTag"], "out-us");
@@ -956,10 +1071,11 @@ mod tests {
             listeners: &replacement,
             dns_servers: &[],
             direct_domains: &[],
-            dns_exit_profile_id: None,
             ..settings
         };
-        let (switched, _) = configuration(&plain_settings).unwrap();
+        let switched = configuration(&plain_settings).unwrap().json;
+        assert!(switched.get("dns").is_none());
+        assert_eq!(switched["outbounds"][0]["targetStrategy"], "AsIs");
         assert_eq!(switched["inbounds"][0]["tag"], "in-port-2");
         assert_eq!(switched["routing"]["rules"][0]["outboundTag"], "out-new-us");
         assert_eq!(
@@ -1123,7 +1239,6 @@ mod tests {
         let settings = Settings {
             listeners: &listeners,
             dns_servers: &[format!("tcp://{resolver_address}")],
-            dns_exit_profile_id: Some("local-1"),
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: installed.executable.parent().unwrap(),
@@ -1225,6 +1340,18 @@ mod tests {
         assert_eq!(events[0].protocol, "TCP");
         assert_eq!(activity.stats().proxied, 2);
 
+        assert_eq!(
+            bypass.classify(pid, resolver_address, Protocol::Tcp),
+            Some((bypass.generation(), true))
+        );
+        assert_eq!(
+            bypass.classify(pid, resolver_address, Protocol::Udp),
+            Some((bypass.generation(), false))
+        );
+        assert_eq!(
+            bypass.classify(pid, servers[2].local_addr().unwrap(), Protocol::Tcp),
+            Some((bypass.generation(), false))
+        );
         let mut socks = open_socks(ports[0]);
         let domain = b"dns-egress.test";
         let mut request = vec![5, 1, 0, 3, domain.len() as u8];
@@ -1232,28 +1359,33 @@ mod tests {
         request.extend_from_slice(&443_u16.to_be_bytes());
         socks.write_all(&request).unwrap();
         socks.write_all(b"test payload").unwrap();
-        let dns_socket = accept_tls(&servers[1]);
-        assert!(
-            matches!(servers[0].accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
-        );
-        assert!(
-            matches!(resolver.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
-        );
-        let expected_route =
-            format!("accepted tcp:{resolver_address} [{DNS_INBOUND} -> {DNS_TUNNEL}]");
-        let until = Instant::now() + Duration::from_secs(2);
-        while !activity
-            .logs()
-            .iter()
-            .any(|line| line.message.contains(&expected_route))
-        {
+        let until = Instant::now() + Duration::from_secs(3);
+        let mut dns_socket = loop {
+            match resolver.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error)
+                    if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < until =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("expected DNS at {resolver_address}: {error}"),
+            }
+        };
+        dns_socket.set_nonblocking(false).unwrap();
+        dns_socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut length = [0; 2];
+        dns_socket.read_exact(&mut length).unwrap();
+        let mut query = vec![0; u16::from_be_bytes(length) as usize];
+        dns_socket.read_exact(&mut query).unwrap();
+        assert_eq!(query.get(12..29), Some(&b"\x0adns-egress\x04test\0"[..]));
+        for server in &servers {
             assert!(
-                Instant::now() < until,
-                "missing DNS route to {resolver_address}"
+                matches!(server.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
             );
-            thread::sleep(Duration::from_millis(10));
         }
-
+        assert_eq!(activity.stats().direct, 0);
         runtime.stop();
         drop((connections, socks, dns_socket));
         // A and AAAA queries can each have an upstream socket. Drop any
@@ -1281,7 +1413,6 @@ mod tests {
         let restarted_settings = || Settings {
             listeners: &listeners,
             dns_servers: &[],
-            dns_exit_profile_id: None,
             direct_domains: &[],
             direct_ips: &[],
             geo_directory: installed.executable.parent().unwrap(),

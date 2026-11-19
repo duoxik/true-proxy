@@ -72,8 +72,6 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     subscriptions: Vec<Subscription>,
     pub dns: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dns_exit_profile_id: Option<String>,
     pub hosts: BTreeMap<String, IpAddr>,
     pub direct_ips: Vec<String>,
     pub direct_domains: Vec<String>,
@@ -93,7 +91,6 @@ impl Default for Settings {
             profiles: Vec::new(),
             subscriptions: Vec::new(),
             dns: Vec::new(),
-            dns_exit_profile_id: None,
             hosts: BTreeMap::new(),
             direct_ips: vec!["geoip:ru".into()],
             direct_domains: vec!["geosite:category-ru".into()],
@@ -122,6 +119,9 @@ impl Settings {
         let mut document: Value =
             serde_json::from_slice(&bytes).context("Invalid Xray settings")?;
         let migrated = migration::upgrade_ports(&mut document)?;
+        if let Some(fields) = document.as_object_mut() {
+            fields.remove("dns_exit_profile_id");
+        }
         let settings: Self = serde_json::from_value(document).context("Invalid Xray settings")?;
         if migrated {
             settings.save(path)?;
@@ -201,30 +201,6 @@ impl Settings {
         self.enabled_profiles()
             .next()
             .context("Turn on a VLESS profile first")
-    }
-
-    pub fn dns_exit_error(&self) -> Option<String> {
-        if self.dns.is_empty() {
-            return None;
-        }
-        self.dns_exit_warning()
-    }
-
-    /// Keep a disabled or removed choice on disk so another profile cannot take over DNS.
-    pub fn dns_exit_warning(&self) -> Option<String> {
-        let Some(id) = &self.dns_exit_profile_id else {
-            return (!self.dns.is_empty()).then(|| {
-                "Custom Tunnel DNS needs an exit profile. Choose one in X-RAY → DNS.".into()
-            });
-        };
-        match self.profiles.iter().find(|profile| &profile.id == id) {
-            Some(profile) if profile.enabled => None,
-            Some(profile) => Some(format!(
-                "The DNS exit profile “{}” is disabled. Enable it or choose another in X-RAY → DNS.",
-                profile.name
-            )),
-            None => Some("The DNS exit profile was removed. Choose another in X-RAY → DNS.".into()),
-        }
     }
 
     pub fn import_with_assets(&mut self, input: &str, root: &Path) -> Result<BTreeSet<String>> {
@@ -493,59 +469,66 @@ impl Settings {
     }
 
     pub fn resolve_hosts(&mut self, mut domains: BTreeSet<String>) -> usize {
-        if domains.is_empty() {
-            return 0;
-        }
-        let count = domains.len();
-        // Share the blocking thread limit even if Windows takes longer than our deadline.
-        static RESOLVER: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
-        let Some(resolver) = RESOLVER.get_or_init(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_time()
-                .max_blocking_threads(HOST_LOOKUP_CONCURRENCY)
-                .build()
-                .ok()
-        }) else {
-            return count;
-        };
-        let active_domains: Vec<_> = self
+        let mut active_domains: Vec<_> = self
             .enabled_profiles()
             .filter_map(|profile| domains.take(profile.host.as_str()))
             .collect();
-        let mut domains = active_domains.into_iter().chain(domains);
-        let mut lookups = tokio::task::JoinSet::new();
-        let mut resolved = 0;
-        resolver.block_on(async {
-            let _ = tokio::time::timeout(HOST_LOOKUP_TIMEOUT, async {
-                loop {
-                    while lookups.len() < HOST_LOOKUP_CONCURRENCY {
-                        let Some(host) = domains.next() else { break };
-                        let previous = self.hosts.get(&host).copied();
-                        lookups.spawn_blocking(move || {
-                            let mut addresses = (host.as_str(), 0).to_socket_addrs().ok()?;
-                            let first = addresses.next()?.ip();
-                            let address = previous
-                                .filter(|ip| {
-                                    *ip == first || addresses.any(|address| address.ip() == *ip)
-                                })
-                                .unwrap_or(first);
-                            Some((host, address))
-                        });
-                    }
-                    match lookups.join_next().await {
-                        Some(Ok(Some((host, address)))) => {
-                            self.hosts.insert(host, address);
-                            resolved += 1;
-                        }
-                        Some(_) => {}
-                        None => break,
-                    }
-                }
-            })
-            .await;
-        });
-        count - resolved
+        active_domains.extend(domains);
+        resolve_addresses(active_domains.into_iter(), &mut self.hosts)
     }
+}
+
+pub(super) fn resolve_addresses(
+    mut domains: impl ExactSizeIterator<Item = String>,
+    hosts: &mut BTreeMap<String, IpAddr>,
+) -> usize {
+    let count = domains.len();
+    if count == 0 {
+        return 0;
+    }
+    // Share the blocking thread limit even if Windows takes longer than our deadline.
+    static RESOLVER: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
+    let Some(resolver) = RESOLVER.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(HOST_LOOKUP_CONCURRENCY)
+            .build()
+            .ok()
+    }) else {
+        return count;
+    };
+    let mut lookups = tokio::task::JoinSet::new();
+    let mut resolved = 0;
+    resolver.block_on(async {
+        let _ = tokio::time::timeout(HOST_LOOKUP_TIMEOUT, async {
+            loop {
+                while lookups.len() < HOST_LOOKUP_CONCURRENCY {
+                    let Some(host) = domains.next() else { break };
+                    let previous = hosts.get(&host).copied();
+                    lookups.spawn_blocking(move || {
+                        let mut addresses = (host.as_str(), 0).to_socket_addrs().ok()?;
+                        let first = addresses.next()?.ip();
+                        let address = previous
+                            .filter(|ip| {
+                                *ip == first || addresses.any(|address| address.ip() == *ip)
+                            })
+                            .unwrap_or(first);
+                        Some((host, address))
+                    });
+                }
+                match lookups.join_next().await {
+                    Some(Ok(Some((host, address)))) => {
+                        hosts.insert(host, address);
+                        resolved += 1;
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+        })
+        .await;
+    });
+    count - resolved
 }
 
 pub fn now() -> u64 {
@@ -1119,31 +1102,26 @@ mod tests {
     }
 
     #[test]
-    fn custom_dns_never_inherits_a_replacement_profile() {
-        let mut settings = Settings::default();
-        let replacement = NODE.replace("vpn.example.test", "us.example.test");
-        add_source(&mut settings, "A", &format!("{NODE}\n{replacement}"));
-        let original = settings.selected().unwrap().id.clone();
-        settings.dns = vec!["192.0.2.53".into()];
-        assert!(settings.dns_exit_error().is_some());
+    fn loading_old_dns_exit_keeps_the_resolver_and_drops_only_the_obsolete_field() {
+        let directory = std::env::temp_dir().join(format!("true-proxy-dns-{}", new_id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        let settings = Settings {
+            dns: vec!["https://resolver.test/dns-query".into()],
+            ..Settings::default()
+        };
+        let current = serde_json::to_value(&settings).unwrap();
+        let mut old = current.clone();
+        old["dns_exit_profile_id"] = json!("removed-profile");
+        fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
 
-        settings.dns_exit_profile_id = Some(original.clone());
-        assert!(settings.dns_exit_error().is_none());
-        let other = settings.profiles[1].id.clone();
-        settings.toggle_profile(&other).unwrap();
-        assert!(settings.dns_exit_error().unwrap().contains("disabled"));
-        let json = serde_json::to_vec(&settings).unwrap();
-        let mut restored: Settings = serde_json::from_slice(&json).unwrap();
-        assert_eq!(restored.dns_exit_profile_id.as_ref(), Some(&original));
-        restored.toggle_profile(&original).unwrap();
-        assert!(restored.dns_exit_error().is_none());
-
-        restored.remove_profile(&original);
-        assert!(restored.dns_exit_error().unwrap().contains("removed"));
-        assert_eq!(restored.dns_exit_profile_id.as_ref(), Some(&original));
-        restored.dns.clear();
-        assert!(restored.dns_exit_error().is_none());
-        assert!(restored.dns_exit_warning().unwrap().contains("removed"));
+        let restored = Settings::load(&path).unwrap();
+        assert_eq!(restored.dns, settings.dns);
+        restored.save(&path).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved, current);
+        fs::remove_file(path).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[test]
@@ -1253,8 +1231,7 @@ mod tests {
             assert_eq!(migrated.profiles[1].enabled, active);
             assert_eq!(migrated.profiles[1].id, fixture.profiles[1].id);
             assert_eq!(migrated.enabled_profiles().count(), usize::from(active));
-            assert_eq!(migrated.dns_exit_profile_id, None);
-            assert!(migrated.dns_exit_error().is_some());
+            assert_eq!(migrated.dns, ["192.0.2.53"]);
             assert!(migrated.enabled);
             assert_eq!(migrated.ports.len(), 1);
             let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
