@@ -265,7 +265,7 @@ component ProfilePortChoice inherits Rectangle {
     callback choose;
     height: 34px;
     border-radius: 6px;
-    background: touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : transparent;
+    background: touch.pressed ? Theme.switch-off : touch.has-hover ? Theme.neutral-badge : transparent;
     accessible-role: button;
     accessible-label: root.label;
     accessible-action-default => { root.choose(); }
@@ -277,7 +277,7 @@ component ProfilePortChoice inherits Rectangle {
         }
         Rectangle {
             width: 15px; height: 15px;
-            if root.selected: UiIcon { name: "check"; width: 15px; height: 15px; ink: Theme.accent; }
+            if root.selected: UiIcon { name: "check"; width: 15px; height: 15px; ink: Theme.text; }
         }
     }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.choose(); } }
@@ -288,9 +288,8 @@ component ProfilePortSelector inherits Rectangle {
     in property <length> viewport-bottom;
     private property <bool> enabled: XrayModule.ports.length > 1 && !XrayModule.busy;
     private property <int> saved-index: root.profile.port-index;
-    private property <bool> accented: root.enabled && root.saved-index >= 0
-        && root.saved-index < XrayModule.ports.length && !XrayModule.ports[root.saved-index].is-default;
-    private property <color> ink: !root.enabled ? Theme.disabled-text : root.accented ? Theme.accent : Theme.text;
+    private property <XrayPortRow> port: XrayModule.ports[root.saved-index];
+    private property <color> detail-ink: root.enabled ? Theme.secondary : Theme.disabled-text;
     private property <length> space-below: max(0px, root.viewport-bottom - root.absolute-position.y - root.height - 5px);
     private property <length> space-above: max(0px, root.absolute-position.y - 5px);
     private property <length> row-height: 34px;
@@ -299,9 +298,9 @@ component ProfilePortSelector inherits Rectangle {
 
     width: 170px; height: 36px;
     border-radius: Theme.radius-small; border-width: 1px;
-    border-color: menu.is-open ? Theme.accent : root.accented ? Theme.accent.with-alpha(0.55)
-        : root.enabled && touch.has-hover ? Theme.muted : Theme.border;
-    background: !root.enabled ? Theme.disabled : touch.pressed ? Theme.pressed : touch.has-hover ? Theme.surface-hover : Theme.field;
+    border-color: root.enabled && (menu.is-open || touch.has-hover) ? Theme.muted
+        : root.enabled && Theme.dark ? Theme.switch-off : Theme.border;
+    background: !root.enabled ? Theme.disabled : touch.pressed ? Theme.neutral-badge : Theme.field;
     accessible-role: combobox;
     accessible-label: "Port for " + root.profile.name;
     accessible-value: XrayModule.port-labels[root.saved-index];
@@ -313,11 +312,19 @@ component ProfilePortSelector inherits Rectangle {
 
     HorizontalLayout {
         padding-left: 12px; padding-right: 10px; spacing: 6px; cross-axis-alignment: center;
-        Text {
-            text: XrayModule.port-labels[root.saved-index]; color: root.ink; font-size: 13px;
-            min-width: 0px; horizontal-stretch: 1; overflow: elide; accessible-role: none;
+        HorizontalLayout {
+            min-width: 0px; horizontal-stretch: 1; alignment: start; spacing: 4px;
+            Text {
+                text: root.port.name; color: root.enabled ? Theme.text : Theme.disabled-text;
+                font-size: 13px; font-weight: root.enabled && !root.port.is-default ? 600 : 400;
+                min-width: 0px; overflow: elide; accessible-role: none;
+            }
+            Text {
+                text: root.port.number == "" ? "" : "· " + root.port.number;
+                color: root.detail-ink; font-size: 13px; accessible-role: none;
+            }
         }
-        UiIcon { name: menu.is-open ? "chevron-up" : "chevron-down"; width: 15px; height: 15px; ink: root.ink; }
+        UiIcon { name: menu.is-open ? "chevron-up" : "chevron-down"; width: 15px; height: 15px; ink: root.detail-ink; }
     }
     touch := TouchArea {
         enabled: root.enabled; mouse-cursor: pointer;
