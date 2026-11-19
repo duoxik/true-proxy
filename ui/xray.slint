@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, SectionHeading, ActionButton, Field, RuleSwitch, ThemedComboBox, Theme, UiIcon } from "common.slint";
+import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, ThemedComboBox, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
 
 export struct XrayProfileRow { id: string, name: string, summary: string, active: bool, port: string, custom: bool }
@@ -7,6 +7,7 @@ export struct XraySubscriptionGroup { id: string, name: string, profiles: [XrayP
 export struct XrayPortRow { port: string, profile: string, source: string, status: string }
 export struct XrayHostRow { host: string, address: string }
 export struct XrayConnectionRow { time: string, protocol: string, destination: string, observed-domain: string, source: string, route: string, detail: string }
+export struct XrayPortDraft { present: bool, value: string, error: string }
 
 export global XrayModule {
     in property <bool> installed;
@@ -38,11 +39,8 @@ export global XrayModule {
     in property <string> manual-port;
     in property <int> enabled-count;
     in property <[XrayPortRow]> active-ports;
-    in-out property <bool> editing-port;
-    in-out property <bool> port-profile;
-    in-out property <string> port-owner;
-    in-out property <string> port-draft;
-    in-out property <string> port-error;
+    in property <int> port-draft-revision;
+    in property <bool> port-save-pending;
     in-out property <string> dns: "Default";
     in property <[string]> dns-exit-profiles: ["Not selected"];
     in property <[string]> dns-exit-profile-ids: [""];
@@ -89,33 +87,16 @@ export global XrayModule {
     callback refresh-subscription(string);
     callback activate-profile(string);
     callback remove-profile(string);
-    callback validate-port(string, bool, string) -> string;
-    callback save-port(string, bool, string);
+    pure callback port-draft(string, bool, int) -> XrayPortDraft;
+    callback edit-port(string, bool, string);
+    callback commit-port(string, bool);
+    callback reset-profile-port(string, string);
+    callback flush-port-edit;
+    callback process-port-edits;
+    callback port-owners-changed;
+    callback finish-port-edit(string, bool, int, string);
+    changed section => { self.flush-port-edit(); }
     callback copy-address(string);
-    callback finish-port-edit(string);
-    finish-port-edit(message) => {
-        self.port-error = message;
-        if message == "" { self.editing-port = false; }
-    }
-    public function begin-port-edit(owner: string, profile: bool, value: string) {
-        self.port-owner = owner;
-        self.port-profile = profile;
-        self.port-draft = value;
-        self.port-error = "";
-        self.editing-port = true;
-    }
-    public function update-port(value: string) {
-        self.port-draft = value;
-        self.port-error = self.validate-port(self.port-owner, self.port-profile, value);
-    }
-    public function commit-port() {
-        if self.editing-port && !self.busy {
-            self.port-error = self.validate-port(self.port-owner, self.port-profile, self.port-draft);
-            if self.port-error == "" {
-                self.save-port(self.port-owner, self.port-profile, self.port-draft);
-            }
-        }
-    }
     callback settings-edited;
     callback commit-settings;
     callback refresh-hosts;
@@ -221,74 +202,103 @@ component PortField inherits Rectangle {
     in property <bool> profile;
     in property <string> saved;
     in property <string> name;
-    private property <bool> editing: XrayModule.editing-port && XrayModule.port-owner == root.owner && XrayModule.port-profile == root.profile;
+    out property <string> error: root.draft.error;
+    out property <bool> has-draft: root.draft.present;
+    private property <XrayPortDraft> draft: XrayModule.port-draft(root.owner, root.profile, XrayModule.port-draft-revision);
+    private property <string> display-value: root.draft.present ? root.draft.value : root.saved;
+    private property <bool> was-focused;
+    changed display-value => {
+        // Native edits replace the initial text binding. Keep the cursor when the text already matches.
+        if input.text != root.display-value {
+            input.text = root.display-value;
+        }
+    }
     width: 78px; height: 34px;
     border-width: 1px; border-radius: Theme.radius-small;
     background: Theme.field;
-    border-color: root.editing && XrayModule.port-error != "" ? Theme.danger : input.has-focus ? Theme.accent : Theme.border;
+    border-color: root.error != "" ? Theme.danger : input.has-focus ? Theme.accent : Theme.border;
     input := TextInput {
-        x: 10px; width: parent.width - 20px; height: parent.height;
+        x: 8px; width: parent.width - 16px; height: parent.height;
         accessible-label: root.name;
-        text: root.editing ? XrayModule.port-draft : root.saved;
+        text: root.display-value;
         single-line: true; font-size: 13px; color: Theme.text;
         vertical-alignment: center;
         selection-background-color: Theme.selection; selection-foreground-color: Theme.text;
-        enabled: !XrayModule.busy;
         changed has-focus => {
-            if self.has-focus && !root.editing {
-                XrayModule.begin-port-edit(root.owner, root.profile, root.saved);
+            if root.was-focused && !self.has-focus {
+                XrayModule.commit-port(root.owner, root.profile);
             }
+            root.was-focused = self.has-focus;
         }
-        edited => {
-            if !root.editing { XrayModule.begin-port-edit(root.owner, root.profile, root.saved); }
-            XrayModule.update-port(self.text);
-        }
-        accepted => { XrayModule.commit-port(); }
-    }
-}
-
-component PortActions inherits HorizontalLayout {
-    in property <bool> allow-reset;
-    spacing: 5px; alignment: start;
-    if root.allow-reset: ActionButton {
-        label: "Use inherited"; height: 32px; enabled: !XrayModule.busy;
-        clicked => { XrayModule.update-port(""); XrayModule.commit-port(); }
-    }
-    ActionButton {
-        label: "Save port"; height: 32px;
-        enabled: !XrayModule.busy && XrayModule.port-error == "";
-        clicked => { XrayModule.commit-port(); }
-    }
-    ActionButton {
-        label: "Cancel"; quiet: true; height: 32px;
-        enabled: !XrayModule.busy;
-        clicked => { XrayModule.finish-port-edit(""); }
+        edited => { XrayModule.edit-port(root.owner, root.profile, self.text); }
+        accepted => { XrayModule.commit-port(root.owner, root.profile); }
     }
 }
 
 component XrayProfileItem inherits Rectangle {
     in property <XrayProfileRow> profile;
     in property <bool> compact;
-    private property <bool> editing: !root.compact && XrayModule.editing-port && XrayModule.port-profile && XrayModule.port-owner == root.profile.id;
-    height: content.preferred-height;
+    height: max(54px, content.preferred-height);
     border-radius: Theme.radius-small;
     border-width: 1px;
     border-color: Theme.border;
     background: root.profile.active ? Theme.surface-hover : Theme.field;
-    content := VerticalLayout {
-      spacing: 3px;
-      HorizontalLayout {
-        height: 54px;
+    content := HorizontalLayout {
         padding-left: 12px;
         padding-right: 8px;
         spacing: 8px;
-        VerticalLayout {
+        if root.compact: VerticalLayout {
             alignment: center;
             min-width: 0px;
             horizontal-stretch: 1;
             spacing: 3px;
             Text { text: root.profile.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
             Text { text: root.profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
+        }
+        if !root.compact: VerticalLayout {
+            min-width: 0px;
+            horizontal-stretch: 1;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 3px;
+            alignment: start;
+            HorizontalLayout {
+                height: 26px;
+                alignment: start;
+                cross-axis-alignment: center;
+                spacing: 6px;
+                Text {
+                    text: root.profile.name;
+                    color: Theme.text;
+                    font-size: 13px;
+                    font-weight: 600;
+                    min-width: 0px;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                profile-port := PortField {
+                    owner: root.profile.id;
+                    profile: true;
+                    saved: root.profile.port;
+                    name: "Port for " + root.profile.name;
+                    width: 64px;
+                    height: 26px;
+                }
+                ActionButton {
+                    label: "Reset port to inherited default for " + root.profile.name;
+                    icon: "reset";
+                    icon-only: true;
+                    quiet: true;
+                    min-width: 26px;
+                    max-width: 26px;
+                    height: 26px;
+                    enabled: (root.profile.custom || profile-port.has-draft) && !XrayModule.busy;
+                    clicked => { XrayModule.reset-profile-port(root.profile.id, root.profile.port); }
+                    Tooltip { text: @markdown("Use inherited default port"); }
+                }
+            }
+            Text { text: root.profile.summary; color: Theme.muted; font-size: 11px; overflow: elide; }
+            if profile-port.error != "": XrayNote { text: profile-port.error; color: Theme.danger; }
         }
         if root.compact: Text {
             text: root.profile.active ? "Selected" : "Available";
@@ -298,17 +308,14 @@ component XrayProfileItem inherits Rectangle {
             horizontal-stretch: 0;
         }
         if !root.compact: Rectangle {
-            width: badge.min-width;
-            badge := ActionButton {
-                label: ":" + root.profile.port + (root.profile.custom ? " custom" : " inherited");
-                accessible-label: "Edit port for " + root.profile.name;
-                height: 26px; y: (parent.height - self.height) / 2;
-                ink: root.profile.custom ? Theme.accent : Theme.secondary;
-                outline: root.profile.custom ? Theme.accent-soft : Theme.border;
+            width: delete.min-width;
+            delete := ActionButton {
+                label: "Remove " + root.profile.name;
+                icon: "trash";
+                icon-only: true;
+                y: (54px - self.height) / 2;
                 enabled: !XrayModule.busy;
-                clicked => {
-                    XrayModule.begin-port-edit(root.profile.id, true, root.profile.port);
-                }
+                clicked => { XrayModule.remove-profile(root.profile.id); }
             }
         }
         Rectangle {
@@ -317,33 +324,10 @@ component XrayProfileItem inherits Rectangle {
                 label: "Activate " + root.profile.name;
                 checked: root.profile.active;
                 enabled: !XrayModule.busy;
-                y: (parent.height - self.height) / 2;
+                y: (54px - self.height) / 2;
                 toggled => { XrayModule.activate-profile(root.profile.id); }
             }
         }
-        if !root.compact: Rectangle {
-            width: delete.min-width;
-            delete := ActionButton {
-                label: "Remove " + root.profile.name;
-                icon: "trash";
-                icon-only: true;
-                y: (parent.height - self.height) / 2;
-                enabled: !XrayModule.busy;
-                clicked => { XrayModule.remove-profile(root.profile.id); }
-            }
-        }
-      }
-      if root.editing: VerticalLayout {
-          padding-left: 12px; padding-right: 8px; padding-bottom: 8px;
-          spacing: 4px;
-          HorizontalLayout {
-              alignment: start; spacing: 8px;
-              Text { text: "Custom port"; color: Theme.secondary; font-size: 12px; vertical-alignment: center; }
-              PortField { owner: root.profile.id; profile: true; saved: root.profile.port; name: "Custom port for " + root.profile.name; }
-              PortActions { allow-reset: true; }
-          }
-          if XrayModule.port-error != "": XrayNote { text: XrayModule.port-error; color: Theme.danger; }
-      }
     }
 }
 
@@ -435,20 +419,21 @@ component ProfileContainer inherits XrayCard {
     in property <string> default-port;
     in property <bool> active-removed;
     in property <[XrayProfileRow]> rows;
-    private property <bool> editing: XrayModule.editing-port && !XrayModule.port-profile && XrayModule.port-owner == root.owner;
     HorizontalLayout {
-        height: 36px; spacing: 8px;
+        height: 36px; spacing: 8px; cross-axis-alignment: center;
         Text { text: root.group-name; font-size: 16px; font-weight: 600; color: Theme.text; min-width: 0px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
         Text { text: "Default port"; font-size: 12px; color: Theme.secondary; vertical-alignment: center; }
-        PortField { owner: root.owner; saved: root.default-port; name: root.group-name + " default port"; }
-        ActionButton { label: "Copy address"; accessible-label: "Copy address for " + root.group-name; height: 34px; enabled: root.default-port != ""; clicked => { XrayModule.copy-address(root.default-port); } }
-        if root.owner != "": ActionButton { label: "Refresh"; accessible-label: "Refresh " + root.group-name; height: 34px; enabled: !XrayModule.busy; clicked => { XrayModule.refresh-subscription(root.owner); } }
+        default-port-field := PortField { owner: root.owner; saved: root.default-port; name: root.group-name + " default port"; }
+        if root.owner != "": TextLink {
+            label: "Refresh";
+            icon: "refresh";
+            trailing-icon: false;
+            accessible-label: "Refresh " + root.group-name;
+            enabled: !XrayModule.busy;
+            clicked => { XrayModule.refresh-subscription(root.owner); }
+        }
     }
-    if root.editing: VerticalLayout {
-        spacing: 4px;
-        if XrayModule.port-error != "": XrayNote { text: XrayModule.port-error; color: Theme.danger; }
-        PortActions {}
-    }
+    if default-port-field.error != "": XrayNote { text: default-port-field.error; color: Theme.danger; }
     if root.active-removed: XrayNotice { message: "Active profile removed"; error: true; }
     if root.rows.length == 0: XrayNote { text: root.owner == "" ? "No manually imported profiles." : "No profiles in this subscription."; }
     for row in root.rows: XrayProfileItem { profile: row; }
@@ -855,7 +840,7 @@ export component XrayView inherits VerticalLayout {
         badge: root.preview-ui ? "Sample data" : "";
         action-label: XrayModule.running ? "Stop Xray" : "Start Xray";
         action-icon: XrayModule.running ? "stop" : "play";
-        action-enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.settings-saving && XrayModule.settings-error == "" && XrayModule.dns-exit-error == ""));
+        action-enabled: !XrayModule.busy && (XrayModule.running || (!XrayModule.port-save-pending && !XrayModule.settings-saving && XrayModule.settings-error == "" && XrayModule.dns-exit-error == ""));
         action => { XrayModule.toggle(); }
     }
     if XrayModule.pending: Rectangle {
@@ -869,7 +854,7 @@ export component XrayView inherits VerticalLayout {
             ActionButton {
                 label: "Restart";
                 height: 34px;
-                enabled: XrayModule.running && !XrayModule.busy && !XrayModule.settings-saving && XrayModule.settings-error == "" && XrayModule.dns-exit-error == "";
+                enabled: XrayModule.running && !XrayModule.busy && !XrayModule.port-save-pending && !XrayModule.settings-saving && XrayModule.settings-error == "" && XrayModule.dns-exit-error == "";
                 clicked => { XrayModule.restart(); }
             }
         }

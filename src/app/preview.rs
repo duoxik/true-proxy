@@ -75,38 +75,24 @@ pub(crate) fn populate_xray(ui: &crate::MainWindow) {
         }
     });
     let model = settings.clone();
-    xray.on_validate_port(move |owner, profile, value| {
-        let edit = super::xray::PortEdit {
-            owner: owner.to_string(),
-            profile,
-            value: value.to_string(),
-        };
-        edit.apply(&mut model.borrow().clone())
-            .err()
-            .map_or_else(String::new, |error| error.to_string())
-            .into()
-    });
-    let weak = ui.as_weak();
-    let model = settings.clone();
-    xray.on_save_port(move |owner, profile, value| {
-        let Some(ui) = weak.upgrade() else { return };
-        let edit = super::xray::PortEdit {
-            owner: owner.to_string(),
-            profile,
-            value: value.to_string(),
-        };
+    super::xray::wire_port_editor(ui, move |ui, edit, revision| {
         let mut settings = model.borrow_mut();
         let result = edit.apply(&mut settings);
         let xray = ui.global::<XrayModule>();
-        if result.is_ok() {
-            super::xray::show_profiles(&ui, &settings);
+        if matches!(result, Ok(Some(_))) {
+            super::xray::show_profiles(ui, &settings);
         }
+        drop(settings);
         xray.invoke_finish_port_edit(
+            edit.owner.into(),
+            edit.profile,
+            revision,
             result
                 .err()
                 .map_or_else(String::new, |error| error.to_string())
                 .into(),
         );
+        true
     });
     let weak = ui.as_weak();
     xray.on_remove_profile(move |id| {

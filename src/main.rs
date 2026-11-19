@@ -561,6 +561,11 @@ mod ui_tests {
                 .is_none()
             );
         }
+        assert!(
+            ElementHandle::find_by_accessible_label(&ui, "Refresh Manual Profiles")
+                .next()
+                .is_none()
+        );
         for (label, id) in [
             ("Refresh Subscription 1", "source-a"),
             ("Refresh Subscription 2", "source-b"),
@@ -575,14 +580,26 @@ mod ui_tests {
     }
 
     #[test]
-    fn xray_edits_settings_inline_and_restart_is_explicit() {
+    fn xray_general_copies_active_ports_and_restart_is_explicit() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         let xray = ui.global::<XrayModule>();
         xray.set_installed(true);
         xray.set_running(true);
-        xray.set_manual_port("2081".into());
+        xray.set_active_ports(slint::ModelRc::new(slint::VecModel::from(vec![
+            XrayPortRow {
+                port: "2081".into(),
+                profile: "Manual node".into(),
+                status: "Listening".into(),
+                ..Default::default()
+            },
+        ])));
+        let copied = Rc::new(Cell::new(slint::SharedString::default()));
+        xray.on_copy_address({
+            let copied = copied.clone();
+            move |port| copied.set(port)
+        });
         let restarts = Rc::new(Cell::new(0));
         xray.on_restart({
             let restarts = restarts.clone();
@@ -590,21 +607,20 @@ mod ui_tests {
         });
         ui.show().unwrap();
         click(&ui, "Xray General");
-        assert!(
-            ElementHandle::find_by_accessible_label(&ui, "Save Port")
-                .next()
-                .is_none()
-        );
+        click(&ui, "Copy address for port 2081");
+        assert_eq!(copied.take(), "2081");
         click(&ui, "Open Profiles");
         assert_eq!(xray.get_section(), 1);
-        click(&ui, "Manual Profiles default port");
-        assert_eq!(xray.get_port_draft(), "2081");
         assert_eq!(restarts.get(), 0);
         xray.set_pending(true);
         xray.set_settings_saving(true);
         click(&ui, "Restart");
         assert_eq!(restarts.get(), 0);
         xray.set_settings_saving(false);
+        xray.set_port_save_pending(true);
+        click(&ui, "Restart");
+        assert_eq!(restarts.get(), 0);
+        xray.set_port_save_pending(false);
         click(&ui, "Restart");
         assert_eq!(restarts.get(), 1);
     }
@@ -681,55 +697,118 @@ mod ui_tests {
 
     #[cfg(windows)]
     #[test]
-    fn xray_port_badge_edits_resets_and_copies_the_effective_port() {
+    fn xray_ports_save_inline_and_reset_to_the_group_default() {
+        use slint::platform::{Key, WindowEvent};
+        use std::time::Duration;
+
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
         app::preview::populate_xray(&ui);
         let xray = ui.global::<XrayModule>();
-        let copied = Rc::new(Cell::new(slint::SharedString::default()));
-        xray.on_copy_address({
-            let copied = copied.clone();
-            move |port| copied.set(port)
-        });
         ui.show().unwrap();
         click(&ui, "Xray Profiles");
-        click(&ui, "Copy address for Subscription 1");
-        assert_eq!(copied.take().as_str(), "2100");
-        click(&ui, "Edit port for Backup tunnel");
-        click(&ui, "Custom port for Backup tunnel");
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
-        assert!(!xray.get_port_error().is_empty());
-        click(&ui, "Save port");
-        assert!(
-            !xray
-                .get_subscriptions()
-                .row_data(0)
-                .unwrap()
-                .profiles
-                .row_data(0)
-                .unwrap()
-                .custom
-        );
-        click(&ui, "Cancel");
-        click(&ui, "Edit port for Backup tunnel");
-        xray.invoke_update_port("2101".into());
-        click(&ui, "Save port");
-        let backup = || {
-            xray.get_subscriptions()
-                .row_data(0)
-                .unwrap()
-                .profiles
-                .row_data(0)
-                .unwrap()
+        let advance = |milliseconds| {
+            i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(milliseconds));
         };
-        assert!(backup().custom);
-        assert_eq!(backup().port, "2101");
-        click(&ui, "Edit port for Backup tunnel");
-        click(&ui, "Use inherited");
+        let field = |label: &str| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|element| element.accessible_role() == Some(AccessibleRole::TextInput))
+                .unwrap_or_else(|| panic!("Missing port field: {label}"))
+        };
+        let replace_port = |value: &str| {
+            let window = ui.window();
+            window.dispatch_event(WindowEvent::KeyPressed {
+                text: Key::Control.into(),
+            });
+            window.dispatch_event(WindowEvent::KeyPressed { text: "a".into() });
+            window.dispatch_event(WindowEvent::KeyReleased {
+                text: Key::Control.into(),
+            });
+            window.dispatch_event(WindowEvent::KeyPressed { text: value.into() });
+        };
+        let subscription = || xray.get_subscriptions().row_data(0).unwrap();
+        let backup = || subscription().profiles.row_data(0).unwrap();
+        let profile_port = "Port for Backup tunnel";
+        let group_port = "Subscription 1 default port";
+        let reset = "Reset port to inherited default for Backup tunnel";
+
+        for label in [
+            "Copy address",
+            "Copy address for Subscription 1",
+            "Copy address for Manual Profiles",
+        ] {
+            assert_eq!(
+                ElementHandle::find_by_accessible_label(&ui, label).count(),
+                0
+            );
+        }
+        assert_eq!(
+            field(profile_port).accessible_value().as_deref(),
+            Some("2100")
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, reset)
+                .next()
+                .expect("Inherited port reset")
+                .accessible_enabled(),
+            Some(false)
+        );
+        field(profile_port).mock_single_click(PointerEventButton::Left);
+        replace_port("65536");
+        assert_eq!(
+            field(profile_port).accessible_value().as_deref(),
+            Some("65536")
+        );
+        assert_eq!(
+            ElementHandle::find_by_accessible_label(&ui, "Save port").count(),
+            0
+        );
+        advance(1000);
         assert!(!backup().custom);
         assert_eq!(backup().port, "2100");
+        assert!(!xray.get_port_save_pending());
+
+        replace_port("2101");
+        assert!(xray.get_port_save_pending());
+        advance(300);
+        replace_port("2102");
+        advance(300);
+        assert!(!backup().custom);
+        advance(500);
+        assert!(backup().custom);
+        assert_eq!(backup().port, "2102");
+        assert!(!xray.get_port_save_pending());
+
+        assert_eq!(
+            field(group_port).accessible_value().as_deref(),
+            Some("2100")
+        );
+        field(group_port).mock_single_click(PointerEventButton::Left);
+        replace_port("2110");
+        assert_eq!(subscription().port, "2100");
+        advance(1000);
+        assert_eq!(subscription().port, "2110");
+        assert_eq!(backup().port, "2102");
+        click(&ui, reset);
+        advance(1000);
+        assert!(!backup().custom);
+        assert_eq!(backup().port, "2110");
+        assert_eq!(
+            field(profile_port).accessible_value().as_deref(),
+            Some("2110")
+        );
+
+        field(group_port).mock_single_click(PointerEventButton::Left);
+        replace_port("2120");
+        click(&ui, "VLESS, HTTPS, or v2RayTun link");
+        advance(0);
+        assert_eq!(subscription().port, "2120");
+        assert_eq!(backup().port, "2120");
+        assert_eq!(
+            field(profile_port).accessible_value().as_deref(),
+            Some("2120")
+        );
     }
 
     #[test]

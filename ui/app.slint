@@ -650,7 +650,10 @@ export component MainWindow inherits Window {
         if root.dialog == 3 { root.import-viewport(); }
     }
     in-out property <int> page: 0;
-    changed page => { root.sync-connection-observation(); }
+    changed page => {
+        root.sync-connection-observation();
+        if root.page != 6 { XrayModule.flush-port-edit(); }
+    }
     in property <bool> preview-ui: false;
     in property <bool> local-build: false;
     in-out property <int> settings-section: 0;

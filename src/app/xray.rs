@@ -20,6 +20,11 @@ use true_proxy::xray::{
     runtime::{self, Activity, Bypass, Runtime},
 };
 
+mod port_editor;
+
+use port_editor::PortEdit;
+pub(super) use port_editor::wire_port_editor;
+
 enum Command {
     Install,
     CheckUpdates,
@@ -36,7 +41,7 @@ enum Command {
     RefreshHosts,
     SaveDraft(i32, SettingsDraft),
     SaveDnsExit(String),
-    SavePort(PortEdit),
+    SavePort(PortEdit, i32),
     RefreshGeo,
     LoadGeoTags,
     Record(bool),
@@ -130,49 +135,6 @@ impl Command {
 
 type GeoCatalog = (Vec<String>, Vec<String>);
 type SharedGeoCatalog = Arc<Mutex<Option<GeoCatalog>>>;
-
-pub(super) struct PortEdit {
-    pub(super) owner: String,
-    pub(super) profile: bool,
-    pub(super) value: String,
-}
-
-impl PortEdit {
-    pub(super) fn apply(&self, settings: &mut Settings) -> Result<u16> {
-        let port = || -> Result<u16> {
-            ensure!(
-                !self.value.is_empty() && self.value.bytes().all(|byte| byte.is_ascii_digit()),
-                "Enter a port between 1024 and 65535."
-            );
-            self.value
-                .parse::<u16>()
-                .ok()
-                .filter(|port| *port >= 1024)
-                .context("Enter a port between 1024 and 65535.")
-        };
-        if self.profile {
-            let custom = if self.value.is_empty() {
-                None
-            } else {
-                Some(port()?)
-            };
-            settings.set_custom_port(&self.owner, custom)?;
-            let profile = settings
-                .profiles
-                .iter()
-                .find(|p| p.id == self.owner)
-                .context("Profile not found")?;
-            Ok(settings.effective_port(profile))
-        } else {
-            let value = port()?;
-            settings.set_default_port(
-                (!self.owner.is_empty()).then_some(self.owner.as_str()),
-                value,
-            )?;
-            Ok(value)
-        }
-    }
-}
 
 fn same_runtime_settings(applied: &Settings, saved: &Settings) -> bool {
     applied.dns == saved.dns
@@ -440,11 +402,12 @@ impl Controller {
             Command::SaveDnsExit(id) => {
                 self.change(false, |settings| set_dns_exit(settings, id))?
             }
-            Command::SavePort(edit) => {
+            Command::SavePort(edit, _) => {
                 let mut next = self.settings.clone();
-                let port = edit.apply(&mut next)?;
-                self.check_port(port)?;
-                self.save_settings(next, false)?;
+                if let Some(port) = edit.apply(&mut next)? {
+                    self.check_port(port)?;
+                    self.save_settings(next, false)?;
+                }
             }
             Command::RefreshGeo => self.refresh_geo()?,
             Command::LoadGeoTags => self.reload_geo_tags(false),
@@ -785,32 +748,6 @@ impl View {
         ));
         show_profiles(ui, &self.settings);
         xray.set_log_recording(self.settings.log_recording);
-        let own_ports: Vec<_> = self
-            .ports
-            .iter()
-            .filter(|row| row.status == "Listening")
-            .map(|row| row.port)
-            .collect();
-        let settings = self.settings;
-        xray.on_validate_port(move |owner, profile, value| {
-            let edit = PortEdit {
-                owner: owner.into(),
-                profile,
-                value: value.into(),
-            };
-            let result = edit.apply(&mut settings.clone()).and_then(|port| {
-                if own_ports.contains(&port) {
-                    Ok(())
-                } else {
-                    runtime::check_listener_port(port)
-                }
-            });
-            result
-                .err()
-                .map(|err| err.to_string())
-                .unwrap_or_default()
-                .into()
-        });
         if command_done {
             xray.set_busy(false);
         }
@@ -843,20 +780,30 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
         }
     }
     xray.set_selected_profile(selected);
-    xray.set_profiles(model(manual));
-    xray.set_subscriptions(model(
-        settings
-            .subscription_ids()
-            .enumerate()
-            .map(|(index, id)| XraySubscriptionGroup {
+    let old_profiles = xray.get_profiles();
+    xray.set_profiles(update_rows(old_profiles, manual, |a, b| a.id == b.id));
+    let old_groups = xray.get_subscriptions();
+    let subscriptions = settings
+        .subscription_ids()
+        .enumerate()
+        .map(|(index, id)| {
+            let profiles = groups.remove(id).unwrap_or_default();
+            let previous = old_groups.row_data(index).filter(|group| group.id == id);
+            XraySubscriptionGroup {
                 id: id.into(),
                 name: format!("Subscription {}", index + 1).into(),
                 port: settings.default_port(Some(id)).to_string().into(),
                 active_removed: settings.active_profile_removed(Some(id)),
-                profiles: model(groups.remove(id).unwrap_or_default()),
-            })
-            .collect(),
-    ));
+                profiles: update_rows(
+                    previous.map_or_else(ModelRc::default, |group| group.profiles),
+                    profiles,
+                    |a, b| a.id == b.id,
+                ),
+            }
+        })
+        .collect();
+    xray.set_subscriptions(update_rows(old_groups, subscriptions, |a, b| a.id == b.id));
+    xray.invoke_port_owners_changed();
     let mut names = vec!["Not selected".into()];
     let mut ids = vec![SharedString::default()];
     for profile in settings.enabled_profiles() {
@@ -875,6 +822,30 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
     xray.set_dns_exit_index(dns_exit_index(&xray));
     xray.set_dns_exit_error(settings.dns_exit_error().unwrap_or_default().into());
     xray.set_dns_exit_warning(settings.dns_exit_warning().unwrap_or_default().into());
+}
+
+fn update_rows<T: Clone + PartialEq + 'static>(
+    previous: ModelRc<T>,
+    rows: Vec<T>,
+    same_row: impl Fn(&T, &T) -> bool,
+) -> ModelRc<T> {
+    // Updating existing rows keeps the TextInput and its focus alive after autosave.
+    if previous.as_any().is::<slint::VecModel<T>>()
+        && previous.row_count() == rows.len()
+        && previous
+            .iter()
+            .zip(&rows)
+            .all(|(old, row)| same_row(&old, row))
+    {
+        for (index, row) in rows.into_iter().enumerate() {
+            if previous.row_data(index).as_ref() != Some(&row) {
+                previous.set_row_data(index, row);
+            }
+        }
+        previous
+    } else {
+        model(rows)
+    }
 }
 
 fn dns_exit_index(xray: &XrayModule<'_>) -> i32 {
@@ -991,6 +962,7 @@ fn spawn_worker(
                                 .map_or_else(String::new, |error| error.to_string())
                                 .into(),
                         );
+                        xray.invoke_process_port_edits();
                         xray.invoke_refresh_activity();
                         if let Some(on_restored) = on_restored {
                             on_restored(&ui);
@@ -1014,7 +986,12 @@ fn spawn_worker(
                             {
                                 announce_start(&controller.settings);
                             }
-                            let port_edit = matches!(command, Command::SavePort(_));
+                            let port_edit = match &command {
+                                Command::SavePort(edit, revision) => {
+                                    Some((edit.owner.clone(), edit.profile, *revision))
+                                }
+                                _ => None,
+                            };
                             let catalog_only = matches!(command, Command::LoadGeoTags);
                             let manages_core = command.manages_core();
                             let hpwnr = matches!(
@@ -1040,10 +1017,18 @@ fn spawn_worker(
                                 });
                                 continue;
                             }
-                            (Some(error), true, manages_core, hpwnr, revision, port_edit)
+                            let command_done = port_edit.is_none();
+                            (
+                                Some(error),
+                                command_done,
+                                manages_core,
+                                hpwnr,
+                                revision,
+                                port_edit,
+                            )
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => {
-                            (controller.poll(), false, false, false, None, false)
+                            (controller.poll(), false, false, false, None, None)
                         }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
@@ -1055,8 +1040,14 @@ fn spawn_worker(
                         if let Some(ui) = weak.upgrade() {
                             view.apply(&ui, command_done);
                             let xray = ui.global::<XrayModule>();
-                            if port_edit {
-                                xray.invoke_finish_port_edit(error.into());
+                            let port_done = port_edit.is_some();
+                            if let Some((owner, profile, revision)) = port_edit {
+                                xray.invoke_finish_port_edit(
+                                    owner.into(),
+                                    profile,
+                                    revision,
+                                    error.into(),
+                                );
                             } else if let Some(revision) = revision {
                                 if revision == xray.get_settings_revision() {
                                     xray.set_settings_saving(false);
@@ -1064,6 +1055,9 @@ fn spawn_worker(
                                 }
                             } else {
                                 set_error(&xray, manages_core, hpwnr, error);
+                            }
+                            if command_done || port_done {
+                                xray.invoke_process_port_edits();
                             }
                             refresh_geo_suggestions(&xray);
                             xray.invoke_refresh_activity();
@@ -1136,6 +1130,10 @@ pub(super) fn wire(
     wire_autosave(ui, move |command| save_queue(command));
     let geo_queue = queue.clone();
     wire_geo_editor(ui, geo_catalog, move |command| geo_queue(command));
+    let port_queue = queue.clone();
+    wire_port_editor(ui, move |_, edit, revision| {
+        port_queue(Command::SavePort(edit, revision))
+    });
     let weak = ui.as_weak();
     let send: Rc<dyn Fn(Command)> = Rc::new(move |command: Command| {
         if let Some(ui) = weak.upgrade() {
@@ -1205,14 +1203,6 @@ pub(super) fn wire(
     );
     bind!(on_activate_profile, Command::Activate, string);
     bind!(on_remove_profile, Command::Remove, string);
-    let save = send.clone();
-    xray.on_save_port(move |owner, profile, value| {
-        save(Command::SavePort(PortEdit {
-            owner: owner.into(),
-            profile,
-            value: value.into(),
-        }));
-    });
     let weak = ui.as_weak();
     xray.on_copy_address(move |port| {
         if let Some(ui) = weak.upgrade()
@@ -1654,11 +1644,14 @@ mod tests {
         let port = occupied.local_addr().unwrap().port();
         assert!(
             controller
-                .perform(Command::SavePort(PortEdit {
-                    owner: second,
-                    profile: true,
-                    value: port.to_string(),
-                }))
+                .perform(Command::SavePort(
+                    PortEdit {
+                        owner: second,
+                        profile: true,
+                        value: port.to_string(),
+                    },
+                    0
+                ))
                 .is_err()
         );
         assert_eq!(

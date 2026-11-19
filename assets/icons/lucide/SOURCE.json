@@ -26,6 +26,7 @@
     "search": "search",
     "close": "x",
     "refresh": "refresh-cw",
+    "reset": "undo-2",
     "arrow-right": "arrow-right",
     "direct": "arrow-up-right",
     "external": "arrow-up-right",
@@ -203,6 +204,10 @@
     "trash": {
       "upstream_sha256": "27299f69ad7c6272be64b1b8e2d48cbd6dcf0ef0d4f92827a1affa945c91700e",
       "embedded_sha256": "76cf852f1a0cb957818737208097db0cbf78d1579b7d8e0ada86fc6741798fa7"
+    },
+    "undo-2": {
+      "upstream_sha256": "efad2edbbd2be6038cc23fd64df2d012fad5cc6460dfbf227cfa3d990e9e897f",
+      "embedded_sha256": "8b974555955bff1d83823ab784b7354c101a9324ae0b2572195c7c62cd346a16"
     },
     "upload": {
       "upstream_sha256": "42816ee1fa0e9d3b82272a97615c1e562b0e9de64780ebf21963bc1db0ceffd1",
