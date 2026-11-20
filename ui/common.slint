@@ -62,6 +62,7 @@ export global Theme {
     out property <color> switch-off: dark ? #27272a : #d4d4d8;
     out property <color> switch-fixed: dark ? #405723 : #607b36;
     out property <color> switch-thumb: #ffffff;
+    out property <color> switch-thumb-outline: #24331666;
     out property <color> selection: dark ? #384328 : #e2efc9;
     out property <color> neutral-badge: self.subtle;
     out property <color> overlay: dark ? #000000a8 : #19212e82;
@@ -512,10 +513,14 @@ export component RuleSwitch inherits Rectangle {
         border-width: root.fixed && root.checked ? 0px : 1px;
         border-color: root.checked ? Theme.accent-border : Theme.border;
         Rectangle {
-            x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px;
-            width: root.track-height - 6px; height: self.width; border-radius: self.width / 2;
-            background: Theme.switch-thumb;
+            x: root.checked ? parent.width - self.width - 2px : 2px; y: 2px;
+            width: root.track-height - 4px; height: self.width; border-radius: self.width / 2;
+            background: Theme.switch-thumb-outline;
             animate x { duration: Theme.reduce-motion ? 0ms : 150ms; }
+            Rectangle {
+                x: 1px; y: 1px; width: parent.width - 2px; height: self.width;
+                border-radius: self.width / 2; background: Theme.switch-thumb;
+            }
         }
     }
     TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.toggled(); } }
