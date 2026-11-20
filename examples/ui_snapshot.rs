@@ -328,10 +328,22 @@ fn main() -> Result<()> {
     ui.set_enabled_rule_count(1);
     ui.window().set_size(PhysicalSize::new(1240, 780));
     ui.show()?; // Only MemoryWindow::set_visible; no OS window exists.
-    if std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--modules-only")) {
-        module_settings_previews(&ui, &main_adapter, &destination)?;
-        ui.hide()?;
-        return Ok(());
+    match std::env::args_os()
+        .nth(2)
+        .as_deref()
+        .and_then(std::ffi::OsStr::to_str)
+    {
+        Some("--modules-only") => {
+            module_settings_previews(&ui, &main_adapter, &destination)?;
+            ui.hide()?;
+            return Ok(());
+        }
+        Some("--surface-only") => {
+            general_surface_previews(&ui, &main_adapter, &destination)?;
+            ui.hide()?;
+            return Ok(());
+        }
+        _ => {}
     }
     check_first_notice_frame(&ui, &main_adapter, &destination)?;
     for (page, name) in [(0, "home"), (1, "routes"), (2, "proxies"), (4, "settings")] {
@@ -562,9 +574,145 @@ fn main() -> Result<()> {
         }
     }
     module_settings_previews(&ui, &main_adapter, &destination)?;
+    general_surface_previews(&ui, &main_adapter, &destination)?;
     ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());
     Ok(())
+}
+
+fn check_sidebar_layers(ui: &MainWindow, adapter: &MemoryWindow, dark: bool) -> Result<()> {
+    let glass = if dark { [12, 12, 16] } else { [244, 245, 248] };
+    let solid = if dark { [12, 12, 14] } else { [255; 3] };
+    let render = |active, mode, transparency, blur| -> Result<u8> {
+        ui.set_sidebar_backdrop_active(active);
+        ui.set_sidebar_backdrop(mode);
+        ui.set_sidebar_transparency(transparency);
+        ui.set_sidebar_blur(blur);
+        // The software renderer returns straight RGBA from its premultiplied surface.
+        let frame = adapter.window.take_snapshot()?;
+        let width = frame.width() as usize;
+        let mut rows = frame.as_slice().chunks_exact(width);
+        let sidebar = frame.as_slice()[(frame.height() as usize / 2) * width + 3];
+        let caption = frame.as_slice()[8 * width + 3];
+        ensure!(
+            caption == sidebar,
+            "Caption and sidebar tints differ: {caption:?}, {sidebar:?}"
+        );
+        ensure!(
+            rows.all(|row| row[224..].iter().all(|pixel| pixel.a == 255)),
+            "Right-hand content is translucent: dark={dark}, mode={mode}, transparency={transparency}, blur={blur}"
+        );
+        ensure!(sidebar.a > 0, "Sidebar tint disappeared");
+        let expected = if active && mode != 0 { glass } else { solid };
+        // Unpremultiplication can lose one input level scaled by 255/alpha.
+        let tolerance = if sidebar.a == 255 { 0 } else { 255 / sidebar.a };
+        ensure!(
+            [sidebar.r, sidebar.g, sidebar.b]
+                .into_iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) <= tolerance),
+            "Unexpected sidebar color: {sidebar:?}, expected {expected:?} at alpha {}",
+            sidebar.a
+        );
+        Ok(sidebar.a)
+    };
+    ensure!(render(false, 1, 100, 0)? == 255, "Fallback must be opaque");
+    ensure!(render(true, 0, 100, 0)? == 255, "Off must be opaque");
+    for mode in [1, 2] {
+        ensure!(
+            render(true, mode, 0, 32)? == 255,
+            "Zero transparency must be opaque"
+        );
+        let clear = render(true, mode, 100, 0)?;
+        let frosted = render(true, mode, 100, 32)?;
+        ensure!(
+            clear < frosted && frosted < 255,
+            "Expected distinct translucent tints at blur endpoints for mode {mode}: {clear}, {frosted}"
+        );
+    }
+    Ok(())
+}
+
+fn general_surface_previews(
+    ui: &MainWindow,
+    adapter: &MemoryWindow,
+    destination: &Path,
+) -> Result<()> {
+    use i_slint_backend_testing::ElementHandle;
+
+    ui.set_reduce_motion(true);
+    ui.set_settings_section(0);
+    ui.set_page(4);
+    for (dark, theme) in [(true, "dark"), (false, "light")] {
+        ui.set_dark_theme(dark);
+        check_sidebar_layers(ui, adapter, dark)?;
+        ui.set_sidebar_backdrop(1);
+        ui.set_sidebar_transparency(55);
+        ui.set_sidebar_blur(18);
+        for (width, height, size) in [(1240, 780, "normal"), (960, 640, "compact")] {
+            ui.window().set_size(PhysicalSize::new(width, height));
+            ui.set_page(0);
+            adapter.window.take_snapshot()?;
+            ui.set_page(4);
+            adapter.window.take_snapshot()?;
+            let find = |label: &str| ElementHandle::find_by_accessible_label(ui, label).next();
+            if size == "compact" {
+                let scroll = ElementHandle::find_by_element_id(ui, "MainWindow::settings-scroll")
+                    .next()
+                    .context("General settings scroll view missing")?;
+                // Keep both sliders and their tab selector inside the compact viewport.
+                for _ in 0..4 {
+                    let delta = find("Notification surface effects")
+                        .map_or(scroll.size().height / 2., |tab| {
+                            tab.absolute_position().y - 210.
+                        });
+                    if delta.abs() < 4. {
+                        break;
+                    }
+                    scroll.scroll(0., -delta);
+                    adapter.advance(300);
+                    adapter.window.take_snapshot()?;
+                }
+            }
+            let sidebar = find("Sidebar surface effects").context("Sidebar tab missing")?;
+            ensure!(
+                sidebar.accessible_checked() == Some(true)
+                    && find("Sidebar background blur").is_some(),
+                "Expected the Sidebar tab and its controls on entry"
+            );
+            save(
+                adapter,
+                &destination.join(format!("general-sidebar-{theme}-{size}.png")),
+            )?;
+
+            let notifications =
+                find("Notification surface effects").context("Notifications tab missing")?;
+            click_control(ui, &notifications);
+            adapter.window.take_snapshot()?;
+            ensure!(
+                notifications.accessible_checked() == Some(true)
+                    && find("Notification background blur").is_some(),
+                "Notifications tab click did not reveal its sliders"
+            );
+            save(
+                adapter,
+                &destination.join(format!("general-notifications-{theme}-{size}.png")),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn click_control(ui: &MainWindow, element: &i_slint_backend_testing::ElementHandle) {
+    let origin = element.absolute_position();
+    let size = element.size();
+    let position =
+        slint::LogicalPosition::new(origin.x + size.width / 2., origin.y + size.height / 2.);
+    let button = slint::platform::PointerEventButton::Left;
+    ui.window()
+        .dispatch_event(WindowEvent::PointerPressed { position, button });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerReleased { position, button });
 }
 
 fn module_settings_previews(
@@ -787,17 +935,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     save_notice("xray-restart-hidden.png")?;
     ui.set_page(2);
     save(adapter, &destination.join("xray-restart-outside.png"))?;
-    let click = |element: i_slint_backend_testing::ElementHandle| {
-        let origin = element.absolute_position();
-        let size = element.size();
-        let position =
-            slint::LogicalPosition::new(origin.x + size.width / 2., origin.y + size.height / 2.);
-        let button = slint::platform::PointerEventButton::Left;
-        ui.window()
-            .dispatch_event(WindowEvent::PointerPressed { position, button });
-        ui.window()
-            .dispatch_event(WindowEvent::PointerReleased { position, button });
-    };
+    let click = |element| click_control(ui, &element);
     click(
         i_slint_backend_testing::ElementHandle::find_by_element_id(ui, "MainWindow::notifications")
             .next()

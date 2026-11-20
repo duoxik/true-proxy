@@ -16,7 +16,7 @@ component ThemeChoice inherits Rectangle {
     min-width: 0px;
     preferred-width: 0px;
     horizontal-stretch: 1;
-    height: 124px;
+    height: 132px;
     border-radius: 11px;
     border-width: root.selected || focus.has-focus ? 2px : 1px;
     border-color: focus.has-focus ? Theme.text : root.selected ? Theme.accent : touch.has-hover ? Theme.strong-border : Theme.border;
@@ -32,7 +32,7 @@ component ThemeChoice inherits Rectangle {
         padding: 10px;
         spacing: 8px;
         sample := Rectangle {
-            height: 76px;
+            height: 84px;
             clip: true;
             border-radius: 7px;
             border-width: 1px;
@@ -84,8 +84,37 @@ component ThemeChoice inherits Rectangle {
     }
 }
 
+component EffectSelector inherits Rectangle {
+    in property <[string]> labels;
+    in property <bool> surface-tabs;
+    in property <int> selected;
+    callback select(int);
+    height: root.surface-tabs ? 34px : 30px;
+    border-radius: 9px;
+    border-width: 1px;
+    border-color: Theme.border;
+    background: Theme.subtle;
+    accessible-role: groupbox;
+    accessible-label: root.surface-tabs ? "Surface target" : "Sidebar backdrop mode";
+
+    for option[i] in root.labels: ActionButton {
+        width: (root.width - 6px - (root.labels.length - 1) * 2px) / max(1, root.labels.length);
+        height: root.height - 6px;
+        x: 3px + i * (self.width + 2px); y: 3px;
+        label: option; label-size: root.surface-tabs ? 12px : 11.5px;
+        quiet: root.selected != i; fill: Theme.surface;
+        ink: root.selected == i ? Theme.text : Theme.muted;
+        outline: Theme.border; border-radius: 6px;
+        accessible-label: root.surface-tabs ? (i == 0 ? "Sidebar surface effects" : "Notification surface effects") : option;
+        accessible-checkable: true; accessible-checked: root.selected == i;
+        clicked => { root.select(i); }
+    }
+}
+
 component AppearanceSlider inherits VerticalLayout {
     in property <string> label;
+    in property <string> control-label;
+    in property <bool> enabled: true;
     in property <string> unit;
     in property <int> maximum;
     in-out property <int> amount;
@@ -95,9 +124,11 @@ component AppearanceSlider inherits VerticalLayout {
     changed amount => { control.value = root.amount; }
 
     function commit(next: float) {
-        root.amount = round(clamp(next, 0, root.maximum));
-        control.value = root.amount;
-        root.committed();
+        if root.enabled {
+            root.amount = round(clamp(next, 0, root.maximum));
+            control.value = root.amount;
+            root.committed();
+        }
     }
     HorizontalLayout {
         height: 18px; spacing: 12px; cross-axis-alignment: center;
@@ -119,8 +150,9 @@ component AppearanceSlider inherits VerticalLayout {
             maximum: root.maximum;
             step: 1;
             value: root.amount;
-            accessible-label: root.label;
-            accessible-value-step: 1;
+            enabled: root.enabled;
+            accessible-label: root.control-label;
+            accessible-enabled: root.enabled; accessible-value-step: 1;
             changed(next) => { root.amount = round(next); }
             released(next) => { root.commit(next); }
             accessible-action-set-value(next) => { if next.is-float() { root.commit(next.to-float()); } }
@@ -229,6 +261,10 @@ export component GeneralSettings inherits VerticalLayout {
     in property <string> update-version;
     in property <string> update-status;
     in property <string> app-version;
+    in-out property <int> sidebar-backdrop: 1;
+    in property <bool> sidebar-backdrop-active;
+    in-out property <int> sidebar-transparency: 55;
+    in-out property <int> sidebar-blur: 18;
     in-out property <int> notice-transparency;
     in-out property <int> notice-blur;
     callback choose-theme(bool);
@@ -238,6 +274,8 @@ export component GeneralSettings inherits VerticalLayout {
     callback show-release-notes;
     callback install-update;
     callback save-notice-appearance;
+    callback save-sidebar-appearance;
+    private property <bool> notification-effects;
     callback open-import;
     callback export-config;
     alignment: start;
@@ -274,99 +312,126 @@ export component GeneralSettings inherits VerticalLayout {
     }
 
     preferences := Rectangle {
-        private property <bool> columns: self.width > 768px;
+        private property <bool> columns: self.width > 760px;
         private property <length> column-width: self.columns ? (self.width - 16px) / 2 : self.width;
-        private property <length> row-height: max(appearance.content-height, updates.content-height);
-        height: self.columns ? self.row-height : appearance.height + updates.height + 16px;
+        private property <length> row-height: max(theme-card.content-height, effects-card.content-height);
+        height: self.columns ? self.row-height : theme-card.height + 16px + effects-card.height;
         vertical-stretch: 0;
-        appearance := FormCard {
+        theme-card := FormCard {
             x: 0px; y: 0px; width: preferences.column-width;
             height: preferences.columns ? preferences.row-height : self.content-height;
-            title: "Appearance"; icon: "sun"; header-icon-size: 36px; caption: "Choose the application theme.";
-            inset-body: false;
-            VerticalLayout {
-                Divider {}
-                VerticalLayout {
-                    padding-top: 18px; padding-bottom: 18px; padding-left: Theme.card-padding; padding-right: Theme.card-padding;
-                    spacing: 18px;
-                    HorizontalLayout {
-                        spacing: 12px;
-                        ThemeChoice { dark: false; selected: !root.dark-theme; choose => { root.choose-theme(false); } }
-                        ThemeChoice { dark: true; selected: root.dark-theme; choose => { root.choose-theme(true); } }
-                    }
-                    VerticalLayout {
-                        spacing: 8px;
-                        AppearanceSlider {
-                            label: "Notification transparency"; unit: "%"; maximum: 100;
-                            amount <=> root.notice-transparency;
-                            committed => { root.save-notice-appearance(); }
-                        }
-                        AppearanceSlider {
-                            label: "Background blur"; unit: " px"; maximum: 24;
-                            amount <=> root.notice-blur;
-                            committed => { root.save-notice-appearance(); }
-                        }
-                    }
-                }
-            }
-        }
-        updates := FormCard {
-            x: preferences.columns ? preferences.column-width + 16px : 0px;
-            y: preferences.columns ? 0px : appearance.height + 16px;
-            width: preferences.column-width;
-            height: preferences.columns ? preferences.row-height : self.content-height;
-            title: "Application updates"; icon: "refresh"; header-icon-size: 36px; caption: "Check at launch and every 6 hours.";
+            title: "Theme"; icon: "sun"; header-icon-size: 36px; caption: "Choose the application theme.";
             inset-body: false; stretch-body: true;
             VerticalLayout {
                 vertical-stretch: 1;
                 Divider {}
                 VerticalLayout {
-                    vertical-stretch: 1; padding: Theme.card-padding;
+                    vertical-stretch: 1; alignment: center; padding: Theme.card-padding;
                     HorizontalLayout {
-                        height: max(38px, updates-description.preferred-height);
-                        spacing: 16px; cross-axis-alignment: center;
-                        updates-description := VerticalLayout {
-                            spacing: 2px; min-width: 0px; horizontal-stretch: 1;
-                            Text { text: "Automatic update checks"; color: Theme.text; font-size: 14px; font-weight: 500; wrap: word-wrap; }
-                            Text { text: "Check silently in the background."; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
-                        }
-                        RuleSwitch {
-                            label: "Check for updates automatically"; checked: root.updates-automatic;
-                            toggled => { root.set-updates-automatic(!root.updates-automatic); }
-                        }
+                        height: 132px; spacing: 14px;
+                        ThemeChoice { dark: false; selected: !root.dark-theme; choose => { root.choose-theme(false); } }
+                        ThemeChoice { dark: true; selected: root.dark-theme; choose => { root.choose-theme(true); } }
                     }
-                    Rectangle { min-height: 16px; preferred-height: 16px; vertical-stretch: 1; }
+                }
+            }
+        }
+        effects-card := FormCard {
+            x: preferences.columns ? preferences.column-width + 16px : 0px;
+            y: preferences.columns ? 0px : theme-card.height + 16px;
+            width: preferences.column-width;
+            height: preferences.columns ? preferences.row-height : self.content-height;
+            title: "Surface Effects"; icon: "layers"; header-icon-size: 36px;
+            caption: !root.notification-effects && root.sidebar-backdrop != 0 && !root.sidebar-backdrop-active
+                ? "Windows is using a solid sidebar." : "Customize glass transparency and blur.";
+            inset-body: false;
+            VerticalLayout {
+                Divider {}
+                VerticalLayout {
+                    padding: Theme.card-padding; spacing: 16px;
+                    EffectSelector {
+                        labels: ["Sidebar", "Notifications"]; surface-tabs: true;
+                        selected: root.notification-effects ? 1 : 0;
+                        select(index) => { root.notification-effects = index == 1; }
+                    }
                     Rectangle {
-                        height: 40px;
-                        ActionButton {
-                            width: parent.width; height: parent.height;
-                            label: root.update-busy ? "Checking…" : "Check for updates";
-                            accessible-label: "Check for Updates"; icon: "refresh"; enabled: !root.update-busy;
-                            clicked => { root.check-updates(); }
+                        // The controls keep their height as the user switches tabs.
+                        height: 146px;
+                        if !root.notification-effects: VerticalLayout {
+                            spacing: 14px;
+                            HorizontalLayout {
+                                height: 30px; spacing: 8px; cross-axis-alignment: center;
+                                Text { text: "Backdrop"; color: Theme.secondary; font-size: 12.5px; font-weight: 500; horizontal-stretch: 1; }
+                                EffectSelector {
+                                    width: 164px; labels: ["Off", "Mica", "Acrylic"]; selected: root.sidebar-backdrop;
+                                    select(index) => {
+                                        if index != root.sidebar-backdrop {
+                                            root.sidebar-backdrop = index;
+                                            root.save-sidebar-appearance();
+                                        }
+                                    }
+                                }
+                            }
+                            AppearanceSlider {
+                                label: "Transparency"; control-label: "Sidebar transparency"; unit: "%"; maximum: 100;
+                                enabled: root.sidebar-backdrop != 0; opacity: self.enabled ? 1 : 0.42;
+                                amount <=> root.sidebar-transparency; committed => { root.save-sidebar-appearance(); }
+                            }
+                            AppearanceSlider {
+                                label: "Background blur"; control-label: "Sidebar background blur"; unit: " px"; maximum: 32;
+                                enabled: root.sidebar-backdrop != 0; opacity: self.enabled ? 1 : 0.42;
+                                amount <=> root.sidebar-blur; committed => { root.save-sidebar-appearance(); }
+                            }
                         }
-                    }
-                    if root.update-available: VerticalLayout {
-                        padding-top: 12px; spacing: 8px; alignment: start;
-                        NumericText { text: "True Proxy " + root.update-version; color: Theme.text; font-size: 13px; min-width: 0px; overflow: elide; }
-                        HorizontalLayout {
-                            alignment: start; spacing: 8px;
-                            ActionButton { label: "What's new"; height: 32px; clicked => { root.show-release-notes(); } }
-                            ActionButton { label: "Install and Restart"; primary: true; height: 32px; enabled: !root.busy && !root.update-busy; clicked => { root.install-update(); } }
+                        if root.notification-effects: VerticalLayout {
+                            alignment: center; spacing: 16px;
+                            AppearanceSlider {
+                                label: "Transparency"; control-label: "Notification transparency"; unit: "%"; maximum: 100;
+                                amount <=> root.notice-transparency; committed => { root.save-notice-appearance(); }
+                            }
+                            AppearanceSlider {
+                                label: "Background blur"; control-label: "Notification background blur"; unit: " px"; maximum: 24;
+                                amount <=> root.notice-blur; committed => { root.save-notice-appearance(); }
+                            }
                         }
                     }
                 }
-                if root.update-status != "": VerticalLayout {
-                    vertical-stretch: 0;
-                    Divider {}
-                    Rectangle {
-                        height: status-row.preferred-height; background: Theme.card-footer;
-                        border-bottom-left-radius: Theme.radius-large - 1px; border-bottom-right-radius: Theme.radius-large - 1px;
-                        status-row := HorizontalLayout {
-                            padding-left: Theme.card-padding; padding-right: Theme.card-padding; padding-top: 13px; padding-bottom: 13px;
-                            spacing: 8px; cross-axis-alignment: center;
-                            UiIcon { name: "clock"; width: 14px; height: 14px; ink: Theme.muted; }
-                            Text { text: root.update-status; font-size: 12.5px; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
-                        }
+            }
+        }
+    }
+    FormCard {
+        title: "Application updates"; icon: "refresh"; header-icon-size: 36px;
+        caption: "Check at launch and every six hours."; inset-body: false;
+        action-label: root.update-busy ? "Checking…" : "Check for updates";
+        action-accessibility: "Check for Updates"; action-icon: "refresh";
+        action-enabled: !root.update-busy; outlined-action: true;
+        action => { root.check-updates(); }
+        VerticalLayout {
+            Divider {}
+            VerticalLayout {
+                padding-left: Theme.card-padding; padding-right: Theme.card-padding; padding-top: 14px; padding-bottom: 14px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 16px; cross-axis-alignment: center;
+                    Text { text: "Automatic update checks"; color: Theme.text; font-size: 13.5px; font-weight: 500; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
+                    RuleSwitch { label: "Check for updates automatically"; checked: root.updates-automatic; toggled => { root.set-updates-automatic(!root.updates-automatic); } }
+                }
+                if root.update-available: HorizontalLayout {
+                    spacing: 8px; cross-axis-alignment: center;
+                    NumericText { text: "True Proxy " + root.update-version; color: Theme.text; font-size: 13px; min-width: 0px; horizontal-stretch: 1; overflow: elide; }
+                    ActionButton { label: "What's new"; height: 32px; clicked => { root.show-release-notes(); } }
+                    ActionButton { label: "Install and Restart"; primary: true; height: 32px; enabled: !root.busy && !root.update-busy; clicked => { root.install-update(); } }
+                }
+            }
+            if root.update-status != "": VerticalLayout {
+                Divider {}
+                Rectangle {
+                    height: status-row.preferred-height; background: Theme.card-footer;
+                    border-bottom-left-radius: Theme.radius-large - 1px; border-bottom-right-radius: Theme.radius-large - 1px;
+                    status-row := HorizontalLayout {
+                        padding-left: Theme.card-padding; padding-right: Theme.card-padding; padding-top: 12px; padding-bottom: 12px;
+                        spacing: 8px; cross-axis-alignment: center;
+                        UiIcon { name: "clock"; width: 14px; height: 14px; ink: Theme.muted; }
+                        NumericText { text: root.update-status; font-size: 12px; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
                     }
                 }
             }

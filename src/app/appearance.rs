@@ -21,16 +21,41 @@ use std::{
     rc::Rc,
 };
 
-/// Invalidate the full opaque surface only when it may have been discarded.
+/// Invalidate the entire client surface when the native backing may have been discarded.
 /// request_redraw alone only schedules partial rendering of changed items.
 pub fn refresh(ui: &MainWindow) {
     ui.set_surface_fresh(!ui.get_surface_fresh());
     ui.window().request_redraw();
 }
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[repr(i32)]
+#[serde(rename_all = "lowercase")]
+enum SidebarBackdrop {
+    #[default]
+    Mica = 1,
+    Acrylic = 2,
+    #[serde(other)]
+    Off = 0,
+}
+
+impl SidebarBackdrop {
+    fn from_ui(value: i32) -> Self {
+        match value {
+            1 => Self::Mica,
+            2 => Self::Acrylic,
+            _ => Self::Off,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(default)]
 struct Preferences {
     dark_theme: bool,
+    sidebar_backdrop: SidebarBackdrop,
+    sidebar_transparency: i32,
+    sidebar_blur: i32,
     notice_transparency: i32,
     notice_blur: i32,
 }
@@ -39,6 +64,9 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             dark_theme: true,
+            sidebar_backdrop: SidebarBackdrop::Mica,
+            sidebar_transparency: 55,
+            sidebar_blur: 18,
             notice_transparency: 48,
             notice_blur: 9,
         }
@@ -47,6 +75,8 @@ impl Default for Preferences {
 
 impl Preferences {
     fn bounded(mut self) -> Self {
+        self.sidebar_transparency = self.sidebar_transparency.clamp(0, 100);
+        self.sidebar_blur = self.sidebar_blur.clamp(0, 32);
         self.notice_transparency = self.notice_transparency.clamp(0, 100);
         self.notice_blur = self.notice_blur.clamp(0, 24);
         self
@@ -55,6 +85,9 @@ impl Preferences {
     fn current(ui: &MainWindow) -> Self {
         Self {
             dark_theme: ui.get_dark_theme(),
+            sidebar_backdrop: SidebarBackdrop::from_ui(ui.get_sidebar_backdrop()),
+            sidebar_transparency: ui.get_sidebar_transparency(),
+            sidebar_blur: ui.get_sidebar_blur(),
             notice_transparency: ui.get_notice_transparency(),
             notice_blur: ui.get_notice_blur(),
         }
@@ -63,6 +96,9 @@ impl Preferences {
 
     fn apply(self, ui: &MainWindow) {
         ui.set_dark_theme(self.dark_theme);
+        ui.set_sidebar_backdrop(self.sidebar_backdrop as i32);
+        ui.set_sidebar_transparency(self.sidebar_transparency);
+        ui.set_sidebar_blur(self.sidebar_blur);
         ui.set_notice_transparency(self.notice_transparency);
         ui.set_notice_blur(self.notice_blur);
     }
@@ -105,10 +141,27 @@ pub(super) fn apply_native_theme(ui: &MainWindow) {
     } else {
         WindowTheme::Light
     };
-    ui.window()
-        .with_winit_window(|window| window.set_theme(Some(theme)));
+    ui.window().with_winit_window(|window| {
+        window.set_theme(Some(theme));
+        ui.set_caption_maximized(window.is_maximized());
+    });
+    #[cfg(not(windows))]
+    ui.set_sidebar_backdrop_active(false);
     #[cfg(windows)]
-    if let Ok(hwnd) = native_handle(ui) {
+    {
+        let Ok(hwnd) = native_handle(ui) else {
+            ui.set_sidebar_backdrop_active(false);
+            return;
+        };
+        let active = true_proxy::platform::windows::presentation::apply_sidebar_backdrop(
+            hwnd,
+            ui.get_sidebar_backdrop(),
+            ui.get_dark_theme(),
+        );
+        ui.set_sidebar_backdrop_active(active);
+        if active {
+            return;
+        }
         use windows_sys::Win32::Graphics::Dwm::{
             DWMWA_CAPTION_COLOR, DWMWA_COLOR_DEFAULT, DwmSetWindowAttribute,
         };
@@ -140,23 +193,36 @@ fn wire_preferences(ui: &MainWindow, path: Option<PathBuf>) {
     }
     let saved = Cell::new(Preferences::current(ui));
     let commit = Rc::new(move |ui: &MainWindow, preferences: Preferences| {
-        if preferences != saved.get()
+        let previous = saved.get();
+        if preferences != previous
             && let Some(path) = &path
             && let Err(error) = preferences.save(path)
         {
-            saved.get().apply(ui);
+            previous.apply(ui);
             super::report(ui, Err(error));
-            return false;
+            return;
         }
         saved.set(preferences);
         preferences.apply(ui);
-        true
+        if previous.dark_theme != preferences.dark_theme
+            || previous.sidebar_backdrop != preferences.sidebar_backdrop
+        {
+            apply_native_theme(ui);
+            refresh(ui);
+        }
     });
     let save_notice = commit.clone();
     let weak = ui.as_weak();
     ui.on_save_notice_appearance(move || {
         if let Some(ui) = weak.upgrade() {
             save_notice(&ui, Preferences::current(&ui));
+        }
+    });
+    let save_sidebar = commit.clone();
+    let weak = ui.as_weak();
+    ui.on_save_sidebar_appearance(move || {
+        if let Some(ui) = weak.upgrade() {
+            save_sidebar(&ui, Preferences::current(&ui));
         }
     });
     let weak = ui.as_weak();
@@ -169,10 +235,7 @@ fn wire_preferences(ui: &MainWindow, path: Option<PathBuf>) {
             dark_theme,
             ..Preferences::current(&ui)
         };
-        if commit(&ui, preferences) {
-            apply_native_theme(&ui);
-            refresh(&ui);
-        }
+        commit(&ui, preferences);
     });
 }
 
@@ -194,12 +257,51 @@ fn refresh_motion_preference(ui: &MainWindow) {
 pub fn wire(ui: &MainWindow, preferences_path: Option<PathBuf>) {
     wire_preferences(ui, preferences_path);
     #[cfg(windows)]
-    refresh_motion_preference(ui);
+    let mut transparency_allowed = {
+        use true_proxy::platform::windows::presentation::{
+            caption_action, sidebar_backdrop_allowed,
+        };
+        refresh_motion_preference(ui);
+        let weak = ui.as_weak();
+        ui.on_caption_action(move |action| {
+            if let Some(ui) = weak.upgrade()
+                && let Ok(hwnd) = native_handle(&ui)
+            {
+                caption_action(hwnd, action);
+            }
+        });
+        sidebar_backdrop_allowed()
+    };
     let weak = ui.as_weak();
     #[cfg(windows)]
     let mut modifiers = ModifiersState::empty();
+    #[cfg(windows)]
+    let mut themed_window = None;
     let backdrop_refresh = slint::Timer::default();
     ui.window().on_winit_window_event(move |_window, event| {
+        // On initial startup show() can precede winit's first realized HWND.
+        // Reapply once for each new window, after its native event is dispatched.
+        #[cfg(windows)]
+        if (themed_window.is_none()
+            || matches!(
+                event,
+                WindowEvent::Focused(true) | WindowEvent::Occluded(false)
+            ))
+            && let Some(ui) = weak.upgrade()
+            && let Some(id) = ui.window().with_winit_window(|window| window.id())
+            && themed_window != Some(id)
+        {
+            themed_window = Some(id);
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                if let Some(ui) = weak.upgrade()
+                    && ui.window().is_visible()
+                {
+                    apply_native_theme(&ui);
+                    refresh(&ui);
+                }
+            });
+        }
         // Refresh a floating card once the underlying page finishes scrolling or editing.
         if matches!(
             event,
@@ -266,6 +368,18 @@ pub fn wire(ui: &MainWindow, preferences_path: Option<PathBuf>) {
             #[cfg(windows)]
             if matches!(event, WindowEvent::Focused(true)) {
                 refresh_motion_preference(&ui);
+                let allowed =
+                    true_proxy::platform::windows::presentation::sidebar_backdrop_allowed();
+                if allowed != transparency_allowed {
+                    transparency_allowed = allowed;
+                    if ui.get_sidebar_backdrop() != SidebarBackdrop::Off as i32 {
+                        apply_native_theme(&ui);
+                    }
+                }
+            }
+            if matches!(event, WindowEvent::Resized(_)) {
+                ui.window()
+                    .with_winit_window(|window| ui.set_caption_maximized(window.is_maximized()));
             }
             if matches!(event, WindowEvent::Resized(size) if size.width == 0 || size.height == 0) {
                 ui.invoke_suspend_connection_observation();
@@ -396,11 +510,11 @@ mod tests {
                 }
                 control.mock_single_click(PointerEventButton::Left);
             };
+            click("Check for Updates");
+            assert_eq!(checks.get(), 1);
             click("Check for updates automatically");
             assert_eq!(automatic.get(), Some(true));
             assert!(ui.get_updates_automatic());
-            click("Check for Updates");
-            assert_eq!(checks.get(), 1);
             click("Start when I sign in to Windows");
             assert_eq!(startup.get(), Some(true));
             assert!(ui.get_autostart_enabled());
@@ -409,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn theme_and_notice_settings_migrate_and_survive_a_new_window() {
+    fn theme_and_surface_effects_migrate_and_survive_a_new_window() {
         i_slint_backend_testing::init_no_event_loop();
         let directory =
             std::env::temp_dir().join(format!("true-proxy-appearance-{}", super::super::id()));
@@ -434,6 +548,14 @@ mod tests {
         let ui = window();
         assert!(ui.get_dark_theme());
         assert_eq!(
+            (
+                ui.get_sidebar_backdrop(),
+                ui.get_sidebar_transparency(),
+                ui.get_sidebar_blur()
+            ),
+            (1, 55, 18),
+        );
+        assert_eq!(
             (ui.get_notice_transparency(), ui.get_notice_blur()),
             (48, 9)
         );
@@ -448,12 +570,38 @@ mod tests {
             ui.window()
                 .dispatch_event(SlintWindowEvent::KeyReleased { text: key.into() });
         };
+        let button = PointerEventButton::Left;
+        click(&ui, "Off");
+        assert_eq!(
+            slider(&ui, "Sidebar transparency").accessible_enabled(),
+            Some(false)
+        );
+        assert_eq!(
+            Preferences::load(&path).unwrap().sidebar_backdrop,
+            SidebarBackdrop::Off
+        );
+        click(&ui, "Acrylic");
+        assert_eq!(ui.get_sidebar_backdrop(), 2);
+        assert!(!ui.get_sidebar_backdrop_active()); // No native window on the testing backend.
+        slider(&ui, "Sidebar transparency").mock_single_click(button);
+        press_key(&ui, SlintKey::End);
+        slider(&ui, "Sidebar background blur").mock_single_click(button);
+        press_key(&ui, SlintKey::End);
+        let saved = Preferences::load(&path).unwrap();
+        assert_eq!(
+            (
+                saved.sidebar_backdrop,
+                saved.sidebar_transparency,
+                saved.sidebar_blur
+            ),
+            (SidebarBackdrop::Acrylic, 100, 32)
+        );
+        click(&ui, "Notification surface effects");
         let transparency = slider(&ui, "Notification transparency");
         let origin = transparency.absolute_position();
         let size = transparency.size();
         let position =
             slint::LogicalPosition::new(origin.x + size.width * 0.75, origin.y + size.height / 2.);
-        let button = PointerEventButton::Left;
         ui.window()
             .dispatch_event(SlintWindowEvent::PointerMoved { position });
         ui.window()
@@ -467,7 +615,7 @@ mod tests {
             Preferences::load(&path).unwrap().notice_transparency,
             chosen
         );
-        slider(&ui, "Background blur").mock_single_click(button);
+        slider(&ui, "Notification background blur").mock_single_click(button);
         press_key(&ui, SlintKey::End);
         assert_eq!(Preferences::load(&path).unwrap().notice_blur, 24);
         click(&ui, "Light theme");
@@ -477,10 +625,20 @@ mod tests {
         let ui = window();
         assert!(!ui.get_dark_theme());
         assert_eq!(
+            (
+                ui.get_sidebar_backdrop(),
+                ui.get_sidebar_transparency(),
+                ui.get_sidebar_blur()
+            ),
+            (2, 100, 32),
+        );
+        assert!(slider(&ui, "Sidebar transparency").accessible_enabled() != Some(false));
+        assert_eq!(
             (ui.get_notice_transparency(), ui.get_notice_blur()),
             (chosen, 24)
         );
-        slider(&ui, "Background blur").mock_single_click(button);
+        click(&ui, "Notification surface effects");
+        slider(&ui, "Notification background blur").mock_single_click(button);
         press_key(&ui, SlintKey::Home);
         let saved = Preferences::load(&path).unwrap();
         assert!(!saved.dark_theme);
@@ -489,6 +647,24 @@ mod tests {
         assert!(ui.get_dark_theme() && Preferences::load(&path).unwrap().dark_theme);
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn sidebar_modes_serialize_by_name_and_legacy_notice_values_are_preserved() {
+        let old = serde_json::from_str::<Preferences>(
+            r#"{"dark_theme":false,"notice_transparency":81,"notice_blur":17}"#,
+        )
+        .unwrap();
+        let json = serde_json::to_value(old).unwrap();
+        assert_eq!(json["sidebar_backdrop"], "mica");
+        assert_eq!((old.notice_transparency, old.notice_blur), (81, 17));
+        let edited = serde_json::from_str::<Preferences>(
+            r#"{"dark_theme":false,"sidebar_backdrop":"future-mode","sidebar_transparency":-5,"sidebar_blur":40,"notice_transparency":81,"notice_blur":17}"#,
+        ).unwrap().bounded();
+        assert_eq!(edited.sidebar_backdrop, SidebarBackdrop::Off);
+        assert_eq!((edited.sidebar_transparency, edited.sidebar_blur), (0, 32));
+        assert_eq!((edited.notice_transparency, edited.notice_blur), (81, 17));
+        assert!(!edited.dark_theme);
     }
 
     #[test]

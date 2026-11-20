@@ -1393,16 +1393,14 @@ mod ui_tests {
         let settings = ElementHandle::find_by_element_id(&ui, "MainWindow::settings-scroll")
             .next()
             .unwrap();
+        // Slint exposes the Startup switch to accessibility once its row is visible.
+        settings.scroll(0., -settings.size().height);
+        i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(250));
         let startup =
             ElementHandle::find_by_accessible_label(&ui, "Start when I sign in to Windows")
                 .find(|element| element.accessible_role() == Some(AccessibleRole::Switch))
-                .unwrap();
-        let bottom = startup.absolute_position().y + startup.size().height;
-        let viewport_bottom = settings.absolute_position().y + settings.size().height;
-        if bottom > viewport_bottom {
-            settings.scroll(0., viewport_bottom - bottom - 8.);
-        }
-        click(&ui, "Start when I sign in to Windows");
+                .expect("Startup switch visible after scrolling General settings");
+        startup.mock_single_click(PointerEventButton::Left);
         assert_eq!(calls.get(), 1);
         assert!(ui.get_autostart_enabled());
     }

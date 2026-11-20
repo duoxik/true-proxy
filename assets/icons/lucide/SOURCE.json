@@ -44,6 +44,7 @@
     "power": "power",
     "files": "files",
     "boxes": "boxes",
+    "layers": "layers",
     "network": "network",
     "route": "route",
     "link": "link",
@@ -129,6 +130,10 @@
     "info": {
       "upstream_sha256": "bc977a64eb96f3e9c1041ffd09a3fceb70e3e65c02b571f76064062ed31f3cb9",
       "embedded_sha256": "1ea7e9f80548b01de727c42609758a60a7c32b2fee478d52f7451f1cbe1ca74f"
+    },
+    "layers": {
+      "upstream_sha256": "ce16d0a955e3581cda17f6b2fd5c5bc2034b405f9cecc31c8ebb8495b4afc1bb",
+      "embedded_sha256": "f627b09ff4820ada2a5332fe177d30f93ca9fc33db30fb4248f9ad0ae9f27fc7"
     },
     "layout-grid": {
       "upstream_sha256": "b8903f61d09b1d75e55c71158277d26570962f69c2099446a251871e0a2d6678",

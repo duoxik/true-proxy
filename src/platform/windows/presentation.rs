@@ -1,5 +1,7 @@
-//! Isolated UI diagnostic. Only the current process's own visible client area
-//! can be marked/read; callers use it exclusively in the --smoke-ui fixture.
+//! Windows presentation and the isolated repaint diagnostic for --smoke-ui.
+mod backdrop;
+pub use backdrop::{apply_sidebar_backdrop, caption_action, sidebar_backdrop_allowed};
+
 use anyhow::{Result, bail, ensure};
 use windows_sys::Win32::{
     Foundation::{HWND, RECT},
