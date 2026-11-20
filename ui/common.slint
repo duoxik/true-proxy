@@ -61,8 +61,7 @@ export global Theme {
     out property <color> danger: dark ? #f18a96 : #b72b40;
     out property <color> switch-off: dark ? #27272a : #d4d4d8;
     out property <color> switch-fixed: dark ? #405723 : #607b36;
-    out property <color> switch-off-thumb: #ffffff;
-    out property <color> switch-on-thumb: #ffffff;
+    out property <color> switch-thumb: #ffffff;
     out property <color> selection: dark ? #384328 : #e2efc9;
     out property <color> neutral-badge: self.subtle;
     out property <color> overlay: dark ? #000000a8 : #19212e82;
@@ -515,9 +514,7 @@ export component RuleSwitch inherits Rectangle {
         Rectangle {
             x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px;
             width: root.track-height - 6px; height: self.width; border-radius: self.width / 2;
-            background: root.checked ? Theme.switch-on-thumb : Theme.switch-off-thumb;
-            border-width: root.checked && !root.fixed ? 1px : 0px;
-            border-color: #36531480;
+            background: Theme.switch-thumb;
             animate x { duration: Theme.reduce-motion ? 0ms : 150ms; }
         }
     }
