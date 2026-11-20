@@ -637,21 +637,22 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     save_notice("xray-restart-hidden.png")?;
     ui.set_page(2);
     save(adapter, &destination.join("xray-restart-outside.png"))?;
-    let bell =
+    let click = |element: i_slint_backend_testing::ElementHandle| {
+        let origin = element.absolute_position();
+        let size = element.size();
+        let position =
+            slint::LogicalPosition::new(origin.x + size.width / 2., origin.y + size.height / 2.);
+        let button = slint::platform::PointerEventButton::Left;
+        ui.window()
+            .dispatch_event(WindowEvent::PointerPressed { position, button });
+        ui.window()
+            .dispatch_event(WindowEvent::PointerReleased { position, button });
+    };
+    click(
         i_slint_backend_testing::ElementHandle::find_by_element_id(ui, "MainWindow::notifications")
             .next()
-            .context("Notifications button not found")?;
-    let bell_position = bell.absolute_position();
-    let bell_size = bell.size();
-    let position = slint::LogicalPosition::new(
-        bell_position.x + bell_size.width / 2.,
-        bell_position.y + bell_size.height / 2.,
+            .context("Notifications button not found")?,
     );
-    let button = slint::platform::PointerEventButton::Left;
-    ui.window()
-        .dispatch_event(WindowEvent::PointerPressed { position, button });
-    ui.window()
-        .dispatch_event(WindowEvent::PointerReleased { position, button });
     save_notice("notifications-light.png")?;
     ui.set_dark_theme(true);
     save_notice("notifications-dark.png")?;
@@ -695,7 +696,31 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     ui.set_update_text(
         "Install and restart automatically. Active proxy connections will close briefly.".into(),
     );
+    ui.set_update_release_notes(
+        "Sample release notes\n\n• See traffic from the last two minutes on the Dashboard.\n\n• Read update details from the notification center or General settings.\n\n• Adjust notification transparency and background blur in Appearance."
+            .into(),
+    );
     save_notice("update-while-routing-active.png")?;
+    click(
+        i_slint_backend_testing::ElementHandle::find_by_accessible_label(ui, "What's new")
+            .next()
+            .context("What's new button not found")?,
+    );
+    ensure!(
+        i_slint_backend_testing::ElementHandle::find_by_accessible_label(ui, "Release notes")
+            .next()
+            .is_some(),
+        "What's new did not open the release notes"
+    );
+    save(adapter, &destination.join("update-release-notes-light.png"))?;
+    ui.set_dark_theme(true);
+    save(adapter, &destination.join("update-release-notes-dark.png"))?;
+    click(
+        i_slint_backend_testing::ElementHandle::find_by_accessible_label(ui, "Close release notes")
+            .next()
+            .context("Close release notes button not found")?,
+    );
+    ui.set_dark_theme(false);
     ui.set_update_available(false);
     Ok(())
 }

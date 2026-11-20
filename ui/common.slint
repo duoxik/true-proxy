@@ -546,8 +546,11 @@ export component Field inherits VerticalLayout {
 export component DialogHeader inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
+    in property <bool> numeric-subtitle;
     in property <string> icon;
+    in property <string> close-label: "Close";
     callback close;
+    forward-focus: close-button;
     height: 70px;
     background: Theme.field;
     border-radius: Theme.radius-large;
@@ -571,12 +574,12 @@ export component DialogHeader inherits Rectangle {
             spacing: 3px;
             horizontal-stretch: 1;
             Text { text: root.title; color: Theme.text; font-size: 18px; font-weight: 650; min-width: 0px; overflow: elide; }
-            Text { text: root.subtitle; color: Theme.muted; font-size: 12px; min-width: 0px; overflow: elide; }
+            Text { text: root.subtitle; font-family: root.numeric-subtitle ? Theme.numeric-font : Theme.font-family; color: Theme.muted; font-size: 12px; min-width: 0px; overflow: elide; }
         }
         Rectangle {
             width: 34px;
-            ActionButton {
-                label: "Close"; icon: "close"; icon-only: true;
+            close-button := ActionButton {
+                label: root.close-label; icon: "close"; icon-only: true;
                 y: (parent.height - self.height) / 2;
                 min-width: 34px; max-width: 34px; height: 34px;
                 clicked => { root.close(); }

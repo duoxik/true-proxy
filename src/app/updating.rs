@@ -156,12 +156,25 @@ pub fn wire(
                             if !already_ready { staged = None; }
                             release = Some(candidate.clone());
                             post(&weak, move |ui| {
-                                ui.set_update_version(candidate.version.into()); ui.set_update_available(true); ui.set_update_ready(already_ready); ui.set_update_busy(false);
+                                ui.set_update_version(candidate.version.into());
+                                ui.set_update_release_notes(candidate.notes.into());
+                                ui.set_update_available(true); ui.set_update_ready(already_ready); ui.set_update_busy(false);
                                 ui.set_update_text(if already_ready { "Ready to install. Routing will stop and resume automatically if it is enabled." } else { "Install and restart automatically. Active proxy connections will close briefly." }.into());
                                 ui.set_update_status("An update is available.".into());
                             });
                         }
-                        Ok(None) => { release = None; staged = None; post(&weak, |ui| { ui.set_update_available(false); ui.set_update_ready(false); ui.set_update_busy(false); ui.set_update_status("You're on the latest published version.".into()); }); }
+                        Ok(None) => {
+                            release = None;
+                            staged = None;
+                            post(&weak, |ui| {
+                                ui.set_update_available(false);
+                                ui.set_update_version(Default::default());
+                                ui.set_update_release_notes(Default::default());
+                                ui.set_update_ready(false);
+                                ui.set_update_busy(false);
+                                ui.set_update_status("You're on the latest published version.".into());
+                            });
+                        }
                         Err(error) => post(&weak, move |ui| { ui.set_update_busy(false); ui.set_update_status(format!("Could not check for updates: {error:#}").into()); }),
                     }
                 }

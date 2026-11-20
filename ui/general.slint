@@ -1,5 +1,5 @@
-import { ActionButton, Badge, FormCard, NumericText, RuleSwitch, Theme, UiIcon } from "common.slint";
-import { Slider } from "std-widgets.slint";
+import { ActionButton, Badge, DialogHeader, FormCard, NumericText, RuleSwitch, SurfaceCard, Theme, UiIcon } from "common.slint";
+import { ScrollView, Slider } from "std-widgets.slint";
 
 // Each swatch previews its own theme even when the surrounding window changes theme.
 component ThemeChoice inherits Rectangle {
@@ -168,6 +168,62 @@ component Divider inherits Rectangle {
     background: Theme.divider;
 }
 
+export component ReleaseNotesDialog inherits Rectangle {
+    in property <string> version;
+    in property <string> notes;
+    callback close;
+    background: Theme.overlay;
+    accessible-role: groupbox;
+    accessible-label: "Release notes";
+    init => { header.focus(); }
+    TouchArea {}
+    FocusScope {
+        width: parent.width; height: parent.height;
+        forward-focus: header;
+        key-pressed(event) => {
+            if event.text == Key.Escape { root.close(); return accept; }
+            if event.text == Key.Tab || event.text == Key.Backtab { header.focus(); return accept; }
+            if event.text == Key.PageDown || event.text == Key.DownArrow {
+                scroll.content-y = max(scroll.visible-height - scroll.content-height, scroll.content-y - (event.text == Key.PageDown ? scroll.visible-height : 28px));
+                return accept;
+            }
+            if event.text == Key.PageUp || event.text == Key.UpArrow {
+                scroll.content-y = min(0px, scroll.content-y + (event.text == Key.PageUp ? scroll.visible-height : 28px));
+                return accept;
+            }
+            return reject;
+        }
+        SurfaceCard {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: min(600px, parent.width - 48px);
+            height: min(parent.height - 48px, min(520px, max(156px, 72px + notes-content.preferred-height)));
+            clip: true;
+            VerticalLayout {
+                padding: 1px;
+                header := DialogHeader {
+                    title: "What's new"; subtitle: "True Proxy " + root.version; numeric-subtitle: true;
+                    icon: "file"; close-label: "Close release notes"; close => { root.close(); }
+                }
+                scroll := ScrollView {
+                    min-height: 0px; vertical-stretch: 1;
+                    horizontal-scrollbar-policy: always-off;
+                    content-width: self.visible-width;
+                    content-height: max(self.visible-height, notes-content.preferred-height);
+                    notes-content := VerticalLayout {
+                        padding: Theme.panel-padding; alignment: start;
+                        Text {
+                            text: root.notes == "" ? "No release notes were provided for this version." : root.notes;
+                            accessible-label: self.text;
+                            color: root.notes == "" ? Theme.muted : Theme.text;
+                            font-size: 14px; wrap: word-wrap; min-width: 0px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 export component GeneralSettings inherits VerticalLayout {
     in property <bool> dark-theme;
     in property <bool> busy;
@@ -176,6 +232,8 @@ export component GeneralSettings inherits VerticalLayout {
     in property <bool> autostart-busy;
     in property <bool> updates-automatic;
     in property <bool> update-busy;
+    in property <bool> update-available;
+    in property <string> update-version;
     in property <string> update-status;
     in property <string> app-version;
     in-out property <int> notice-transparency;
@@ -184,6 +242,8 @@ export component GeneralSettings inherits VerticalLayout {
     callback set-autostart(bool);
     callback set-updates-automatic(bool);
     callback check-updates;
+    callback show-release-notes;
+    callback install-update;
     callback save-notice-appearance;
     callback open-import;
     callback export-config;
@@ -317,6 +377,16 @@ export component GeneralSettings inherits VerticalLayout {
                         UiIcon { name: "clock"; width: 14px; height: 14px; ink: Theme.muted; }
                         Text { text: root.update-status; font-size: 12.5px; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
                     }
+                }
+            }
+            if root.update-available: VerticalLayout {
+                Divider {}
+                HorizontalLayout {
+                    padding-left: Theme.panel-padding; padding-right: Theme.panel-padding;
+                    padding-top: 12px; padding-bottom: 12px; spacing: 8px; cross-axis-alignment: center;
+                    NumericText { text: "True Proxy " + root.update-version; color: Theme.text; font-size: 13px; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
+                    ActionButton { label: "What's new"; height: 32px; clicked => { root.show-release-notes(); } }
+                    ActionButton { label: "Install and Restart"; primary: true; height: 32px; enabled: !root.busy && !root.update-busy; clicked => { root.install-update(); } }
                 }
             }
         }

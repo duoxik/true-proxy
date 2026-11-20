@@ -299,7 +299,69 @@ fn notice_shows_restart_outcomes_and_scopes_other_notices() {
     ui.set_page(4);
     tick(250);
     assert!(find(&ui, "Restart").is_none());
-    assert!(find(&ui, "Install and Restart").is_none());
+}
+
+#[test]
+fn reading_the_offered_release_from_toast_center_and_settings_keeps_install_explicit() {
+    let ui = window();
+    ui.set_page(0);
+    ui.set_update_version("1.2.3".into());
+    let notes = "Faster startup\n\n• Restore the selected profile after restarting.";
+    ui.set_update_release_notes(notes.into());
+    ui.set_update_available(true);
+    let installs = std::rc::Rc::new(std::cell::Cell::new(0));
+    let recorded = installs.clone();
+    ui.on_update_now(move || recorded.set(recorded.get() + 1));
+    tick(250);
+
+    let open = |label: &str, version: &str, body: &str| {
+        click(&ui, label);
+        tick(250);
+        assert!(find(&ui, "Release notes").is_some());
+        assert!(find(&ui, &format!("True Proxy {version}")).is_some());
+        assert!(find(&ui, body).is_some());
+        assert!(ui.get_update_available());
+        assert_eq!(installs.get(), 0);
+    };
+
+    open("What's new", "1.2.3", notes);
+    click(&ui, "Close release notes");
+    tick(250);
+    assert!(find(&ui, "Release notes").is_none());
+    assert!(find(&ui, "Install and Restart").is_some());
+
+    click(&ui, HIDE);
+    tick(250);
+    click(&ui, "Notifications");
+    tick(250);
+    open("What's new · True Proxy 1.2.3 is available", "1.2.3", notes);
+    key(&ui, Key::Escape);
+    tick(250);
+    assert!(find(&ui, "Release notes").is_none());
+    assert!(find(&ui, "Install and Restart · True Proxy 1.2.3 is available").is_some());
+    click(&ui, "Close notifications");
+
+    ui.set_page(4);
+    ui.set_settings_section(0);
+    ui.set_update_version("1.2.4".into());
+    ui.set_update_release_notes("".into());
+    tick(250);
+    let scroll = ElementHandle::find_by_element_id(&ui, "MainWindow::settings-scroll")
+        .next()
+        .unwrap();
+    scroll.scroll(0., -scroll.size().height);
+    tick(250);
+    open(
+        "What's new",
+        "1.2.4",
+        "No release notes were provided for this version.",
+    );
+    assert!(find(&ui, notes).is_none());
+    click(&ui, "Close release notes");
+    tick(250);
+    assert_eq!(installs.get(), 0);
+    click(&ui, "Install and Restart");
+    assert_eq!(installs.get(), 1);
 }
 
 #[test]

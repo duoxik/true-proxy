@@ -15,11 +15,14 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const REPOSITORY: &str = "duoxik/true-proxy";
 pub const API: &str = "https://api.github.com/repos/duoxik/true-proxy/releases/latest";
 pub const MAX_EXE_SIZE: u64 = 64 * 1024 * 1024;
+const MAX_NOTES_BYTES: usize = 32 * 1024;
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Release {
     pub version: String,
+    #[serde(default)]
+    pub notes: String,
     pub asset_id: u64,
     pub size: u64,
     pub sha256: String,
@@ -28,6 +31,7 @@ pub struct Release {
 #[derive(Deserialize)]
 struct GithubRelease {
     tag_name: String,
+    body: Option<String>,
     draft: bool,
     prerelease: bool,
     assets: Vec<GithubAsset>,
@@ -78,11 +82,61 @@ pub fn parse_release(bytes: &[u8]) -> Result<Option<Release>> {
         .context("GitHub did not provide the update SHA-256 hash")?;
     validate_digest(digest)?;
     Ok(Some(Release {
+        notes: release_notes(raw.body.as_deref().unwrap_or_default(), &raw.tag_name),
         version: version.to_string(),
         asset_id: asset.id,
         size: asset.size,
         sha256: digest.to_ascii_lowercase(),
     }))
+}
+
+/// Display the headings, bullets and inline styles used in our GitHub release notes
+/// as local text. Nothing in the release body is opened or fetched.
+fn release_notes(body: &str, tag: &str) -> String {
+    let title = format!("True Proxy {}", tag.strip_prefix('v').unwrap_or(tag));
+    let mut notes = String::new();
+    let mut paragraph_break = false;
+    for line in body.lines().map(str::trim) {
+        if line.is_empty() {
+            paragraph_break = true;
+            continue;
+        }
+        if (line.starts_with("[![") || line.starts_with("![")) && line.ends_with(')') {
+            continue;
+        }
+        let line = line
+            .trim_start_matches('#')
+            .strip_prefix(' ')
+            .unwrap_or(line);
+        if notes.is_empty() && line == title {
+            continue;
+        }
+        if !notes.is_empty() {
+            notes.push_str(if paragraph_break { "\n\n" } else { "\n" });
+        }
+        paragraph_break = false;
+        let text = if let Some(bullet) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* "))
+        {
+            notes.push_str("• ");
+            bullet
+        } else {
+            line
+        };
+        for (index, part) in text.split('`').enumerate() {
+            if index.is_multiple_of(2) && part.contains("**") {
+                notes.push_str(&part.replace("**", ""));
+            } else {
+                notes.push_str(part);
+            }
+        }
+        if notes.len() > MAX_NOTES_BYTES {
+            notes.truncate(notes.floor_char_boundary(MAX_NOTES_BYTES - '…'.len_utf8()));
+            notes.push('…');
+            notes.shrink_to_fit();
+            break;
+        }
+    }
+    notes
 }
 
 pub fn is_newer(release: &Release, installed: &str) -> Result<bool> {
@@ -364,6 +418,45 @@ mod tests {
         json["assets"][0]["size"] = (MAX_EXE_SIZE + 1).into();
         assert!(parse_release(&serde_json::to_vec(&json).unwrap()).is_err());
     }
+
+    #[test]
+    fn release_notes_stay_with_the_selected_asset_and_read_as_local_text() {
+        let mut json = json();
+        json["body"] = concat!(
+            "# True Proxy 0.10.0\r\n\r\n## Changes\r\n",
+            "- **Исправлено** `**/*.exe`\r\n\r\nUse #42.\r\n\r\n",
+            "[![Made with Slint](https://example.com/badge.png)](https://slint.dev)"
+        )
+        .into();
+        let selected = parse_release(&serde_json::to_vec(&json).unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.version, "0.10.0");
+        assert_eq!(selected.asset_id, 42);
+        assert_eq!(selected.notes, "Changes\n• Исправлено **/*.exe\n\nUse #42.");
+        for body in [None, Some(serde_json::Value::Null), Some(" \r\n ".into())] {
+            if let Some(body) = body {
+                json["body"] = body;
+            } else {
+                json.as_object_mut().unwrap().remove("body");
+            }
+            assert!(
+                parse_release(&serde_json::to_vec(&json).unwrap())
+                    .unwrap()
+                    .unwrap()
+                    .notes
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn long_notes_end_at_a_complete_utf8_character() {
+        let notes = release_notes(&"界".repeat(MAX_NOTES_BYTES), "v1.0.0");
+        assert!(notes.len() <= MAX_NOTES_BYTES);
+        assert!(notes.ends_with("界…"));
+    }
+
     #[test]
     fn update_links_cannot_downgrade_https_or_leave_github() {
         assert_eq!(

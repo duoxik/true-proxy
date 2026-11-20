@@ -1316,6 +1316,9 @@ pub fn run() -> Result<()> {
         ) {
             ui.set_update_available(true);
             ui.set_update_version("0.12.14".into());
+            ui.set_update_release_notes(
+                "Sample release notes\n\n• Review changes before installing an update.\n• Reopen a hidden update from the notification bell.".into(),
+            );
             ui.set_update_text("Install the new version and reopen True Proxy.".into());
             if preview_name != Some("appearance") {
                 ui.set_active(true);
@@ -1574,9 +1577,11 @@ fn smoke_ui(
                 11 => {
                     #[cfg(windows)] appearance::verify_surface(&ui, surface_probe.as_ref().context("Missing repaint probes")?)?;
                     ui.set_notice("UI preview: update notification fixture.".into());
-                    ui.set_update_available(true); ui.set_update_version(true_proxy::updates::VERSION.into()); ui.set_update_text("A new version is ready to download.".into());
+                    ui.set_update_version("0.12.14".into());
+                    ui.set_update_release_notes("Sample release notes for the update preview.".into());
+                    ui.set_update_available(true); ui.set_update_text("A new version is ready to download.".into());
                     snapshot(&ui, &dir.join("10-update-available.png"))?;
-                    ui.set_update_ready(true); ui.set_update_text("Update downloaded. Stop routing to install it.".into());
+                    ui.set_update_ready(true); ui.set_update_text("Ready to install. Routing will resume with its saved state.".into());
                     ui.set_page(4); snapshot(&ui, &dir.join("11-update-ready.png"))?;
                     std::fs::write(dir.join("result.txt"), "PASS: editors, persistence, connection history, startup failure, tray restore and native minimize repaint; interception was disabled.")?;
                     slint::quit_event_loop()?;

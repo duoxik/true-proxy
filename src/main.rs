@@ -24,6 +24,7 @@ fn main() {
                 directory,
                 release: true_proxy::updates::Release {
                     version: "999.0.0".into(),
+                    notes: String::new(),
                     asset_id: 1,
                     size: std::fs::metadata(&payload)?.len(),
                     sha256: true_proxy::platform::windows::update::sha256(&payload)?,

@@ -1,6 +1,6 @@
 import { DashboardView, TrafficReading } from "dashboard.slint";
 export { TrafficReading }
-import { GeneralSettings } from "general.slint";
+import { GeneralSettings, ReleaseNotesDialog } from "general.slint";
 import { Badge, NumericText, PageHeader, SurfaceCard, PanelToolbar, TableHeading, EmptyState, DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
@@ -698,6 +698,7 @@ export component MainWindow inherits Window {
     in property <bool> update-busy;
     in-out property <bool> updates-automatic: true;
     in property <string> update-version;
+    in property <string> update-release-notes;
     in property <string> update-text;
     in property <string> update-status;
     in-out property <string> notice;
@@ -816,6 +817,13 @@ export component MainWindow inherits Window {
     callback check-updates;
     callback update-now;
     callback set-updates-automatic(bool);
+
+    function show-release-notes() {
+        if root.update-available { root.dialog = 5; }
+    }
+    changed update-available => {
+        if !root.update-available && root.dialog == 5 { root.dialog = 0; }
+    }
 
     // Keep the whole client area opaque when repainting after a window restore.
     surface := Rectangle {
@@ -1211,6 +1219,7 @@ export component MainWindow inherits Window {
                                 dark-theme: root.dark-theme; busy: root.busy; local-test: root.local-test;
                                 autostart-enabled: root.autostart-enabled; autostart-busy: root.autostart-busy;
                                 updates-automatic: root.updates-automatic; update-busy: root.update-busy;
+                                update-available: root.update-available; update-version: root.update-version;
                                 update-status: root.update-status; app-version: root.app-version;
                                 notice-transparency <=> root.notice-transparency;
                                 notice-blur <=> root.notice-blur;
@@ -1219,6 +1228,8 @@ export component MainWindow inherits Window {
                                 open-import => { root.open-import(); }
                                 export-config => { root.export-config(); }
                                 check-updates => { root.check-updates(); }
+                                show-release-notes => { root.show-release-notes(); }
+                                install-update => { root.update-now(); }
                                 set-autostart(enabled) => { root.autostart-enabled = enabled; root.set-autostart(enabled); }
                                 set-updates-automatic(enabled) => { root.updates-automatic = enabled; root.set-updates-automatic(enabled); }
                             }
@@ -1254,6 +1265,8 @@ export component MainWindow inherits Window {
             icon: "download";
             action-label: root.update-busy ? "Please wait…" : "Install and Restart";
             action-enabled: !root.update-busy && !root.busy;
+            secondary-label: "What's new";
+            secondary-action => { root.show-release-notes(); }
             action => { root.update-now(); }
             hidden => { notifications.focus(); }
         }
@@ -1305,7 +1318,9 @@ export component MainWindow inherits Window {
             entry-action(module, index, secondary) => {
                 if module { xray-notices.entry-action(index, secondary); }
                 else if index == 0 { routing-notice.action(); }
-                else if index == 1 { update-notice.action(); }
+                else if index == 1 {
+                    if secondary { update-notice.secondary-action(); } else { update-notice.action(); }
+                }
                 else if index == 2 { root.notice = ""; }
             }
         }
@@ -1570,6 +1585,11 @@ export component MainWindow inherits Window {
             ink: root.toast-error ? Theme.danger : Theme.accent;
             can-hide: false;
         }
+    }
+    if root.dialog == 5: ReleaseNotesDialog {
+        version: root.update-version;
+        notes: root.update-release-notes;
+        close => { root.dialog = 0; }
     }
 }
 
