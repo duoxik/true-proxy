@@ -18,6 +18,7 @@ export global Theme {
     out property <color> titlebar: dark ? self.background : #ffffff;
     out property <color> sidebar: dark ? #0c0c0e : #ffffff;
     out property <color> surface: dark ? #111114 : #ffffff;
+    out property <color> card-footer: dark ? #151519 : #f8f9fb;
     out property <color> surface-hover: dark ? #141418 : #fafafb;
     out property <color> elevated: dark ? #18181c : #ffffff;
     out property <color> icon-surface: dark ? #1a1a1e : #f1f2f5;
@@ -58,8 +59,9 @@ export global Theme {
     out property <color> warning-detail: dark ? #e5b96a : #92400e;
     out property <color> danger: dark ? #f18a96 : #b72b40;
     out property <color> switch-off: dark ? #27272a : #d4d4d8;
+    out property <color> switch-fixed: dark ? #405723 : #607b36;
     out property <color> switch-off-thumb: #ffffff;
-    out property <color> switch-on-thumb: #09090b;
+    out property <color> switch-on-thumb: #ffffff;
     out property <color> selection: dark ? #384328 : #e2efc9;
     out property <color> neutral-badge: self.subtle;
     out property <color> overlay: dark ? #000000a8 : #19212e82;
@@ -351,6 +353,8 @@ export component FormCard inherits SurfaceCard {
     in property <bool> action-enabled: true;
     in property <bool> outlined-action: false;
     in property <bool> inset-body: true;
+    in property <bool> stretch-body: false;
+    in property <length> header-icon-size: 40px;
     in property <string> action-accessibility: root.action-label;
     callback action;
     out property <length> content-height: content.preferred-height;
@@ -358,7 +362,7 @@ export component FormCard inherits SurfaceCard {
     vertical-stretch: 0;
     content := VerticalLayout {
         padding: root.inset-body ? Theme.card-padding : 0px;
-        spacing: root.inset-body ? Theme.card-gap : 0px; alignment: start;
+        spacing: root.inset-body ? Theme.card-gap : 0px; alignment: root.stretch-body ? stretch : start;
         if root.title != "": HorizontalLayout {
             padding-left: root.inset-body ? 0px : Theme.panel-padding;
             padding-right: root.inset-body ? 0px : Theme.panel-padding;
@@ -367,8 +371,9 @@ export component FormCard inherits SurfaceCard {
             height: max(40px, heading.preferred-height) + self.padding-top + self.padding-bottom;
             spacing: 14px;
             if root.icon != "": Rectangle {
-                width: 40px;
-                IconTile { width: 40px; height: 40px; y: (parent.height - self.height) / 2;
+                width: root.header-icon-size;
+                IconTile { width: root.header-icon-size; height: root.header-icon-size; y: (parent.height - self.height) / 2;
+                    border-radius: root.header-icon-size / 4;
                     name: root.icon;
                 }
             }
@@ -500,13 +505,15 @@ export component RuleSwitch inherits Rectangle {
     Rectangle {
         y: (parent.height - self.height) / 2; x: (parent.width - self.width) / 2;
         width: root.track-width; height: root.track-height; border-radius: self.height / 2;
-        background: root.checked ? (root.fixed ? Theme.accent-soft : Theme.accent) : Theme.switch-off;
-        border-width: 1px;
+        background: root.checked ? (root.fixed ? Theme.switch-fixed : Theme.accent) : Theme.switch-off;
+        border-width: root.fixed && root.checked ? 0px : 1px;
         border-color: root.checked ? Theme.accent-border : Theme.border;
         Rectangle {
             x: root.checked ? parent.width - self.width - 3px : 3px; y: 3px;
             width: root.track-height - 6px; height: self.width; border-radius: self.width / 2;
-            background: root.fixed ? Theme.secondary : root.checked ? Theme.switch-on-thumb : Theme.switch-off-thumb;
+            background: root.checked ? Theme.switch-on-thumb : Theme.switch-off-thumb;
+            border-width: root.checked && !root.fixed ? 1px : 0px;
+            border-color: #36531480;
             animate x { duration: Theme.reduce-motion ? 0ms : 150ms; }
         }
     }

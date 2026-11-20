@@ -376,9 +376,18 @@ mod ui_tests {
             move || checks.set(checks.get() + 1)
         });
         ui.show().unwrap();
+        let check_all = Rc::new(Cell::new(0));
+        xray.on_check_all_modules({
+            let count = check_all.clone();
+            move || count.set(count.get() + 1)
+        });
+        click(&ui, "Check all modules for updates");
+        assert_eq!(check_all.get(), 1);
         click(&ui, "Check for hpwnr updates");
         assert_eq!(checks.get(), 1);
         xray.set_busy(true);
+        click(&ui, "Check all modules for updates");
+        assert_eq!(check_all.get(), 1);
         click(&ui, "Check for hpwnr updates");
         assert_eq!(checks.get(), 1);
         xray.set_busy(false);
@@ -388,7 +397,7 @@ mod ui_tests {
             move || updates.set(updates.get() + 1)
         });
         xray.set_hpwnr_latest_version("1.0.4".into());
-        click(&ui, "Install 1.0.4");
+        click(&ui, "Update to 1.0.4 · hpwnr");
         assert_eq!(updates.get(), 1);
         assert!(
             ElementHandle::find_by_accessible_label(&ui, "Open X-RAY")
@@ -414,6 +423,50 @@ mod ui_tests {
         xray.set_busy(true);
         click(&ui, "Refresh");
         assert_eq!(refreshes.get(), 1);
+    }
+
+    #[test]
+    fn module_menu_guards_running_xray_and_confirms_removal_at_both_widths() {
+        i_slint_backend_testing::init_no_event_loop();
+        for (width, height) in [(960., 640.), (1240., 780.)] {
+            let ui = MainWindow::new().unwrap();
+            ui.window().set_size(slint::LogicalSize::new(width, height));
+            let xray = ui.global::<XrayModule>();
+            xray.set_installed(true);
+            xray.set_hpwnr_installed(true);
+            xray.set_running(true);
+            ui.set_page(4);
+            ui.set_settings_section(2);
+            let opened = Rc::new(Cell::new(None));
+            xray.on_open_module_folder({
+                let opened = opened.clone();
+                move |hpwnr| opened.set(Some(hpwnr))
+            });
+            let removed = Rc::new(Cell::new(None));
+            xray.on_remove_module({
+                let removed = removed.clone();
+                move |hpwnr| removed.set(Some(hpwnr))
+            });
+            ui.show().unwrap();
+            click(&ui, "More options for Xray-core");
+            for label in ["Reinstall", "Remove"] {
+                let item = ElementHandle::find_by_accessible_label(&ui, label)
+                    .find(|item| item.accessible_role() == Some(AccessibleRole::Button))
+                    .unwrap();
+                assert_eq!(item.accessible_enabled(), Some(false));
+            }
+            click(&ui, "Open folder");
+            assert_eq!(opened.get(), Some(false));
+            click(&ui, "More options for hpwnr");
+            click(&ui, "Remove");
+            assert_eq!(removed.get(), None);
+            click(&ui, "Cancel");
+            assert_eq!(removed.get(), None);
+            click(&ui, "More options for hpwnr");
+            click(&ui, "Remove");
+            click(&ui, "Remove module");
+            assert_eq!(removed.get(), Some(true));
+        }
     }
 
     #[test]

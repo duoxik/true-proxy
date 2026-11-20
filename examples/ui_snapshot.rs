@@ -242,6 +242,8 @@ fn main() -> Result<()> {
     ui.set_active(true);
     ui.set_status("Routing is active".into());
     ui.set_app_version(env!("CARGO_PKG_VERSION").into());
+    ui.set_updates_automatic(true);
+    ui.set_update_status("You're on the latest published version.".into());
     ui.set_uptime("00:14:37".into());
     ui.set_uploaded("2.1 MB".into());
     ui.set_downloaded("16.4 MB".into());
@@ -326,6 +328,11 @@ fn main() -> Result<()> {
     ui.set_enabled_rule_count(1);
     ui.window().set_size(PhysicalSize::new(1240, 780));
     ui.show()?; // Only MemoryWindow::set_visible; no OS window exists.
+    if std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--modules-only")) {
+        module_settings_previews(&ui, &main_adapter, &destination)?;
+        ui.hide()?;
+        return Ok(());
+    }
     check_first_notice_frame(&ui, &main_adapter, &destination)?;
     for (page, name) in [(0, "home"), (1, "routes"), (2, "proxies"), (4, "settings")] {
         ui.set_page(page);
@@ -519,6 +526,22 @@ fn main() -> Result<()> {
                     &main_adapter,
                     &destination.join(format!("review-{name}-{theme}-{size}.png")),
                 )?;
+                if page == 4 {
+                    // The compact layout puts Updates and Startup below Appearance.
+                    ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                        position: slint::LogicalPosition::new(
+                            width as f32 - 80.,
+                            height as f32 - 80.,
+                        ),
+                        delta_x: 0.,
+                        delta_y: -(height as f32),
+                    });
+                    main_adapter.advance(300);
+                    save(
+                        &main_adapter,
+                        &destination.join(format!("review-settings-bottom-{theme}-{size}.png")),
+                    )?;
+                }
             }
             ui.set_page(4);
             ui.set_settings_section(2);
@@ -538,9 +561,63 @@ fn main() -> Result<()> {
             }
         }
     }
+    module_settings_previews(&ui, &main_adapter, &destination)?;
     ui.hide()?;
     println!("Headless fixture PNGs: {}", destination.display());
     Ok(())
+}
+
+fn module_settings_previews(
+    ui: &MainWindow,
+    adapter: &MemoryWindow,
+    destination: &Path,
+) -> Result<()> {
+    ui.window().set_size(PhysicalSize::new(1240, 780));
+    ui.set_page(4);
+    ui.set_settings_section(2);
+    ui.set_reduce_motion(true);
+    let xray = ui.global::<XrayModule>();
+    xray.set_running(false);
+    xray.set_busy(false);
+    xray.set_installed(false);
+    xray.set_version("".into());
+    xray.set_hpwnr_installed(false);
+    xray.set_hpwnr_version("".into());
+
+    let save_state = |state: &str| -> Result<()> {
+        for (dark, theme) in [(true, "dark"), (false, "light")] {
+            ui.set_dark_theme(dark);
+            // Evaluate the new bindings before advancing the frame clock.
+            adapter.window.take_snapshot()?;
+            adapter.advance(200);
+            save(
+                adapter,
+                &destination.join(format!("modules-{state}-{theme}.png")),
+            )?;
+        }
+        Ok(())
+    };
+    save_state("not-installed")?;
+
+    xray.set_installed(true);
+    xray.set_version("26.10.21".into());
+    xray.set_module_size("36.8 MB".into());
+    xray.set_module_check_status("Checked just now".into());
+    xray.set_hpwnr_installed(true);
+    xray.set_hpwnr_version("1.0.3".into());
+    xray.set_hpwnr_size("4.2 MB".into());
+    xray.set_hpwnr_check_status("Checked just now".into());
+    save_state("installed")?;
+
+    xray.set_latest_version("26.11.1".into());
+    xray.set_module_check_status("v26.11.1 available".into());
+    xray.set_module_check_highlight(true);
+    save_state("update-available")?;
+
+    xray.set_busy(true);
+    xray.set_module_operation("Updating…".into());
+    xray.set_module_progress(43);
+    save_state("downloading")
 }
 
 #[cfg(windows)]

@@ -1,5 +1,6 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, NumericText, CountBadge, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, NumericText, CountBadge, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon, IconTile } from "common.slint";
+import { ModuleCard } from "module-card.slint";
 import { LogStreamView } from "logs.slint";
 import { FloatingNotice, InlineNotice, NoticeBackdrop, NoticeShelf, NoticeEntry } from "notices.slint";
 
@@ -21,6 +22,16 @@ export global XrayModule {
     in property <string> hpwnr-version;
     in property <string> hpwnr-latest-version;
     in property <string> hpwnr-update-status;
+    in property <string> module-size;
+    in property <string> hpwnr-size;
+    in property <string> module-check-status;
+    in property <string> hpwnr-check-status;
+    in property <bool> module-check-highlight;
+    in property <bool> hpwnr-check-highlight;
+    in property <string> module-operation;
+    in property <string> hpwnr-operation;
+    in property <int> module-progress: -1;
+    in property <int> hpwnr-progress: -1;
     in-out property <bool> hpwnr-required;
     in property <string> hpwnr-error;
     in property <bool> busy;
@@ -87,6 +98,11 @@ export global XrayModule {
     callback toggle;
     callback restart;
     callback import-profile(string);
+    callback check-all-modules;
+    callback refresh-module-check-times;
+    callback open-module-folder(bool);
+    callback reinstall-module(bool);
+    callback remove-module(bool);
     callback install-hpwnr;
     callback check-hpwnr-updates;
     callback update-hpwnr;
@@ -130,65 +146,39 @@ component XrayNote inherits Text {
     height: self.preferred-height;
 }
 
-export component XrayModuleCard inherits FormCard {
+export component XrayModuleCard inherits ModuleCard {
     title: "Xray-core"; icon: "boxes";
-    version: XrayModule.version;
-    action-label: XrayModule.installed ? "Check for Updates" : "";
-    action-icon: "refresh";
-    action-enabled: !XrayModule.busy;
-    action => { XrayModule.check-updates(); }
-    caption: "Adds managed local SOCKS5 listeners and VLESS profiles. The Xray-core executable is downloaded separately.";
-    if !XrayModule.installed: HorizontalLayout {
-        spacing: 8px;
-        alignment: start;
-        if !XrayModule.installed: ActionButton {
-            label: XrayModule.busy ? "Installing…" : "Install Xray-core";
-            icon: "download";
-            primary: true;
-            enabled: !XrayModule.busy;
-            clicked => { XrayModule.install(); }
-        }
-
+    description: "Adds managed local SOCKS5 listeners and VLESS profiles. The Xray-core executable is downloaded separately.";
+    installed: XrayModule.installed; version: XrayModule.version; latest: XrayModule.latest-version;
+    file-size: XrayModule.module-size; check-status: XrayModule.module-check-status;
+    highlight-status: XrayModule.module-check-highlight; operation: XrayModule.module-operation;
+    progress: XrayModule.module-progress; busy: XrayModule.busy; running: XrayModule.running;
+    error: XrayModule.module-error;
+    primary-action => {
+        if !root.installed { XrayModule.install(); }
+        else if root.offers-update { XrayModule.install-update(); }
+        else { XrayModule.check-updates(); }
     }
-    if XrayModule.installed && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: HorizontalLayout {
-        spacing: 8px;
-        alignment: start;
-        if XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: ActionButton {
-            label: "Install " + XrayModule.latest-version;
-            icon: "download";
-            primary: true;
-            enabled: !XrayModule.running && !XrayModule.busy;
-            clicked => { XrayModule.install-update(); }
-        }
-    }
-    if XrayModule.running && XrayModule.latest-version != "" && XrayModule.latest-version != XrayModule.version: XrayNote {
-        text: "Stop Xray to install the update.";
-    }
-    if XrayModule.module-error != "": InlineNotice { message: XrayModule.module-error; error: true; }
+    open-folder => { XrayModule.open-module-folder(false); }
+    reinstall => { XrayModule.reinstall-module(false); }
+    remove => { XrayModule.remove-module(false); }
 }
 
-export component HpwnrModuleCard inherits FormCard {
+export component HpwnrModuleCard inherits ModuleCard {
     title: "hpwnr"; icon: "lock";
-    version: XrayModule.hpwnr-version;
-    action-label: XrayModule.hpwnr-installed ? "Check for Updates" : "";
-    action-icon: "refresh";
-    action-accessibility: "Check for hpwnr updates";
-    action-enabled: !XrayModule.busy;
-    action => { XrayModule.check-hpwnr-updates(); }
-    caption: "Imports encrypted v2RayTun links. Decryption runs locally; the module is downloaded separately.";
-    if !XrayModule.hpwnr-installed || XrayModule.hpwnr-latest-version != "": HorizontalLayout { spacing: 12px; alignment: start;
-        if !XrayModule.hpwnr-installed: ActionButton {
-            label: "Install hpwnr"; icon: "download"; primary: true;
-            enabled: !XrayModule.busy;
-            clicked => { XrayModule.install-hpwnr(); }
-        }
-        if XrayModule.hpwnr-latest-version != "": ActionButton {
-            label: "Install " + XrayModule.hpwnr-latest-version; icon: "download"; primary: true;
-            enabled: !XrayModule.busy; clicked => { XrayModule.update-hpwnr(); }
-        }
+    description: "Imports encrypted v2RayTun links. Decryption runs locally. The module is downloaded separately.";
+    installed: XrayModule.hpwnr-installed; version: XrayModule.hpwnr-version; latest: XrayModule.hpwnr-latest-version;
+    file-size: XrayModule.hpwnr-size; check-status: XrayModule.hpwnr-check-status;
+    highlight-status: XrayModule.hpwnr-check-highlight; operation: XrayModule.hpwnr-operation;
+    progress: XrayModule.hpwnr-progress; busy: XrayModule.busy; error: XrayModule.hpwnr-error;
+    primary-action => {
+        if !root.installed { XrayModule.install-hpwnr(); }
+        else if root.offers-update { XrayModule.update-hpwnr(); }
+        else { XrayModule.check-hpwnr-updates(); }
     }
-    if XrayModule.hpwnr-update-status != "": XrayNote { text: XrayModule.hpwnr-update-status; }
-    if XrayModule.hpwnr-error != "": InlineNotice { message: XrayModule.hpwnr-error; error: true; }
+    open-folder => { XrayModule.open-module-folder(true); }
+    reinstall => { XrayModule.reinstall-module(true); }
+    remove => { XrayModule.remove-module(true); }
 }
 
 component PortField inherits Rectangle {
@@ -299,7 +289,7 @@ component ProfilePortSelector inherits Rectangle {
     private property <length> preferred-menu-height: min(6, XrayModule.ports.length) * root.row-height + 10px;
     private property <bool> opens-above: root.preferred-menu-height > root.space-below && root.space-above > root.space-below;
 
-    width: 240px; height: 36px;
+    width: 220px; height: 36px;
     border-radius: Theme.radius-small; border-width: 1px;
     border-color: root.enabled && (menu.is-open || touch.has-hover) ? Theme.muted
         : root.enabled && Theme.dark ? Theme.switch-off : Theme.border;
@@ -480,7 +470,7 @@ component XrayProfiles inherits VerticalLayout {
     FormCard {
         HorizontalLayout {
             spacing: 8px;
-            Rectangle { width: 32px; UiIcon { name: "link"; y: (parent.height - self.height) / 2; } }
+            Rectangle { width: 40px; IconTile { name: "link"; width: 40px; height: 40px; y: (parent.height - self.height) / 2; } }
             Text { text: "Import profile"; color: Theme.text; font-size: 15px; font-weight: 600; vertical-alignment: center; }
             Field { value <=> XrayModule.profile-input; placeholder: "VLESS, HTTPS, or v2RayTun link"; secret: true; field-height: 40px; }
             ActionButton {

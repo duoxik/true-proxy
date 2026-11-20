@@ -1,0 +1,205 @@
+import { ActionButton, Badge, IconTile, NumericText, SurfaceCard, Theme, UiIcon } from "common.slint";
+import { InlineNotice } from "notices.slint";
+
+component MenuItem inherits FocusScope {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> destructive;
+    callback clicked;
+    height: 32px;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    key-pressed(event) => {
+        if root.enabled && (event.text == Key.Space || event.text == Key.Return) {
+            root.clicked(); return accept;
+        }
+        return reject;
+    }
+    Rectangle {
+        border-radius: 7px;
+        background: root.enabled && (touch.has-hover || root.has-focus)
+            ? (root.destructive ? Theme.danger-soft : Theme.hover) : transparent;
+        HorizontalLayout {
+            padding-left: 10px; padding-right: 10px; spacing: 9px; cross-axis-alignment: center;
+            UiIcon { name: root.icon; width: 15px; height: 15px; ink: !root.enabled ? Theme.disabled-text : root.destructive ? Theme.danger : Theme.secondary; }
+            Text {
+                text: root.label; color: !root.enabled ? Theme.disabled-text : root.destructive ? Theme.danger : Theme.text;
+                font-size: 12.5px; vertical-alignment: center; horizontal-stretch: 1; accessible-role: none;
+            }
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled; mouse-cursor: pointer;
+        clicked => { root.focus(); root.clicked(); }
+    }
+}
+
+export component ModuleCard inherits SurfaceCard {
+    in property <string> title;
+    in property <string> icon;
+    in property <string> description;
+    in property <bool> installed;
+    in property <string> version;
+    in property <string> latest;
+    in property <string> file-size;
+    in property <string> check-status;
+    in property <bool> highlight-status;
+    in property <string> operation;
+    in property <int> progress: -1;
+    in property <bool> busy;
+    in property <bool> running;
+    in property <string> error;
+    in property <length> window-height;
+    callback primary-action;
+    callback open-folder;
+    callback reinstall;
+    callback remove;
+
+    out property <bool> offers-update: root.installed && root.latest != "" && root.latest != root.version;
+    private property <bool> stacked: root.width < 620px;
+    private property <bool> actions-locked: root.busy || root.operation != "";
+    height: contents.preferred-height + 2px;
+    vertical-stretch: 0;
+    contents := VerticalLayout {
+        x: 1px; y: 1px; width: root.width - 2px; height: self.preferred-height;
+        body := Rectangle {
+            height: 2 * Theme.card-padding + max(40px, identity.preferred-height)
+                + (root.stacked ? buttons.height + 12px : 0px);
+            tile := IconTile {
+                name: root.icon; x: Theme.card-padding; y: Theme.card-padding;
+                width: 40px; height: 40px;
+                opacity: root.installed ? 1 : 0.55;
+            }
+            identity := VerticalLayout {
+                x: tile.x + tile.width + 14px; y: Theme.card-padding;
+                width: max(0px, (root.stacked ? body.width - Theme.card-padding : buttons.x - 16px) - self.x);
+                height: self.preferred-height; spacing: 5px;
+                HorizontalLayout {
+                    height: 23px; spacing: 8px; alignment: start; cross-axis-alignment: center;
+                    Text {
+                        text: root.title; font-size: Theme.card-title-size; font-weight: 600;
+                        vertical-alignment: center; color: root.installed ? Theme.text : Theme.secondary;
+                    }
+                    if root.installed && root.version != "": Badge {
+                        label: root.version; numeric: true; font-size: 11.5px;
+                        height: 21px; side-padding: 7px; border-radius: 6px; fill: Theme.icon-surface;
+                    }
+                    Badge {
+                        label: root.installed ? "Installed" : "Not installed";
+                        dot: true; icon-ink: root.installed ? Theme.accent-text : Theme.muted;
+                        font-size: 11.5px; height: 21px; side-padding: 8px; border-width: 0px;
+                    }
+                }
+                Text {
+                    text: root.description; font-size: 13px; color: Theme.secondary; min-width: 0px;
+                    wrap: word-wrap; height: self.preferred-height;
+                }
+            }
+            buttons := HorizontalLayout {
+                height: 34px; width: self.preferred-width; spacing: 8px; alignment: end;
+                x: root.stacked ? identity.x : body.width - self.width - Theme.card-padding;
+                y: root.stacked ? identity.y + max(tile.height, identity.height) + 12px : (body.height - self.height) / 2;
+                ActionButton {
+                    label: root.operation != "" ? root.operation : !root.installed ? "Download"
+                        : root.offers-update ? "Update to " + root.latest : "Check for Updates";
+                    icon: root.operation != "" ? "" : !root.installed || root.offers-update ? "download" : "refresh";
+                    numeric: root.operation == "" && root.offers-update;
+                    height: 34px; label-size: 12.5px;
+                    primary: root.operation == "" && root.offers-update;
+                    primary-fill: Theme.accent;
+                    ink: !self.enabled ? Theme.disabled-text : self.primary ? #09090b : Theme.button-text;
+                    accessible-label: root.operation == "" && root.installed && !root.offers-update
+                        ? "Check for " + root.title + " updates" : self.label + " · " + root.title;
+                    enabled: !root.actions-locked && !(root.running && root.offers-update);
+                    clicked => { root.primary-action(); }
+                }
+                if root.installed: menu-button := ActionButton {
+                    label: "More options for " + root.title; icon: "more"; icon-only: true;
+                    height: 34px; min-width: 34px; max-width: 34px;
+                    enabled: !root.actions-locked;
+                    accessible-expandable: true; accessible-expanded: popup.is-open;
+                    property <bool> confirming;
+                    changed enabled => { if !self.enabled && popup.is-open { popup.close(); } }
+                    clicked => {
+                        self.confirming = false;
+                        if popup.is-open { popup.close(); } else { popup.show(); }
+                    }
+                    popup := PopupWindow {
+                        x: parent.width - self.width;
+                        y: menu-button.absolute-position.y + menu-button.height + self.height + 5px <= root.window-height
+                            ? menu-button.height + 5px : -self.height - 5px;
+                        width: menu-button.confirming ? 194px : 176px; height: 115px;
+                        close-policy: close-on-click-outside;
+                        forward-focus: popup-keys;
+                        popup-keys := FocusScope {
+                            key-pressed(event) => {
+                                if event.text == Key.Escape { popup.close(); return accept; }
+                                return reject;
+                            }
+                            Rectangle {
+                                background: Theme.elevated.with-alpha(0.96); border-color: Theme.strong-border;
+                                border-width: 1px; border-radius: 11px;
+                                if !menu-button.confirming: VerticalLayout {
+                                    padding: 6px; spacing: 2px; alignment: start;
+                                    MenuItem { label: "Open folder"; icon: "files"; clicked => { root.open-folder(); popup.close(); } }
+                                    MenuItem { label: "Reinstall"; icon: "refresh"; enabled: !root.running; clicked => { root.reinstall(); popup.close(); } }
+                                    Rectangle { height: 1px; background: Theme.divider; }
+                                    MenuItem {
+                                        label: "Remove"; icon: "trash"; destructive: true; enabled: !root.running;
+                                        clicked => { menu-button.confirming = true; }
+                                    }
+                                }
+                                if menu-button.confirming: VerticalLayout {
+                                    padding: 6px; spacing: 2px; alignment: start;
+                                    Text {
+                                        text: "Remove " + root.title + "?"; font-size: 13px; font-weight: 600;
+                                        color: Theme.text; height: 32px; horizontal-alignment: center; vertical-alignment: center;
+                                    }
+                                    MenuItem { label: "Cancel"; icon: "close"; clicked => { popup.close(); } }
+                                    MenuItem {
+                                        label: "Remove module"; icon: "trash"; destructive: true;
+                                        enabled: !root.running && !root.actions-locked;
+                                        clicked => { root.remove(); popup.close(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if root.error != "" || (root.offers-update && root.running): VerticalLayout {
+            padding-left: Theme.card-padding; padding-right: Theme.card-padding; padding-bottom: 12px; spacing: 6px;
+            if root.error != "": InlineNotice { message: root.error; error: true; }
+            if root.offers-update && root.running: Text {
+                text: "Stop Xray to install the update."; color: Theme.secondary;
+                font-size: 12px; wrap: word-wrap; height: self.preferred-height;
+            }
+        }
+        Rectangle {
+            height: 1px; background: Theme.divider;
+            if root.progress >= 0: Rectangle {
+                x: 0px; y: -1px; width: parent.width; height: 3px; background: Theme.subtle;
+                Rectangle {
+                    x: 0px; y: 0px; height: parent.height;
+                    width: parent.width * clamp(root.progress, 0, 100) / 100; background: Theme.accent;
+                }
+            }
+        }
+        HorizontalLayout {
+            height: 39px; padding-left: Theme.card-padding; padding-right: Theme.card-padding; spacing: 16px;
+            NumericText {
+                text: root.file-size != "" ? root.file-size : "—"; color: Theme.muted;
+                font-size: 12px; vertical-alignment: center; horizontal-stretch: 0;
+            }
+            NumericText {
+                text: root.check-status != "" ? root.check-status : root.installed ? "Not checked yet" : "Not installed";
+                color: root.highlight-status ? Theme.accent-text : Theme.muted; font-size: 12px;
+                vertical-alignment: center; horizontal-alignment: right; min-width: 0px;
+                overflow: elide; horizontal-stretch: 1;
+            }
+        }
+    }
+}

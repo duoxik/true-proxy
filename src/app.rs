@@ -276,6 +276,10 @@ fn wire_window_statistics(
                 return;
             }
             let page = ui.get_page();
+            if page == 4 {
+                ui.global::<XrayModule>()
+                    .invoke_refresh_module_check_times();
+            }
             let recording_traffic = dashboard_traffic.observe(&statistics, page == 0);
             if page != 3 && statistics.activity.tracking() {
                 activity::suspend_tracking(&ui, &statistics);

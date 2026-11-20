@@ -80,6 +80,30 @@ pub fn is_admin() -> bool {
     unsafe { IsUserAnAdmin() != 0 }
 }
 
+/// Open the installed module's directory with the user's Windows file manager.
+pub fn open_folder(directory: &Path) -> Result<()> {
+    ensure!(
+        directory.is_absolute() && directory.is_dir(),
+        "The module folder is unavailable"
+    );
+    // SAFETY: both strings are NUL-terminated and live throughout this synchronous call.
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            wide("explore").as_ptr(),
+            wide(directory).as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    ensure!(
+        result as isize > 32,
+        "Windows could not open the module folder"
+    );
+    Ok(())
+}
+
 /// Current local wall clock as hour, minute and second.
 pub fn local_clock() -> Option<(u16, u16, u16)> {
     let mut time = SYSTEMTIME::default();

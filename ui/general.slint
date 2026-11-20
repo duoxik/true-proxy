@@ -1,4 +1,4 @@
-import { ActionButton, Badge, DialogHeader, FormCard, NumericText, RuleSwitch, SurfaceCard, Theme, UiIcon } from "common.slint";
+import { ActionButton, Badge, DialogHeader, FormCard, IconTile, NumericText, RuleSwitch, SurfaceCard, Theme, UiIcon } from "common.slint";
 import { ScrollView, Slider } from "std-widgets.slint";
 
 // Each swatch previews its own theme even when the surrounding window changes theme.
@@ -84,15 +84,14 @@ component ThemeChoice inherits Rectangle {
     }
 }
 
-component AppearanceSlider inherits HorizontalLayout {
+component AppearanceSlider inherits VerticalLayout {
     in property <string> label;
     in property <string> unit;
     in property <int> maximum;
     in-out property <int> amount;
     callback committed;
-    height: 32px;
-    spacing: 8px;
-    cross-axis-alignment: center;
+    spacing: 2px;
+    alignment: start;
     changed amount => { control.value = root.amount; }
 
     function commit(next: float) {
@@ -100,17 +99,19 @@ component AppearanceSlider inherits HorizontalLayout {
         control.value = root.amount;
         root.committed();
     }
-    Text {
-        text: root.label;
-        width: 152px;
-        color: Theme.text;
-        font-size: 13px;
-        accessible-role: none;
+    HorizontalLayout {
+        height: 18px; spacing: 12px; cross-axis-alignment: center;
+        Text {
+            text: root.label; color: Theme.secondary; font-size: 12.5px; font-weight: 500;
+            min-width: 0px; horizontal-stretch: 1; overflow: elide; accessible-role: none;
+        }
+        NumericText {
+            text: root.amount + root.unit; color: Theme.secondary; font-size: 12px;
+            horizontal-alignment: right; accessible-role: none;
+        }
     }
     Rectangle {
-        min-width: 48px;
-        horizontal-stretch: 1;
-        height: 28px;
+        min-width: 0px; height: 24px;
         control := Slider {
             width: parent.width;
             height: parent.height;
@@ -152,14 +153,6 @@ component AppearanceSlider inherits HorizontalLayout {
                 Rectangle { width: 10px; height: self.width; border-radius: self.width / 2; background: Theme.accent; }
             }
         }
-    }
-    NumericText {
-        text: root.amount + root.unit;
-        width: 42px;
-        horizontal-alignment: right;
-        color: Theme.secondary;
-        font-size: 13px;
-        accessible-role: none;
     }
 }
 
@@ -248,7 +241,7 @@ export component GeneralSettings inherits VerticalLayout {
     callback open-import;
     callback export-config;
     alignment: start;
-    spacing: 24px;
+    spacing: 16px;
 
     FormCard {
         title: "Configuration"; icon: "files";
@@ -281,27 +274,28 @@ export component GeneralSettings inherits VerticalLayout {
     }
 
     preferences := Rectangle {
-        private property <bool> columns: self.width >= 710px;
-        private property <length> column-width: self.columns ? (self.width - 24px) / 2 : self.width;
-        private property <length> row-height: max(appearance.content-height, startup.content-height);
-        height: self.columns ? self.row-height : appearance.height + startup.height + 24px;
+        private property <bool> columns: self.width > 768px;
+        private property <length> column-width: self.columns ? (self.width - 16px) / 2 : self.width;
+        private property <length> row-height: max(appearance.content-height, updates.content-height);
+        height: self.columns ? self.row-height : appearance.height + updates.height + 16px;
         vertical-stretch: 0;
         appearance := FormCard {
             x: 0px; y: 0px; width: preferences.column-width;
             height: preferences.columns ? preferences.row-height : self.content-height;
-            title: "Appearance"; icon: "sun"; caption: "Choose the application theme.";
+            title: "Appearance"; icon: "sun"; header-icon-size: 36px; caption: "Choose the application theme.";
             inset-body: false;
             VerticalLayout {
                 Divider {}
                 VerticalLayout {
-                    padding-top: 16px; padding-bottom: 14px; padding-left: Theme.panel-padding; padding-right: Theme.panel-padding;
-                    spacing: 10px;
+                    padding-top: 18px; padding-bottom: 18px; padding-left: Theme.card-padding; padding-right: Theme.card-padding;
+                    spacing: 18px;
                     HorizontalLayout {
-                        spacing: 14px;
+                        spacing: 12px;
                         ThemeChoice { dark: false; selected: !root.dark-theme; choose => { root.choose-theme(false); } }
                         ThemeChoice { dark: true; selected: root.dark-theme; choose => { root.choose-theme(true); } }
                     }
                     VerticalLayout {
+                        spacing: 8px;
                         AppearanceSlider {
                             label: "Notification transparency"; unit: "%"; maximum: 100;
                             amount <=> root.notice-transparency;
@@ -316,89 +310,91 @@ export component GeneralSettings inherits VerticalLayout {
                 }
             }
         }
-        startup := FormCard {
-            x: preferences.columns ? preferences.column-width + 24px : 0px;
-            y: preferences.columns ? 0px : appearance.height + 24px;
+        updates := FormCard {
+            x: preferences.columns ? preferences.column-width + 16px : 0px;
+            y: preferences.columns ? 0px : appearance.height + 16px;
             width: preferences.column-width;
             height: preferences.columns ? preferences.row-height : self.content-height;
-            title: "Startup"; icon: "power"; caption: "Manage launch behavior on sign-in.";
-            inset-body: false;
+            title: "Application updates"; icon: "refresh"; header-icon-size: 36px; caption: "Check at launch and every 6 hours.";
+            inset-body: false; stretch-body: true;
             VerticalLayout {
+                vertical-stretch: 1;
                 Divider {}
-                Rectangle {
-                    height: startup-row.preferred-height + 40px;
-                    startup-row := HorizontalLayout {
-                        x: Theme.panel-padding; width: parent.width - 2 * Theme.panel-padding; height: self.preferred-height;
-                        y: 20px + (startup.height - startup.content-height) / 2;
-                        spacing: 16px; cross-axis-alignment: start;
-                        VerticalLayout {
-                            spacing: 4px; min-width: 0px; horizontal-stretch: 1;
-                            Text { text: "Launch at Windows sign-in"; color: Theme.text; font-size: 14px; font-weight: 500; wrap: word-wrap; }
-                            Text {
-                                text: root.local-test ? "Windows startup is managed by the installed app." : root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing automatically.";
-                                color: Theme.secondary; font-size: 13px; wrap: word-wrap;
-                            }
+                VerticalLayout {
+                    vertical-stretch: 1; padding: Theme.card-padding;
+                    HorizontalLayout {
+                        height: max(38px, updates-description.preferred-height);
+                        spacing: 16px; cross-axis-alignment: center;
+                        updates-description := VerticalLayout {
+                            spacing: 2px; min-width: 0px; horizontal-stretch: 1;
+                            Text { text: "Automatic update checks"; color: Theme.text; font-size: 14px; font-weight: 500; wrap: word-wrap; }
+                            Text { text: "Check silently in the background."; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
                         }
                         RuleSwitch {
-                            label: "Start when I sign in to Windows"; checked: root.autostart-enabled;
-                            enabled: !root.autostart-busy && !root.local-test;
-                            toggled => { root.set-autostart(!root.autostart-enabled); }
+                            label: "Check for updates automatically"; checked: root.updates-automatic;
+                            toggled => { root.set-updates-automatic(!root.updates-automatic); }
+                        }
+                    }
+                    Rectangle { min-height: 16px; preferred-height: 16px; vertical-stretch: 1; }
+                    Rectangle {
+                        height: 40px;
+                        ActionButton {
+                            width: parent.width; height: parent.height;
+                            label: root.update-busy ? "Checking…" : "Check for updates";
+                            accessible-label: "Check for Updates"; icon: "refresh"; enabled: !root.update-busy;
+                            clicked => { root.check-updates(); }
+                        }
+                    }
+                    if root.update-available: VerticalLayout {
+                        padding-top: 12px; spacing: 8px; alignment: start;
+                        NumericText { text: "True Proxy " + root.update-version; color: Theme.text; font-size: 13px; min-width: 0px; overflow: elide; }
+                        HorizontalLayout {
+                            alignment: start; spacing: 8px;
+                            ActionButton { label: "What's new"; height: 32px; clicked => { root.show-release-notes(); } }
+                            ActionButton { label: "Install and Restart"; primary: true; height: 32px; enabled: !root.busy && !root.update-busy; clicked => { root.install-update(); } }
+                        }
+                    }
+                }
+                if root.update-status != "": VerticalLayout {
+                    vertical-stretch: 0;
+                    Divider {}
+                    Rectangle {
+                        height: status-row.preferred-height; background: Theme.card-footer;
+                        border-bottom-left-radius: Theme.radius-large - 1px; border-bottom-right-radius: Theme.radius-large - 1px;
+                        status-row := HorizontalLayout {
+                            padding-left: Theme.card-padding; padding-right: Theme.card-padding; padding-top: 13px; padding-bottom: 13px;
+                            spacing: 8px; cross-axis-alignment: center;
+                            UiIcon { name: "clock"; width: 14px; height: 14px; ink: Theme.muted; }
+                            Text { text: root.update-status; font-size: 12.5px; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
                         }
                     }
                 }
             }
         }
     }
-
-    FormCard {
-        title: "Application updates"; icon: "refresh";
-        caption: "Check at launch and every 6 hours.";
-        inset-body: false; outlined-action: true;
-        action-label: root.update-busy ? "Checking…" : "Check for updates";
-        action-accessibility: "Check for Updates"; action-icon: "refresh";
-        action-enabled: !root.update-busy; action => { root.check-updates(); }
-        VerticalLayout {
-            Divider {}
-            HorizontalLayout {
-                height: 60px; padding-left: Theme.panel-padding; padding-right: Theme.panel-padding;
-                spacing: 16px; cross-axis-alignment: center;
-                Text { text: "Automatic update checks"; color: Theme.text; font-size: 14px; font-weight: 500; vertical-alignment: center; horizontal-stretch: 1; }
-                RuleSwitch { label: "Check for updates automatically"; checked: root.updates-automatic; toggled => { root.set-updates-automatic(!root.updates-automatic); } }
-            }
-            if root.update-status != "": VerticalLayout {
-                Divider {}
-                Rectangle {
-                    height: status-row.preferred-height;
-                    background: Theme.subtle;
-                    border-bottom-left-radius: Theme.radius-large - 1px; border-bottom-right-radius: Theme.radius-large - 1px;
-                    status-row := HorizontalLayout {
-                        padding-left: Theme.panel-padding; padding-right: Theme.panel-padding; padding-top: 12px; padding-bottom: 12px;
-                        spacing: 8px; cross-axis-alignment: center;
-                        UiIcon { name: "clock"; width: 14px; height: 14px; ink: Theme.muted; }
-                        Text { text: root.update-status; font-size: 12.5px; color: Theme.muted; min-width: 0px; horizontal-stretch: 1; wrap: word-wrap; }
-                    }
+    SurfaceCard {
+        height: startup-content.preferred-height;
+        startup-content := HorizontalLayout {
+            padding-left: Theme.card-padding; padding-right: Theme.card-padding; padding-top: 16px; padding-bottom: 16px;
+            spacing: 14px; cross-axis-alignment: center;
+            IconTile { name: "power"; width: 36px; height: 36px; border-radius: 9px; }
+            VerticalLayout {
+                min-width: 0px; horizontal-stretch: 1; spacing: 2px; alignment: center;
+                Text { text: "Launch at Windows sign-in"; color: Theme.text; font-size: Theme.card-title-size; font-weight: 600; wrap: word-wrap; }
+                Text {
+                    text: root.local-test ? "Windows startup is managed by the installed app." : root.autostart-busy ? "Updating startup settings…" : "Start in the tray and restore routing automatically.";
+                    color: Theme.muted; font-size: Theme.body-size; wrap: word-wrap;
                 }
             }
-            if root.update-available: VerticalLayout {
-                Divider {}
-                HorizontalLayout {
-                    padding-left: Theme.panel-padding; padding-right: Theme.panel-padding;
-                    padding-top: 12px; padding-bottom: 12px; spacing: 8px; cross-axis-alignment: center;
-                    NumericText { text: "True Proxy " + root.update-version; color: Theme.text; font-size: 13px; horizontal-stretch: 1; min-width: 0px; overflow: elide; }
-                    ActionButton { label: "What's new"; height: 32px; clicked => { root.show-release-notes(); } }
-                    ActionButton { label: "Install and Restart"; primary: true; height: 32px; enabled: !root.busy && !root.update-busy; clicked => { root.install-update(); } }
-                }
+            RuleSwitch {
+                label: "Start when I sign in to Windows"; checked: root.autostart-enabled;
+                enabled: !root.autostart-busy && !root.local-test;
+                toggled => { root.set-autostart(!root.autostart-enabled); }
             }
         }
     }
-    VerticalLayout {
-        spacing: 16px;
-        Divider {}
-        HorizontalLayout {
-            spacing: 8px; cross-axis-alignment: center;
-            UiIcon { name: "globe"; width: 16px; height: 16px; ink: Theme.muted; }
-            Text { text: "DNS is resolved by Windows"; color: Theme.muted; font-size: 12.5px; horizontal-stretch: 1; }
-            NumericText { text: "True Proxy v" + root.app-version; color: Theme.muted; font-size: 12px; }
-        }
+    NumericText {
+        text: "True Proxy v" + root.app-version; color: Theme.muted; font-size: 12px;
+        horizontal-alignment: right;
     }
 }

@@ -669,7 +669,7 @@ export component MainWindow inherits Window {
     in property <bool> local-build: false;
     in property <bool> local-test: false;
     in-out property <int> settings-section: 0;
-    changed settings-section => { NoticeBackdrop.invalidate(); }
+    changed settings-section => { NoticeBackdrop.invalidate(); root.sync-connection-observation(); }
     in-out property <int> dialog: 0;
     changed dialog => { NoticeBackdrop.invalidate(); }
     in property <bool> active: false;
@@ -928,16 +928,18 @@ export component MainWindow inherits Window {
                 padding-bottom: self.overview ? 16px : 26px;
                 spacing: 16px;
                 if root.page != 3 && root.page != 6: PageHeader {
+                    private property <bool> modules-page: root.page == 4 && root.settings-section == 2;
                     badge: root.preview-ui ? "Sample data" : "";
                     title: root.page == 4 ? (root.settings-section == 2 ? "Modules" : "General") : ["Dashboard", "Routing Rules", "Proxies", "Connections", "Settings", "Logs"][root.page];
                     subtitle: root.page == 0 ? "Monitor your proxy traffic and manage rules." : root.page == 1 ? "Define how traffic is routed: directly or through a proxy." : root.page == 2 ? "Manage your SOCKS5 servers and check their availability." : root.page == 4 ? (root.settings-section == 2 ? "Manage optional modules and their updates." : "Personalize True Proxy and manage local configuration.") : root.page == 5 ? "Review routing diagnostics and backend activity." : "";
-                    action-label: root.page == 0 ? (root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing") : root.page == 1 ? "Add Rule" : root.page == 2 ? "Add Proxy" : "";
-                    action-icon: root.page == 0 ? (root.active ? "stop" : "play") : "plus";
-                    action-accessibility: root.page == 0 ? "Routing" : root.page == 1 ? "Add Routing Rule" : "Add Proxy";
-                    action-enabled: root.page != 0 || !root.busy;
+                    action-label: self.modules-page ? "Check all" : root.page == 0 ? (root.busy ? "Please wait…" : root.active ? "Stop Routing" : "Start Routing") : root.page == 1 ? "Add Rule" : root.page == 2 ? "Add Proxy" : "";
+                    action-icon: self.modules-page ? "refresh" : root.page == 0 ? (root.active ? "stop" : "play") : "plus";
+                    action-accessibility: self.modules-page ? "Check all modules for updates" : root.page == 0 ? "Routing" : root.page == 1 ? "Add Routing Rule" : "Add Proxy";
+                    action-enabled: self.modules-page ? (!XrayModule.busy && (XrayModule.installed || XrayModule.hpwnr-installed)) : root.page != 0 || !root.busy;
                     action-accented: root.page == 0 && !root.active && !root.busy;
                     action => {
-                        if root.page == 0 { root.toggle(); }
+                        if self.modules-page { XrayModule.check-all-modules(); }
+                        else if root.page == 0 { root.toggle(); }
                         else if root.page == 1 { root.add-rule(); }
                         else if root.page == 2 { root.add-proxy(); }
                     }
@@ -1211,10 +1213,10 @@ export component MainWindow inherits Window {
                         settings-content := VerticalLayout {
                             alignment: start;
                             spacing: 16px;
-                            padding-right: 3px;
+                            padding-right: 10px;
                             padding-bottom: 14px + app-notices.clearance;
-                            if root.settings-section == 2: XrayModuleCard {}
-                            if root.settings-section == 2: HpwnrModuleCard {}
+                            if root.settings-section == 2: XrayModuleCard { window-height: root.height; }
+                            if root.settings-section == 2: HpwnrModuleCard { window-height: root.height; }
                             if root.settings-section == 0: GeneralSettings {
                                 dark-theme: root.dark-theme; busy: root.busy; local-test: root.local-test;
                                 autostart-enabled: root.autostart-enabled; autostart-busy: root.autostart-busy;

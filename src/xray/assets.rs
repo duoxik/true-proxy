@@ -10,6 +10,10 @@ use std::{
 };
 
 mod geodata;
+mod maintenance;
+pub use maintenance::{installed_size, remove_module};
+
+const CORE_FILES: [&str; 4] = ["xray.exe", "geoip.dat", "geosite.dat", "LICENSE"];
 
 const CORE_MANIFEST: &str = "core.json";
 const GEO_MANIFEST: &str = "geodata.json";
@@ -178,6 +182,26 @@ pub fn latest_hpwnr() -> Result<Release> {
     })
 }
 
+pub fn release_for_version(version: &str, hpwnr: bool) -> Result<Release> {
+    let version = stable_version(version)?.to_string();
+    let (repository, name, limit) = if hpwnr {
+        (HPWNR_REPOSITORY, HPWNR_ASSET, crate::updates::MAX_EXE_SIZE)
+    } else {
+        (CORE_REPOSITORY, CORE_ASSET, MAX_ARCHIVE)
+    };
+    let tag = format!("v{version}");
+    let url = format!("https://api.github.com/repos/{repository}/releases/tags/{tag}");
+    let release = github_release_at(&url)?;
+    ensure!(
+        release.tag_name == tag,
+        "GitHub returned an unexpected module version"
+    );
+    Ok(Release {
+        version,
+        asset: release.asset(name, limit)?,
+    })
+}
+
 #[cfg(all(test, windows))]
 #[test]
 fn decoder_manifest_verifies_the_exe_and_rejects_downgrades_without_downloading() -> Result<()> {
@@ -224,6 +248,15 @@ fn decoder_manifest_verifies_the_exe_and_rejects_downgrades_without_downloading(
 }
 
 pub fn install_hpwnr(root: &Path, release: &Release) -> Result<Installed> {
+    install_hpwnr_with_progress(root, release, false, |_| {})
+}
+
+pub fn install_hpwnr_with_progress(
+    root: &Path,
+    release: &Release,
+    reinstall: bool,
+    progress: impl FnMut(u8),
+) -> Result<Installed> {
     let version = stable_version(&release.version)?;
     crate::updates::validate_digest(&release.asset.sha256)?;
     let previous = hpwnr_installation(root).ok().flatten();
@@ -235,12 +268,16 @@ pub fn install_hpwnr(root: &Path, release: &Release) -> Result<Installed> {
     }
     let stage = Stage::new(root, "decoder-update")?;
     let binary = stage.path.join(HPWNR_ASSET);
-    download_verified(HPWNR_REPOSITORY, &release.asset, &binary)?;
+    download_verified(HPWNR_REPOSITORY, &release.asset, &binary, progress)?;
     crate::updates::validate_pe(&binary)?;
     let target = root.join(format!("hpwnr-{}.exe", release.asset.sha256));
     if target.exists() {
         plain_file(&target)?;
-        verify_file(&target, &release.asset.sha256)?;
+        if reinstall {
+            crate::platform::replace_file(&binary, &target)?;
+        } else {
+            verify_file(&target, &release.asset.sha256)?;
+        }
     } else {
         fs::rename(&binary, &target)?;
     }
@@ -256,11 +293,7 @@ pub fn install_hpwnr(root: &Path, release: &Release) -> Result<Installed> {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        let owned = name == HPWNR_FILE
-            || name
-                .strip_prefix("hpwnr-")
-                .and_then(|name| name.strip_suffix(".exe"))
-                .is_some_and(|digest| crate::updates::validate_digest(digest).is_ok());
+        let owned = maintenance::decoder_file(&name);
         if owned
             && path != target
             && previous
@@ -320,6 +353,15 @@ pub fn installed(root: &Path) -> Result<Option<Installed>> {
 /// Install into a new directory, then publish the selection with one rename.
 /// Older executable snapshots are never overwritten.
 pub fn install(root: &Path, release: &Release) -> Result<Installed> {
+    install_with_progress(root, release, false, |_| {})
+}
+
+pub fn install_with_progress(
+    root: &Path,
+    release: &Release,
+    reinstall: bool,
+    progress: impl FnMut(u8),
+) -> Result<Installed> {
     let version = stable_version(&release.version)?;
     let previous = installed(root).ok().flatten();
     if let Some(previous) = &previous {
@@ -330,7 +372,7 @@ pub fn install(root: &Path, release: &Release) -> Result<Installed> {
     }
     let stage = Stage::new(root, "install")?;
     let archive = stage.path.join("package.zip");
-    download_verified(CORE_REPOSITORY, &release.asset, &archive)?;
+    download_verified(CORE_REPOSITORY, &release.asset, &archive, progress)?;
     extract_core(&archive, &stage.path)?;
     fs::remove_file(archive)?;
     let executable = stage.path.join("xray.exe");
@@ -339,6 +381,13 @@ pub fn install(root: &Path, release: &Release) -> Result<Installed> {
     let target = root.join(core_directory_name(&release.asset.sha256));
     if target.exists() {
         plain_directory(&target)?;
+        if reinstall {
+            // This directory identifies the exact archive digest. Each replacement
+            // restores the same verified contents, even if a later file is locked.
+            for name in CORE_FILES {
+                crate::platform::replace_file(&stage.path.join(name), &target.join(name))?;
+            }
+        }
         let existing = target.join("xray.exe");
         plain_file(&existing)?;
         verify_file(&existing, &executable_sha256)?;
@@ -407,7 +456,7 @@ pub fn refresh_geo(root: &Path, geoip_url: &str, geosite_url: &str) -> Result<()
         let file = stage.path.join(local);
         if let Some(release) = upstream.as_ref().filter(|_| url == default) {
             let asset = release.asset(asset, MAX_ARCHIVE)?;
-            download_verified(GEO_REPOSITORY, &asset, &file)?;
+            download_verified(GEO_REPOSITORY, &asset, &file, |_| {})?;
         } else {
             download_file(url, None, MAX_GEODATA, &file)?;
         }
@@ -494,8 +543,12 @@ fn core_directory_name(archive_sha256: &str) -> String {
 
 fn github_release(repository: &str) -> Result<GithubRelease> {
     let url = format!("https://api.github.com/repos/{repository}/releases/latest");
+    github_release_at(&url)
+}
+
+fn github_release_at(url: &str) -> Result<GithubRelease> {
     let mut bytes = Vec::new();
-    let status = get(&url, Some(false), MAX_METADATA, |chunk| {
+    let status = get(url, Some(false), MAX_METADATA, |chunk| {
         bytes.extend_from_slice(chunk);
         Ok(())
     })?;
@@ -509,12 +562,25 @@ fn github_release(repository: &str) -> Result<GithubRelease> {
     Ok(release)
 }
 
-fn download_verified(repository: &str, asset: &VerifiedAsset, target: &Path) -> Result<()> {
+fn download_verified(
+    repository: &str,
+    asset: &VerifiedAsset,
+    target: &Path,
+    mut progress: impl FnMut(u8),
+) -> Result<()> {
     let url = format!(
         "https://api.github.com/repos/{repository}/releases/assets/{}",
         asset.id
     );
-    let size = download_file(&url, Some(true), asset.size, target)?;
+    let mut last_percent = 0;
+    progress(0);
+    let size = download_to_file(&url, Some(true), asset.size, target, |bytes| {
+        let percent = (100 * bytes / asset.size).min(100) as u8;
+        if percent != last_percent {
+            last_percent = percent;
+            progress(percent);
+        }
+    })?;
     ensure!(
         size == asset.size,
         "GitHub asset size does not match the release"
@@ -523,6 +589,16 @@ fn download_verified(repository: &str, asset: &VerifiedAsset, target: &Path) -> 
 }
 
 fn download_file(url: &str, github: Option<bool>, max: u64, target: &Path) -> Result<u64> {
+    download_to_file(url, github, max, target, |_| {})
+}
+
+fn download_to_file(
+    url: &str,
+    github: Option<bool>,
+    max: u64,
+    target: &Path,
+    mut received: impl FnMut(u64),
+) -> Result<u64> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -530,7 +606,9 @@ fn download_file(url: &str, github: Option<bool>, max: u64, target: &Path) -> Re
     let mut size = 0;
     let status = get(url, github, max, |chunk| {
         size += chunk.len() as u64;
-        Ok(file.write_all(chunk)?)
+        file.write_all(chunk)?;
+        received(size);
+        Ok(())
     })?;
     ensure!(status == 200, "Download returned HTTP {status}");
     ensure!(size > 0, "The downloaded file is empty");
@@ -752,6 +830,7 @@ impl Drop for Stage {
                     "geosite.dat",
                     "LICENSE",
                     HPWNR_FILE,
+                    HPWNR_ASSET,
                 ],
             );
         }

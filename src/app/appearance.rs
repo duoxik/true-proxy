@@ -396,14 +396,14 @@ mod tests {
                 }
                 control.mock_single_click(PointerEventButton::Left);
             };
-            click("Start when I sign in to Windows");
-            assert_eq!(startup.get(), Some(true));
-            assert!(ui.get_autostart_enabled());
-            click("Check for Updates");
-            assert_eq!(checks.get(), 1);
             click("Check for updates automatically");
             assert_eq!(automatic.get(), Some(true));
             assert!(ui.get_updates_automatic());
+            click("Check for Updates");
+            assert_eq!(checks.get(), 1);
+            click("Start when I sign in to Windows");
+            assert_eq!(startup.get(), Some(true));
+            assert!(ui.get_autostart_enabled());
             ui.hide().unwrap();
         }
     }

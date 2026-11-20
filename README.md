@@ -86,8 +86,8 @@
 
 В основной навигации секция Settings содержит General и Modules. Импорт и экспорт
 конфигурации находятся в крупной карточке Configuration в начале General.
-Ниже находятся Appearance, Startup и Application updates. Версия и информация
-о системном DNS показаны внизу страницы.
+Ниже расположены Appearance и Application updates, затем строка запуска
+при входе в Windows. Версия приложения указана внизу справа.
 
 Основной интерфейс — изменяемое окно Windows с английскими подписями, светлой
 или тёмной палитрой и боковой навигацией. Dashboard, Proxies, Rules, Connections, Logs и Settings

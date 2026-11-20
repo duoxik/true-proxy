@@ -20,6 +20,7 @@ use true_proxy::xray::{
     runtime::{self, Activity, Bypass, Runtime},
 };
 
+mod modules;
 #[cfg(test)]
 mod notice_tests;
 mod port_editor;
@@ -37,6 +38,10 @@ enum Command {
     InstallHpwnr(Option<String>),
     CheckHpwnrUpdates,
     UpdateHpwnr,
+    CheckAllModules,
+    OpenModuleFolder(bool),
+    ReinstallModule(bool),
+    RemoveModule(bool),
     RefreshSubscription(String),
     Activate(String),
     AssignPort(String, String),
@@ -137,7 +142,24 @@ impl Command {
     fn manages_core(&self) -> bool {
         matches!(
             self,
-            Self::Install | Self::CheckUpdates | Self::InstallUpdate
+            Self::Install
+                | Self::CheckUpdates
+                | Self::InstallUpdate
+                | Self::ReinstallModule(false)
+                | Self::RemoveModule(false)
+                | Self::OpenModuleFolder(false)
+        )
+    }
+
+    fn manages_hpwnr(&self) -> bool {
+        matches!(
+            self,
+            Self::InstallHpwnr(_)
+                | Self::CheckHpwnrUpdates
+                | Self::UpdateHpwnr
+                | Self::ReinstallModule(true)
+                | Self::RemoveModule(true)
+                | Self::OpenModuleFolder(true)
         )
     }
 }
@@ -175,6 +197,9 @@ struct Controller {
     hpwnr_installed: Option<Installed>,
     hpwnr_latest: Option<Release>,
     hpwnr_update_status: String,
+    checks: modules::SharedChecks,
+    module_sizes: [String; 2],
+    progress: Option<Box<dyn Fn(bool, u8) + Send>>,
     latest: Option<Release>,
     runtime: Option<Runtime>,
     runtime_geo: Option<PathBuf>,
@@ -204,6 +229,11 @@ impl Controller {
         activity.set_recording(settings.log_recording);
         let installed = assets::installed(&directory)?;
         let hpwnr_installed = assets::hpwnr_installation(&directory).ok().flatten();
+        let checks = modules::load_checks(&directory);
+        let module_sizes = [
+            modules::size(installed.as_ref(), false),
+            modules::size(hpwnr_installed.as_ref(), true),
+        ];
         let status = if installed.is_some() {
             "Stopped"
         } else {
@@ -218,6 +248,9 @@ impl Controller {
             hpwnr_installed,
             hpwnr_latest: None,
             hpwnr_update_status: String::new(),
+            checks,
+            module_sizes,
+            progress: None,
             latest: None,
             runtime: None,
             runtime_geo: None,
@@ -288,66 +321,26 @@ impl Controller {
     fn perform(&mut self, command: Command) -> Result<()> {
         match command {
             Command::InstallHpwnr(import) => {
-                let release = assets::latest_hpwnr()?;
-                self.hpwnr_installed = Some(assets::install_hpwnr(&self.directory, &release)?);
-                self.hpwnr_update_status = "Installed".into();
+                self.install_module(true, false, false)?;
                 if let Some(input) = import {
                     self.perform(Command::Import(input))?;
                 }
             }
-            Command::CheckHpwnrUpdates => {
-                let release = assets::latest_hpwnr()?;
-                let available = self
-                    .hpwnr_installed
-                    .as_ref()
-                    .is_none_or(|installed| newer(&release.version, &installed.version));
-                self.hpwnr_update_status = if available {
-                    "An hpwnr update is available."
-                } else {
-                    "You're using the latest hpwnr version."
+            Command::Install => self.install_module(false, false, false)?,
+            Command::InstallUpdate => self.install_module(false, false, true)?,
+            Command::UpdateHpwnr => self.install_module(true, false, true)?,
+            Command::ReinstallModule(hpwnr) => self.install_module(hpwnr, true, false)?,
+            Command::OpenModuleFolder(hpwnr) => self.open_module_folder(hpwnr)?,
+            Command::RemoveModule(hpwnr) => self.remove_module(hpwnr)?,
+            Command::CheckUpdates => self.check_module(false)?,
+            Command::CheckHpwnrUpdates => self.check_module(true)?,
+            Command::CheckAllModules => {
+                // Each card gets its own result, even when the other check failed.
+                for hpwnr in [false, true] {
+                    if self.module(hpwnr).is_some() {
+                        let _ = self.check_module(hpwnr);
+                    }
                 }
-                .into();
-                self.hpwnr_latest = available.then_some(release);
-            }
-            Command::UpdateHpwnr => {
-                let release = self
-                    .hpwnr_latest
-                    .as_ref()
-                    .context("Check for hpwnr updates first")?;
-                self.hpwnr_installed = Some(assets::install_hpwnr(&self.directory, release)?);
-                self.hpwnr_latest = None;
-                self.hpwnr_update_status = "hpwnr updated successfully.".into();
-            }
-            Command::Install | Command::InstallUpdate => {
-                ensure!(
-                    self.runtime.is_none(),
-                    "Stop Xray before installing an update"
-                );
-                let release = match self.latest.take() {
-                    Some(release) => release,
-                    None => assets::latest()?,
-                };
-                self.installed = Some(assets::install(&self.directory, &release)?);
-                self.reload_geo_tags(true);
-                self.status = "Installed · Stopped".into();
-                self.last_geo_attempt = profile::now();
-                if self.settings.geoip_url == assets::DEFAULT_GEOIP_URL
-                    && self.settings.geosite_url == assets::DEFAULT_GEOSITE_URL
-                    && self.settings.geo_refreshed_at == 0
-                {
-                    self.change(false, |settings| {
-                        settings.geo_refreshed_at = profile::now();
-                        Ok(())
-                    })?;
-                }
-            }
-            Command::CheckUpdates => {
-                let release = assets::latest()?;
-                let available = self
-                    .installed
-                    .as_ref()
-                    .is_none_or(|installed| newer(&release.version, &installed.version));
-                self.latest = available.then_some(release);
             }
             Command::Toggle => self.set_running(self.runtime.is_none())?,
             Command::Restart { retry } => {
@@ -830,6 +823,7 @@ struct View {
     hpwnr_version: String,
     hpwnr_latest: String,
     hpwnr_update_status: String,
+    module_sizes: [String; 2],
 }
 
 impl View {
@@ -872,11 +866,15 @@ impl View {
                 .as_ref()
                 .map_or_else(String::new, |release| release.version.clone()),
             hpwnr_update_status: controller.hpwnr_update_status.clone(),
+            module_sizes: controller.module_sizes.clone(),
         }
     }
 
     fn apply(self, ui: &MainWindow, command_done: bool) {
         let xray = ui.global::<XrayModule>();
+        let [core_size, hpwnr_size] = self.module_sizes;
+        xray.set_module_size(core_size.into());
+        xray.set_hpwnr_size(hpwnr_size.into());
         xray.set_hpwnr_installed(self.hpwnr_installed);
         xray.set_hpwnr_version(self.hpwnr_version.into());
         xray.set_hpwnr_latest_version(self.hpwnr_latest.into());
@@ -923,6 +921,7 @@ impl View {
         if command_done {
             xray.set_busy(false);
         }
+        xray.invoke_refresh_module_check_times();
     }
 }
 
@@ -1095,6 +1094,7 @@ fn spawn_worker(
     thread::Builder::new()
         .name("xray-module".into())
         .spawn(move || {
+            controller.progress = Some(modules::progress_reporter(weak.clone()));
             let (migrated, migration_error) = match controller.refresh_hosts(false) {
                 Ok((changed, _)) => (changed, None),
                 Err(error) => (false, Some(error)),
@@ -1137,6 +1137,7 @@ fn spawn_worker(
                     command_done,
                     manages_core,
                     hpwnr,
+                    all_check_errors,
                     revision,
                     port_edit,
                     runtime_action,
@@ -1155,12 +1156,8 @@ fn spawn_worker(
                             _ => None,
                         };
                         let manages_core = command.manages_core();
-                        let hpwnr = matches!(
-                            command,
-                            Command::InstallHpwnr(_)
-                                | Command::CheckHpwnrUpdates
-                                | Command::UpdateHpwnr
-                        );
+                        let hpwnr = command.manages_hpwnr();
+                        let check_all = matches!(command, Command::CheckAllModules);
                         let revision = match &command {
                             Command::SaveDraft(revision, _) => Some(*revision),
                             _ => None,
@@ -1184,14 +1181,29 @@ fn spawn_worker(
                             command_done,
                             manages_core,
                             hpwnr,
+                            check_all.then(|| {
+                                controller
+                                    .checks
+                                    .lock()
+                                    .unwrap()
+                                    .each_ref()
+                                    .map(modules::Check::error)
+                            }),
                             revision,
                             port_edit,
                             runtime_action,
                         )
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        (controller.poll(), false, false, false, None, None, None)
-                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => (
+                        controller.poll(),
+                        false,
+                        false,
+                        false,
+                        None,
+                        None,
+                        None,
+                        None,
+                    ),
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 if let Some(error) = result {
@@ -1206,8 +1218,17 @@ fn spawn_worker(
                                 toast(&ui, message, false);
                             }
                             let xray = ui.global::<XrayModule>();
+                            if manages_core || all_check_errors.is_some() {
+                                modules::show_operation(&xray, false, "", -1);
+                            }
+                            if hpwnr || all_check_errors.is_some() {
+                                modules::show_operation(&xray, true, "", -1);
+                            }
                             let port_done = port_edit.is_some();
-                            if let Some((owner, profile, revision)) = port_edit {
+                            if let Some([core, decoder]) = all_check_errors {
+                                xray.set_module_error(core.into());
+                                xray.set_hpwnr_error(decoder.into());
+                            } else if let Some((owner, profile, revision)) = port_edit {
                                 xray.invoke_finish_port_edit(
                                     owner.into(),
                                     profile,
@@ -1254,6 +1275,7 @@ pub(super) fn wire(
     let geo_catalog = SharedGeoCatalog::default();
     let controller = Controller::load(directory, bypass, activity.clone(), geo_catalog.clone())?;
     let installed = controller.installed.is_some();
+    modules::wire_check_times(ui, controller.checks.clone());
     let restoring = installed && controller.settings.enabled && !paused;
     let started = Arc::new(std::sync::Mutex::new(None));
     View::new(&controller).apply(ui, true);
@@ -1315,21 +1337,39 @@ pub(super) fn wire(
             let manages_core = command.manages_core();
             let restarting = matches!(command, Command::Restart { .. });
             let checking_hpwnr = matches!(command, Command::CheckHpwnrUpdates);
-            let hpwnr = matches!(
-                command,
-                Command::InstallHpwnr(_) | Command::CheckHpwnrUpdates | Command::UpdateHpwnr
-            );
+            let hpwnr = command.manages_hpwnr();
+            let check_all = matches!(command, Command::CheckAllModules);
+            let (operation, progress) = modules::operation(&command);
             if queue(command) {
                 xray.set_busy(true);
                 if restarting {
                     xray.set_restart_phase(XrayRestartPhase::Restarting);
                 }
-                set_error(&xray, manages_core, hpwnr, String::new());
+                if check_all {
+                    xray.set_module_error("".into());
+                    xray.set_hpwnr_error("".into());
+                } else {
+                    set_error(&xray, manages_core, hpwnr, String::new());
+                }
+                if manages_core || (check_all && xray.get_installed()) {
+                    modules::show_operation(&xray, false, operation, progress);
+                }
+                if hpwnr || (check_all && xray.get_hpwnr_installed()) {
+                    modules::show_operation(&xray, true, operation, progress);
+                }
                 if checking_hpwnr {
                     xray.set_hpwnr_update_status("Checking for updates…".into());
                 }
             } else if restarting {
                 finish_restart(&ui, "The Xray module worker is unavailable".into());
+            } else if check_all {
+                let message: SharedString = "The Xray module worker is unavailable".into();
+                if xray.get_installed() {
+                    xray.set_module_error(message.clone());
+                }
+                if xray.get_hpwnr_installed() {
+                    xray.set_hpwnr_error(message);
+                }
             } else {
                 set_error(
                     &xray,
@@ -1352,6 +1392,13 @@ pub(super) fn wire(
     }
     bind!(on_install, Command::Install);
     bind!(on_check_updates, Command::CheckUpdates);
+    bind!(on_check_all_modules, Command::CheckAllModules);
+    let open = send.clone();
+    xray.on_open_module_folder(move |hpwnr| open(Command::OpenModuleFolder(hpwnr)));
+    let reinstall = send.clone();
+    xray.on_reinstall_module(move |hpwnr| reinstall(Command::ReinstallModule(hpwnr)));
+    let remove = send.clone();
+    xray.on_remove_module(move |hpwnr| remove(Command::RemoveModule(hpwnr)));
     bind!(on_install_update, Command::InstallUpdate);
     bind!(on_toggle, Command::Toggle);
     let restart = send.clone();
