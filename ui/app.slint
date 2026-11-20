@@ -446,12 +446,12 @@ component ProxySelectionCheck inherits Rectangle {
         border-color: root.checked || root.mixed ? Theme.accent-border : Theme.border;
         background: root.checked || root.mixed ? Theme.accent : Theme.surface;
         if root.checked: UiIcon {
-            name: "check"; ink: Theme.switch-on-thumb;
+            name: "check"; ink: Theme.on-accent;
             x: 2px; y: 2px; width: 14px; height: 14px;
         }
         if root.mixed: Rectangle {
             x: 4px; y: 8px; width: 10px; height: 2px;
-            border-radius: 1px; background: Theme.switch-on-thumb;
+            border-radius: 1px; background: Theme.on-accent;
         }
     }
     TouchArea {

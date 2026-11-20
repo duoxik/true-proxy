@@ -300,7 +300,6 @@ export component FloatingNotice inherits Rectangle {
                     label: root.action-label;
                     primary: !root.warning;
                     primary-fill: Theme.accent;
-                    ink: !self.enabled ? Theme.disabled-text : root.warning ? Theme.button-text : Theme.switch-on-thumb;
                     label-size: 12px; label-weight: 600;
                     height: 30px; border-radius: 7px;
                     enabled: root.show-card && root.action-enabled && !root.working;

@@ -38,6 +38,7 @@ export global Theme {
     out property <color> muted: #71717a;
     out property <color> section-text: dark ? #63636b : #8a8a93;
     out property <color> accent: #bef264;
+    out property <color> on-accent: #09090b;
     out property <color> accent-hover: #a3e635;
     out property <color> accent-text: dark ? self.accent : #4d7c0f;
     out property <color> accent-soft: self.accent.with-alpha(dark ? 0.10 : 0.13);
@@ -284,7 +285,9 @@ export component ActionButton inherits Rectangle {
     in property <int> label-weight: 500;
     in property <color> fill: Theme.button;
     in property <color> primary-fill: Theme.primary;
-    in property <color> ink: !root.enabled ? Theme.disabled-text : root.primary ? Theme.primary-text : root.accented ? Theme.accent-text : Theme.button-text;
+    in property <color> ink: !root.enabled ? Theme.disabled-text
+        : root.primary ? (root.primary-fill == Theme.accent ? Theme.on-accent : Theme.primary-text)
+        : root.accented ? Theme.accent-text : Theme.button-text;
     in property <color> icon-ink: root.ink;
     in property <color> outline: root.accented ? Theme.accent-border : Theme.strong-border;
     callback clicked;
@@ -648,7 +651,7 @@ component CheckMark inherits Rectangle {
     if root.checked: Path {
         x: 3px; y: 3px; width: 10px; height: 10px;
         viewbox-width: 10; viewbox-height: 10;
-        stroke: Theme.switch-on-thumb; stroke-width: 1.6px;
+        stroke: Theme.on-accent; stroke-width: 1.6px;
         commands: "M1 5 L4 8 L9 2";
     }
 }

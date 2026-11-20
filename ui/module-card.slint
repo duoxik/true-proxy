@@ -109,7 +109,6 @@ export component ModuleCard inherits SurfaceCard {
                     height: 34px; label-size: 12.5px;
                     primary: root.operation == "" && root.offers-update;
                     primary-fill: Theme.accent;
-                    ink: !self.enabled ? Theme.disabled-text : self.primary ? #09090b : Theme.button-text;
                     accessible-label: root.operation == "" && root.installed && !root.offers-update
                         ? "Check for " + root.title + " updates" : self.label + " · " + root.title;
                     enabled: !root.actions-locked && !(root.running && root.offers-update);
