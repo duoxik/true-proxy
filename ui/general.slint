@@ -341,8 +341,11 @@ export component GeneralSettings inherits VerticalLayout {
             width: preferences.column-width;
             height: preferences.columns ? preferences.row-height : self.content-height;
             title: "Surface Effects"; icon: "layers"; header-icon-size: 36px;
-            caption: !root.notification-effects && root.sidebar-backdrop != 0 && !root.sidebar-backdrop-active
-                ? "Windows is using a solid sidebar." : "Customize glass transparency and blur.";
+            caption: root.notification-effects ? "Customize notification transparency and blur."
+                : root.sidebar-backdrop == 0 ? "The sidebar uses a solid background."
+                : !root.sidebar-backdrop-active ? "Windows is using a solid sidebar."
+                : root.sidebar-backdrop == 1 ? "Mica uses colors from your desktop wallpaper."
+                : "Set frost to zero for a clear view through the sidebar.";
             inset-body: false;
             VerticalLayout {
                 Divider {}
@@ -377,7 +380,7 @@ export component GeneralSettings inherits VerticalLayout {
                                 amount <=> root.sidebar-transparency; committed => { root.save-sidebar-appearance(); }
                             }
                             AppearanceSlider {
-                                label: "Background blur"; control-label: "Sidebar background blur"; unit: " px"; maximum: 32;
+                                label: "Frost level"; control-label: "Sidebar frost level"; unit: " / 32"; maximum: 32;
                                 enabled: root.sidebar-backdrop != 0; opacity: self.enabled ? 1 : 0.42;
                                 amount <=> root.sidebar-blur; committed => { root.save-sidebar-appearance(); }
                             }

@@ -676,8 +676,7 @@ fn general_surface_previews(
             }
             let sidebar = find("Sidebar surface effects").context("Sidebar tab missing")?;
             ensure!(
-                sidebar.accessible_checked() == Some(true)
-                    && find("Sidebar background blur").is_some(),
+                sidebar.accessible_checked() == Some(true) && find("Sidebar frost level").is_some(),
                 "Expected the Sidebar tab and its controls on entry"
             );
             save(

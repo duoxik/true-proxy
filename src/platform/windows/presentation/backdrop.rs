@@ -61,19 +61,22 @@ pub fn caption_action(hwnd: HWND, index: i32) {
 /// Apply a DWM material to an owned winit window on its UI thread. Keep the
 /// standard overlapped-window style so Windows still owns system commands,
 /// resizing, snapping, and the system menu.
-pub fn apply_sidebar_backdrop(hwnd: HWND, mode: i32, dark: bool) -> bool {
+pub fn apply_sidebar_backdrop(hwnd: HWND, mode: i32, dark: bool, blur: i32) -> bool {
     let mode = if mode != 0 && sidebar_backdrop_allowed() {
         mode
     } else {
         0
     };
-    apply_material(hwnd, mode, dark)
+    apply_material(hwnd, mode, dark, blur)
 }
 
-fn apply_material(hwnd: HWND, mode: i32, dark: bool) -> bool {
+fn apply_material(hwnd: HWND, mode: i32, dark: bool, blur: i32) -> bool {
     let installed = unsafe { !GetPropW(hwnd, FRAME_PROPERTY).is_null() };
     let material = match mode {
         1 => DWMSBT_MAINWINDOW,
+        // winit enables per-pixel alpha on this HWND. Keeping the extended frame
+        // with no system material composites the sidebar directly over windows behind it.
+        2 if blur <= 0 => DWMSBT_NONE,
         2 => DWMSBT_TRANSIENTWINDOW,
         _ => {
             if installed {

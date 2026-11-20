@@ -674,6 +674,10 @@ export component MainWindow inherits Window {
     in-out property <int> sidebar-backdrop: 1;
     in-out property <int> sidebar-transparency: 55;
     in-out property <int> sidebar-blur: 18;
+    private property <bool> sidebar-frost-is-zero: root.sidebar-blur == 0;
+    changed sidebar-frost-is-zero => {
+        if root.sidebar-backdrop == 2 { root.update-sidebar-material(); }
+    }
     in-out property <bool> sidebar-backdrop-active;
     in-out property <bool> caption-maximized;
     callback caption-action(int);
@@ -828,6 +832,7 @@ export component MainWindow inherits Window {
     callback choose-theme(bool);
     callback save-notice-appearance;
     callback save-sidebar-appearance;
+    callback update-sidebar-material;
     callback hide-window;
     callback sync-connection-observation;
     callback suspend-connection-observation;

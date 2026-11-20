@@ -157,6 +157,7 @@ pub(super) fn apply_native_theme(ui: &MainWindow) {
             hwnd,
             ui.get_sidebar_backdrop(),
             ui.get_dark_theme(),
+            ui.get_sidebar_blur(),
         );
         ui.set_sidebar_backdrop_active(active);
         if active {
@@ -223,6 +224,13 @@ fn wire_preferences(ui: &MainWindow, path: Option<PathBuf>) {
     ui.on_save_sidebar_appearance(move || {
         if let Some(ui) = weak.upgrade() {
             save_sidebar(&ui, Preferences::current(&ui));
+        }
+    });
+    let weak = ui.as_weak();
+    ui.on_update_sidebar_material(move || {
+        if let Some(ui) = weak.upgrade() {
+            apply_native_theme(&ui);
+            refresh(&ui);
         }
     });
     let weak = ui.as_weak();
@@ -585,7 +593,23 @@ mod tests {
         assert!(!ui.get_sidebar_backdrop_active()); // No native window on the testing backend.
         slider(&ui, "Sidebar transparency").mock_single_click(button);
         press_key(&ui, SlintKey::End);
-        slider(&ui, "Sidebar background blur").mock_single_click(button);
+        slider(&ui, "Sidebar frost level").mock_single_click(button);
+        let transitions = Rc::new(Cell::new(0));
+        let calls = transitions.clone();
+        ui.on_update_sidebar_material(move || calls.set(calls.get() + 1));
+        for (key, count) in [
+            (SlintKey::Home, 1),
+            (SlintKey::RightArrow, 2),
+            (SlintKey::RightArrow, 2),
+        ] {
+            press_key(&ui, key);
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(1));
+            assert_eq!(transitions.get(), count);
+            assert_eq!(
+                Preferences::load(&path).unwrap().sidebar_blur,
+                ui.get_sidebar_blur()
+            );
+        }
         press_key(&ui, SlintKey::End);
         let saved = Preferences::load(&path).unwrap();
         assert_eq!(
