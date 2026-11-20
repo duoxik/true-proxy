@@ -919,11 +919,9 @@ export component MainWindow inherits Window {
             Rectangle { width: 1px; background: Theme.border; }
             page-column := VerticalLayout {
                 private property <bool> overview: root.page == 0 || (root.page == 4 && root.settings-section != 2);
-                private property <length> gutter: !self.overview ? 26px
-                    : max(root.width < 1100px ? 20px : 32px, (root.width - root.sidebar-width - 1px - (root.page == 0 ? 1120px : 920px)) / 2);
                 min-width: 0px;
                 horizontal-stretch: 1;
-                padding-left: self.gutter; padding-right: self.gutter;
+                padding-left: Theme.page-gutter; padding-right: Theme.page-gutter;
                 padding-top: self.overview ? (root.height < 700px ? 20px : 32px) : 26px;
                 padding-bottom: self.overview ? 16px : 26px;
                 spacing: 16px;
