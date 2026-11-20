@@ -417,7 +417,7 @@ mod ui_tests {
     }
 
     #[test]
-    fn xray_dashboard_selects_profiles_and_opens_the_profiles_page() {
+    fn xray_profiles_are_managed_from_the_sidebar_profiles_page() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = MainWindow::new().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
@@ -450,18 +450,28 @@ mod ui_tests {
         });
         ui.show().unwrap();
         click(&ui, "Xray Dashboard");
+        assert_eq!(xray.get_section(), 0);
+        for label in [
+            "Enabled profiles",
+            "Open Profiles",
+            "Change selected profile",
+            "Activate Manual node",
+            "Activate Subscription node",
+        ] {
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, label)
+                    .next()
+                    .is_none(),
+                "Unexpected profile control on the Xray Dashboard: {label}"
+            );
+        }
+        click(&ui, "Xray Profiles");
+        assert_eq!(ui.get_page(), 6);
+        assert_eq!(xray.get_section(), 1);
         click(&ui, "Activate Manual node");
         assert_eq!(selected.take().as_str(), "manual-id");
         click(&ui, "Activate Subscription node");
         assert_eq!(selected.take().as_str(), "subscription-id");
-        assert!(
-            ElementHandle::find_by_accessible_label(&ui, "Remove Manual node")
-                .next()
-                .is_none()
-        );
-        click(&ui, "Open Profiles");
-        assert_eq!(ui.get_page(), 6);
-        assert_eq!(xray.get_section(), 1);
         assert!(
             ElementHandle::find_by_accessible_label(&ui, "Remove Manual node")
                 .next()
@@ -483,10 +493,10 @@ mod ui_tests {
         ui.show().unwrap();
         click(&ui, "Local SOCKS settings");
         assert_eq!(xray.get_section(), 2);
-        xray.set_section(0);
         ui.window().set_size(slint::LogicalSize::new(1240., 780.));
+        click(&ui, "Xray Profiles");
+        assert_eq!(xray.get_section(), 1);
         click(&ui, "Activate Backup tunnel");
-        assert_eq!(xray.get_enabled_count(), 2);
         assert!(
             xray.get_subscriptions()
                 .row_data(0)
@@ -497,11 +507,11 @@ mod ui_tests {
                 .active
         );
         assert!(xray.get_profiles().row_data(0).unwrap().active);
+        click(&ui, "Xray Dashboard");
+        assert_eq!(xray.get_section(), 0);
         click(&ui, "Start Xray");
         assert!(!xray.get_running() && !ui.get_active());
         assert!(xray.get_error().contains("disabled in this UI preview"));
-        click(&ui, "Change selected profile");
-        assert_eq!(xray.get_section(), 1);
     }
 
     #[test]

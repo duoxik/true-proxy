@@ -489,13 +489,6 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         active: true,
         port_index: 0,
     }]));
-    xray.set_selected_profile(XrayProfileRow {
-        id: "primary".into(),
-        name: "Primary".into(),
-        summary: "VLESS · vpn.example.test:443".into(),
-        active: true,
-        port_index: 0,
-    });
     xray.set_subscriptions(model(vec![XraySubscriptionGroup {
         id: "sample-source".into(),
         name: "Subscription 1".into(),

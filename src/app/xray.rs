@@ -932,7 +932,6 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
     xray.set_enabled_count(settings.enabled_profiles().count() as i32);
     let mut manual = Vec::new();
     let mut groups = BTreeMap::<&str, Vec<XrayProfileRow>>::new();
-    let mut selected = XrayProfileRow::default();
     for profile in &settings.profiles {
         let row = XrayProfileRow {
             active: profile.enabled,
@@ -945,16 +944,12 @@ pub(super) fn show_profiles(ui: &MainWindow, settings: &Settings) {
             name: profile.name.as_str().into(),
             summary: format!("VLESS · {}:{}", profile.host, profile.port).into(),
         };
-        if row.active && selected.id.is_empty() {
-            selected = row.clone();
-        }
         if let Some(source) = &profile.subscription {
             groups.entry(source.as_str()).or_default().push(row);
         } else {
             manual.push(row);
         }
     }
-    xray.set_selected_profile(selected);
     let old_profiles = xray.get_profiles();
     xray.set_profiles(update_rows(old_profiles, manual, |a, b| a.id == b.id));
     let old_groups = xray.get_subscriptions();
