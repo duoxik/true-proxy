@@ -32,8 +32,8 @@ pub fn refresh(ui: &MainWindow) {
 #[repr(i32)]
 #[serde(rename_all = "lowercase")]
 enum SidebarBackdrop {
-    #[default]
     Mica = 1,
+    #[default]
     Acrylic = 2,
     #[serde(other)]
     Off = 0,
@@ -64,9 +64,9 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             dark_theme: true,
-            sidebar_backdrop: SidebarBackdrop::Mica,
-            sidebar_transparency: 55,
-            sidebar_blur: 18,
+            sidebar_backdrop: SidebarBackdrop::default(),
+            sidebar_transparency: 30,
+            sidebar_blur: 32,
             notice_transparency: 48,
             notice_blur: 9,
         }
@@ -561,7 +561,7 @@ mod tests {
                 ui.get_sidebar_transparency(),
                 ui.get_sidebar_blur()
             ),
-            (1, 55, 18),
+            (2, 30, 32),
         );
         assert_eq!(
             (ui.get_notice_transparency(), ui.get_notice_blur()),
@@ -680,8 +680,17 @@ mod tests {
         )
         .unwrap();
         let json = serde_json::to_value(old).unwrap();
-        assert_eq!(json["sidebar_backdrop"], "mica");
+        assert_eq!(json["sidebar_backdrop"], "acrylic");
+        assert_eq!((old.sidebar_transparency, old.sidebar_blur), (30, 32));
         assert_eq!((old.notice_transparency, old.notice_blur), (81, 17));
+        let partial =
+            serde_json::from_str::<Preferences>(r#"{"sidebar_backdrop":"mica","sidebar_blur":0}"#)
+                .unwrap();
+        assert_eq!(partial.sidebar_backdrop, SidebarBackdrop::Mica);
+        assert_eq!(
+            (partial.sidebar_transparency, partial.sidebar_blur),
+            (30, 0)
+        );
         let edited = serde_json::from_str::<Preferences>(
             r#"{"dark_theme":false,"sidebar_backdrop":"future-mode","sidebar_transparency":-5,"sidebar_blur":40,"notice_transparency":81,"notice_blur":17}"#,
         ).unwrap().bounded();

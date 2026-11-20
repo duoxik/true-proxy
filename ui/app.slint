@@ -671,9 +671,9 @@ export component MainWindow inherits Window {
     private property <length> sidebar-width: 224px;
     background: transparent; default-font-family: Theme.font-family; default-font-size: 13px;
     in-out property <bool> dark-theme <=> Theme.dark;
-    in-out property <int> sidebar-backdrop: 1;
-    in-out property <int> sidebar-transparency: 55;
-    in-out property <int> sidebar-blur: 18;
+    in-out property <int> sidebar-backdrop: 2;
+    in-out property <int> sidebar-transparency: 30;
+    in-out property <int> sidebar-blur: 32;
     private property <bool> sidebar-frost-is-zero: root.sidebar-blur == 0;
     changed sidebar-frost-is-zero => {
         if root.sidebar-backdrop == 2 { root.update-sidebar-material(); }

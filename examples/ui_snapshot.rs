@@ -643,12 +643,15 @@ fn general_surface_previews(
     ui.set_reduce_motion(true);
     ui.set_settings_section(0);
     ui.set_page(4);
+    let mode = ui.get_sidebar_backdrop();
+    let transparency = ui.get_sidebar_transparency();
+    let frost = ui.get_sidebar_blur();
     for (dark, theme) in [(true, "dark"), (false, "light")] {
         ui.set_dark_theme(dark);
         check_sidebar_layers(ui, adapter, dark)?;
-        ui.set_sidebar_backdrop(1);
-        ui.set_sidebar_transparency(55);
-        ui.set_sidebar_blur(18);
+        ui.set_sidebar_backdrop(mode);
+        ui.set_sidebar_transparency(transparency);
+        ui.set_sidebar_blur(frost);
         for (width, height, size) in [(1240, 780, "normal"), (960, 640, "compact")] {
             ui.window().set_size(PhysicalSize::new(width, height));
             ui.set_page(0);
