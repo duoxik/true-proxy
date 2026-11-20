@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, NumericText, Badge, IconTile, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
+import { PageHeader, FormCard, EmptyState, SurfaceCard, PanelToolbar, TableHeading, SessionCard, MetricCard, NumericText, CountBadge, IconTile, SectionHeading, ActionButton, TextLink, Field, RuleSwitch, Theme, UiIcon } from "common.slint";
 import { LogStreamView } from "logs.slint";
 import { FloatingNotice, InlineNotice, NoticeBackdrop, NoticeShelf, NoticeEntry } from "notices.slint";
 
@@ -926,11 +926,10 @@ component XrayConnections inherits SurfaceCard {
         PanelToolbar {
             Text { text: "Connections"; color: Theme.text; font-weight: 600; font-size: 18px; vertical-alignment: center; }
             Rectangle {
-                width: count.natural-width;
-                count := Badge {
+                width: count.width;
+                count := CountBadge {
                     y: (parent.height - self.height) / 2;
                     label: XrayModule.connections.length + " / " + XrayModule.connection-total;
-                    numeric: true; font-size: 11px; side-padding: 6px;
                 }
             }
             Rectangle { horizontal-stretch: 1; }

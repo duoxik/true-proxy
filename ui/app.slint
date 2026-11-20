@@ -1,7 +1,7 @@
 import { DashboardView, TrafficReading } from "dashboard.slint";
 export { TrafficReading }
 import { GeneralSettings, ReleaseNotesDialog } from "general.slint";
-import { Badge, NumericText, PageHeader, SurfaceCard, PanelToolbar, TableHeading, EmptyState, DialogHeader, DialogActions } from "common.slint";
+import { Badge, CountBadge, NumericText, PageHeader, SurfaceCard, PanelToolbar, TableHeading, EmptyState, DialogHeader, DialogActions } from "common.slint";
 import { ScrollView, Palette } from "std-widgets.slint";
 import { JsonEditor, JsonLine } from "json-editor.slint";
 export { JsonLine }
@@ -1125,8 +1125,8 @@ export component MainWindow inherits Window {
                         PanelToolbar {
                             Text { text: "All Proxies"; color: Theme.text; font-size: 18px; font-weight: 600; width: 94px; vertical-alignment: center; }
                             Rectangle {
-                                width: count.natural-width;
-                                count := Badge { label: root.visible-proxies.length; numeric: true; ink: Theme.accent-text; fill: Theme.accent-soft; outline: Theme.accent-border; }
+                                width: count.width;
+                                count := CountBadge { y: (parent.height - self.height) / 2; label: root.visible-proxies.length; }
                             }
                             Rectangle { horizontal-stretch: 1; }
                             if root.selected-proxy-ids.length > 0: NumericText {

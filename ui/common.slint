@@ -186,6 +186,19 @@ export component Badge inherits Rectangle {
     }
 }
 
+export component CountBadge inherits Badge {
+    numeric: true;
+    font-size: 12px;
+    side-padding: 7px;
+    width: max(26px, ceil(self.natural-width / 2px) * 2px);
+    height: 22px;
+    border-radius: 6px;
+    border-width: 2px;
+    ink: Theme.accent-text;
+    fill: Theme.accent-soft;
+    outline: Theme.accent-text.with-alpha(Theme.dark ? 0.60 : 0.72);
+}
+
 export component SessionCard inherits SurfaceCard {
     in property <string> status;
     in property <string> uptime;
@@ -196,21 +209,11 @@ export component SessionCard inherits SurfaceCard {
     private property <color> status-color: root.error ? Theme.danger : root.active ? Theme.accent : Theme.muted;
     preferred-width: 0px;
     horizontal-stretch: root.expanded ? 1.5 : 1.8;
-    if root.expanded: Rectangle {
-        x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px;
-        private property <length> center-x: self.width * 0.18;
-        private property <length> center-y: self.height * 0.25;
-        background: @radial-gradient(circle at self.center-x self.center-y, root.status-color.with-alpha(0.08), transparent 68%);
-    }
     if root.expanded: VerticalLayout {
         padding: root.compact ? 14px : Theme.card-padding;
         HorizontalLayout { height: 24px; spacing: 7px;
             Rectangle { width: 10px; Rectangle { y: (parent.height - self.height) / 2; width: 10px; height: 10px; border-radius: 5px; background: root.status-color; } }
             Text { text: root.status; color: Theme.text; font-size: Theme.card-title-size; font-weight: 600; min-width: 0px; horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
-            if root.active && !root.error && !root.compact: Badge {
-                label: "LIVE"; font-size: 10.5px; ink: Theme.accent-text;
-                fill: Theme.accent-soft; outline: Theme.accent-border;
-            }
         }
         Rectangle { vertical-stretch: 1; }
         HorizontalLayout { height: 18px; spacing: 6px;

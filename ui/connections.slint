@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { PageHeader, SurfaceCard, EmptyState, PanelToolbar, TableHeading, MetricCard, NumericText, Badge, IconTile, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
+import { PageHeader, SurfaceCard, EmptyState, PanelToolbar, TableHeading, MetricCard, NumericText, CountBadge, IconTile, Theme, UiIcon, ProcessSummary, ConnectionFilterOption, Field, ActionButton, ConnectionFilterCheck } from "common.slint";
 
 
 
@@ -31,11 +31,9 @@ component ConnectionFilterMenu inherits Rectangle {
         Text { text: root.title; color: Theme.text; font-size: 12px; font-weight: 600; vertical-alignment: center; accessible-role: none; }
         Rectangle {
             width: filter-badge.width;
-            filter-badge := Badge {
-                width: max(22px, self.natural-width); height: 18px; side-padding: 4.5px;
+            filter-badge := CountBadge {
                 y: (parent.height - self.height) / 2;
-                label: root.summary; numeric: root.summary.is-float(); font-size: 10px;
-                ink: Theme.accent-text; fill: Theme.accent-soft; outline: Theme.accent-border;
+                label: root.summary; numeric: root.summary.is-float();
                 accessible-role: none;
             }
         }
@@ -321,11 +319,9 @@ export component ConnectionsView inherits VerticalLayout {
                 Text { text: "Connections"; color: Theme.text; font-size: 18px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
                 Rectangle {
                     width: count.width;
-                    count := Badge {
-                        width: max(25px, self.natural-width); height: 22px; side-padding: 6px;
+                    count := CountBadge {
                         y: (parent.height - self.height) / 2;
-                        label: "" + ConnectionMonitor.filtered-event-count; numeric: true; font-size: 11px;
-                        ink: Theme.accent-text; fill: Theme.accent-soft; outline: Theme.accent-border;
+                        label: "" + ConnectionMonitor.filtered-event-count;
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }

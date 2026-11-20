@@ -374,14 +374,25 @@ mod tests {
                 .next()
                 .unwrap();
             let click = |label: &str| {
-                let control = ElementHandle::find_by_accessible_label(&ui, label)
-                    .next()
-                    .unwrap();
+                let find = || ElementHandle::find_by_accessible_label(&ui, label).next();
+                // The accessibility tree only exposes controls in the viewport.
+                let control = find()
+                    .or_else(|| {
+                        scroll.scroll(0., -scroll.size().height);
+                        i_slint_backend_testing::mock_elapsed_time(
+                            std::time::Duration::from_millis(250),
+                        );
+                        find()
+                    })
+                    .unwrap_or_else(|| panic!("General settings control missing: {label}"));
                 let below = control.absolute_position().y + control.size().height
                     - scroll.absolute_position().y
                     - scroll.size().height;
                 if below > 0. {
                     scroll.scroll(0., -below - 16.);
+                    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(
+                        250,
+                    ));
                 }
                 control.mock_single_click(PointerEventButton::Left);
             };

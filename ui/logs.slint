@@ -1,5 +1,5 @@
 import { ScrollView } from "std-widgets.slint";
-import { Theme, SurfaceCard, PanelToolbar, SegmentButton, Badge, UiIcon } from "common.slint";
+import { Theme, SurfaceCard, PanelToolbar, SegmentButton, ActionButton, Badge, UiIcon } from "common.slint";
 
 export global TechnicalLogs {
     in property <string> text;
@@ -99,12 +99,10 @@ export component LogStreamView inherits SurfaceCard {
                 resting-color: Theme.field;
                 clicked => { log-text.clear-selection(); root.clear(); }
             }
-            SegmentButton {
+            ActionButton {
                 y: (parent.height - self.height) / 2;
                 label: root.recording ? "Pause" : "Start";
-                selected: root.recording;
-                selected-color: Theme.success;
-                resting-color: Theme.field;
+                height: 28px; content-min-width: 56px; label-size: 11px; border-radius: 8px;
                 clicked => { root.set-recording(!root.recording); }
             }
         }
@@ -164,7 +162,6 @@ export component LogStreamView inherits SurfaceCard {
                 y: (parent.height - self.height) / 2;
                 label: root.follow ? "Follow: On" : "Follow: Off";
                 selected: root.follow;
-                selected-color: Theme.success;
                 resting-color: Theme.field;
                 clicked => { root.follow = !root.follow; }
             }
