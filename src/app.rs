@@ -214,6 +214,7 @@ fn focus_window(ui: &impl ComponentHandle) {
 fn show_main_window(ui: &MainWindow) -> Result<()> {
     ui.window().set_minimized(false);
     ui.show()?;
+    ui.global::<crate::NoticeBackdrop>().invoke_invalidate();
     #[cfg(windows)]
     ui.window()
         .with_winit_window(|window| window.set_content_protected(false));

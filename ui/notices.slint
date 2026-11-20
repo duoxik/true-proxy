@@ -29,6 +29,41 @@ component NoticeSurface inherits Rectangle {
     in property <bool> warning;
     // Sample at the resting position throughout the card's entrance animation.
     in property <length> offset-y;
+    private property <bool> needs-blur: NoticeBackdrop.blur > 0 && NoticeBackdrop.transparency > 0;
+    private property <bool> prepared;
+    // A skipped capture in the tray is only a fallback for that revision. On
+    // restore, prepare the missing image before drawing the notification.
+    private property <bool> has-backdrop: blurred.source.width > 0;
+    out property <bool> ready: !root.needs-blur || (root.prepared
+        && (root.has-backdrop || root.sampled.revision == NoticeBackdrop.revision));
+    private property <BackdropRegion> region: {
+        x: root.absolute-position.x, y: root.absolute-position.y - root.offset-y,
+        width: root.width, height: root.height, dark: Theme.dark,
+        revision: NoticeBackdrop.revision, blur: NoticeBackdrop.blur
+    };
+    private property <BackdropRegion> sampled;
+    changed active => { if !root.active { root.prepared = false; } }
+    private property <bool> keep-image: root.visible && root.needs-blur;
+    changed keep-image => {
+        if !root.keep-image {
+            root.prepared = false;
+            blurred.source = @image-url("");
+        }
+    }
+    // Capture outside painting, as soon as layout has supplied the entry region.
+    // Later background changes can share a debounced capture of the visible card.
+    Timer {
+        running: root.active && root.keep-image && root.width > 0px && root.height > 0px
+            && (!root.prepared || root.sampled != root.region);
+        interval: root.prepared && root.has-backdrop ? 70ms : 0ms;
+        triggered => {
+            root.sampled = root.region;
+            blurred.source = NoticeBackdrop.sample(root.sampled.x, root.sampled.y,
+                root.sampled.width, root.sampled.height, Theme.radius-medium);
+            // A backend without snapshot support still displays the translucent tint.
+            root.prepared = true;
+        }
+    }
     accessible-role: none;
     // The software backend has no blurred box shadows. Two faint outer
     // edges lift the panel without tinting the sampled area underneath.
@@ -42,25 +77,11 @@ component NoticeSurface inherits Rectangle {
         border-radius: Theme.radius-medium + 1px; border-width: 1px;
         border-color: Theme.dark ? #00000055 : #0f172a10;
     }
-    if NoticeBackdrop.blur > 0 && NoticeBackdrop.transparency > 0: blurred := Image {
+    blurred := Image {
         width: parent.width;
         height: parent.height;
+        visible: root.needs-blur;
         image-fit: fill;
-        private property <BackdropRegion> region: {
-            x: root.absolute-position.x, y: root.absolute-position.y - root.offset-y,
-            width: root.width, height: root.height, dark: Theme.dark,
-            revision: NoticeBackdrop.revision, blur: NoticeBackdrop.blur
-        };
-        private property <BackdropRegion> sampled;
-        Timer {
-            running: root.active && root.width > 0px && root.height > 0px && blurred.sampled != blurred.region;
-            interval: 70ms;
-            triggered => {
-                blurred.sampled = blurred.region;
-                blurred.source = NoticeBackdrop.sample(blurred.sampled.x, blurred.sampled.y,
-                    blurred.sampled.width, blurred.sampled.height, Theme.radius-medium);
-            }
-        }
     }
     Rectangle {
         border-radius: Theme.radius-medium;
@@ -184,7 +205,7 @@ export component FloatingNotice inherits Rectangle {
     callback hidden;
 
     private property <bool> show-card: root.in-scope && root.active && !root.collapsed;
-    private property <length> card-offset: root.show-card || Theme.reduce-motion ? 0px : 12px;
+    private property <length> card-offset: (root.show-card && card.ready) || Theme.reduce-motion ? 0px : 12px;
     animate card-offset { duration: Theme.reduce-motion ? 0ms : 200ms; easing: ease-out; }
     height: root.show-card ? card.height + 8px : 0px;
 
@@ -210,19 +231,22 @@ export component FloatingNotice inherits Rectangle {
         root.hidden();
     }
 
-    card := Rectangle {
+    card := NoticeSurface {
+        active: root.show-card;
+        warning: root.warning;
+        offset-y: root.card-offset;
         width: parent.width;
         height: max(60px, card-layout.preferred-height);
         x: 0px;
         y: parent.height - self.height + root.card-offset;
-        opacity: root.show-card ? 1 : 0;
+        private property <float> reveal: root.show-card && self.ready ? 1 : 0;
+        animate reveal { duration: Theme.reduce-motion ? 0ms : 200ms; easing: ease-out; }
+        opacity: root.show-card && !self.ready ? 0 : self.reveal;
         visible: root.in-scope && (root.show-card || self.opacity > 0);
-        animate opacity { duration: Theme.reduce-motion ? 0ms : 200ms; easing: ease-out; }
         accessible-role: groupbox;
         accessible-label: root.title == "" ? root.message : root.title + (root.message == "" ? "" : ". " + root.message);
         accessible-live-region: polite;
 
-        if card.visible: NoticeSurface { active: root.show-card; warning: root.warning; offset-y: root.card-offset; }
         TouchArea { enabled: root.show-card; }
         card-keys := FocusScope {
             width: parent.width;
@@ -388,7 +412,7 @@ export component NoticeCenter inherits ActionButton {
     }
 }
 
-export component NoticePanel inherits Rectangle {
+export component NoticePanel inherits NoticeSurface {
     in property <[NoticeEntry]> app-entries;
     in property <[NoticeEntry]> module-entries;
     in property <bool> has-hidden;
@@ -398,12 +422,11 @@ export component NoticePanel inherits Rectangle {
     callback close;
     width: 420px;
     height: min(414px, 53px + entries.preferred-height);
-    opacity: NoticeBackdrop.capturing ? 0 : 1;
+    opacity: NoticeBackdrop.capturing || !root.ready ? 0 : 1;
     accessible-role: groupbox;
     accessible-label: "Hidden notifications";
     init => { panel-keys.focus(); }
 
-    NoticeSurface { }
     TouchArea {}
     panel-keys := FocusScope {
         key-pressed(event) => {

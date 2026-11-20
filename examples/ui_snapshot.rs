@@ -9,7 +9,7 @@ use slint::{
     ComponentHandle, ModelRc, PhysicalSize, VecModel, Window, WindowSize,
     platform::{
         Platform, PlatformError, Renderer, WindowAdapter, WindowEvent,
-        software_renderer::{PremultipliedRgbaColor, RepaintBufferType, SoftwareRenderer},
+        software_renderer::{RepaintBufferType, SoftwareRenderer},
     },
 };
 use std::{
@@ -18,7 +18,7 @@ use std::{
     io::BufWriter,
     path::{Path, PathBuf},
     rc::{Rc, Weak},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 slint::include_modules!();
@@ -30,17 +30,24 @@ mod notice_backdrop;
 struct MemoryWindow {
     window: Window,
     renderer: SoftwareRenderer,
+    clock: Rc<Cell<Duration>>,
     size: Cell<PhysicalSize>,
     visible: Cell<bool>,
 }
 impl MemoryWindow {
-    fn new() -> Rc<Self> {
+    fn new(clock: Rc<Cell<Duration>>) -> Rc<Self> {
         Rc::new_cyclic(|weak: &Weak<Self>| Self {
             window: Window::new(weak.clone()),
             renderer: SoftwareRenderer::new_with_repaint_buffer_type(RepaintBufferType::NewBuffer),
+            clock,
             size: Cell::new(PhysicalSize::new(1240, 780)),
             visible: Cell::new(false),
         })
+    }
+    fn advance(&self, millis: u64) {
+        self.clock
+            .set(self.clock.get() + Duration::from_millis(millis));
+        slint::platform::update_timers_and_animations();
     }
 }
 impl WindowAdapter for MemoryWindow {
@@ -68,16 +75,16 @@ impl WindowAdapter for MemoryWindow {
 
 struct MemoryPlatform {
     windows: Rc<RefCell<Vec<Rc<MemoryWindow>>>>,
-    started: Instant,
+    clock: Rc<Cell<Duration>>,
 }
 impl Platform for MemoryPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let adapter = MemoryWindow::new();
+        let adapter = MemoryWindow::new(self.clock.clone());
         self.windows.borrow_mut().push(adapter.clone());
         Ok(adapter)
     }
     fn duration_since_start(&self) -> Duration {
-        self.started.elapsed()
+        self.clock.get()
     }
 }
 
@@ -87,36 +94,23 @@ fn model<T: Clone + 'static>(rows: Vec<T>) -> ModelRc<T> {
 
 fn save(adapter: &MemoryWindow, destination: &Path) -> Result<()> {
     ensure!(adapter.visible.get(), "Memory window was not made visible");
-    slint::platform::update_timers_and_animations();
-    let size = adapter.size.get();
-    let mut pixels =
-        vec![PremultipliedRgbaColor::default(); size.width as usize * size.height as usize];
-    let _ = adapter.renderer.render(&mut pixels, size.width as usize);
-    let mut rgba = Vec::with_capacity(pixels.len() * 4);
-    for pixel in pixels {
-        let unpremultiply = |value: u8| {
-            if pixel.alpha == 0 {
-                0
-            } else {
-                (u16::from(value) * 255 / u16::from(pixel.alpha)).min(255) as u8
-            }
-        };
-        rgba.extend_from_slice(&[
-            unpremultiply(pixel.red),
-            unpremultiply(pixel.green),
-            unpremultiply(pixel.blue),
-            pixel.alpha,
-        ]);
-    }
+    adapter.advance(16);
+    write_png(destination, &adapter.window.take_snapshot()?)
+}
+
+fn write_png(
+    destination: &Path,
+    pixels: &slint::SharedPixelBuffer<slint::Rgba8Pixel>,
+) -> Result<()> {
     let mut encoder = png::Encoder::new(
         BufWriter::new(File::create(destination)?),
-        size.width,
-        size.height,
+        pixels.width(),
+        pixels.height(),
     );
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header()?;
-    writer.write_image_data(&rgba)?;
+    writer.write_image_data(pixels.as_bytes())?;
     writer.finish()?;
     Ok(())
 }
@@ -124,11 +118,96 @@ fn save(adapter: &MemoryWindow, destination: &Path) -> Result<()> {
 fn save_settled_notice(adapter: &MemoryWindow, destination: &Path) -> Result<()> {
     // Render through the entrance or exit animation and debounced backdrop capture.
     for _ in 0..3 {
-        slint::platform::update_timers_and_animations();
+        adapter.advance(100);
         adapter.window.take_snapshot()?;
-        std::thread::sleep(Duration::from_millis(100));
     }
     save(adapter, destination)
+}
+
+fn check_first_notice_frame(
+    ui: &MainWindow,
+    adapter: &MemoryWindow,
+    destination: &Path,
+) -> Result<()> {
+    let backdrop = ui.global::<NoticeBackdrop>();
+    let background = || {
+        backdrop.set_capturing(true);
+        let frame = adapter.window.take_snapshot();
+        backdrop.set_capturing(false);
+        frame
+    };
+    let saved = (
+        ui.get_reduce_motion(),
+        ui.get_notice_transparency(),
+        ui.get_notice_blur(),
+    );
+    ui.set_reduce_motion(true);
+    ui.set_notice_transparency(75);
+    let mut sharp = None::<slint::SharedPixelBuffer<slint::Rgba8Pixel>>;
+    for (blur, fallback) in [(0, false), (9, false), (9, true)] {
+        if fallback {
+            backdrop.on_sample(|_, _, _, _, _| slint::Image::default());
+        }
+        ui.set_notice_blur(blur);
+        adapter.advance(250);
+        adapter.window.take_snapshot()?;
+        ui.set_routing_pending(true);
+        let mut first = None;
+        for step in [0, 16, 16] {
+            adapter.advance(step);
+            let frame = adapter.window.take_snapshot()?;
+            if frame.as_slice() != background()?.as_slice() {
+                first = Some(frame);
+                break;
+            }
+            ensure!(blur > 0, "Without blur the toast should appear immediately");
+        }
+        let first = first.context("Toast was still hidden after two frames")?;
+        adapter.advance(250);
+        let settled = adapter.window.take_snapshot()?;
+        let clean = background()?;
+        let mut changed_pixels = 0;
+        let mut differs_from_sharp = false;
+        for (index, pixel) in settled.as_slice().iter().enumerate() {
+            if pixel == &clean.as_slice()[index] {
+                continue;
+            }
+            changed_pixels += 1;
+            ensure!(
+                pixel == &first.as_slice()[index],
+                "Toast changed after its first visible frame at pixel {index}, blur {blur}, fallback {fallback}"
+            );
+            if let Some(sharp) = &sharp {
+                differs_from_sharp |= pixel != &sharp.as_slice()[index];
+            }
+        }
+        ensure!(
+            changed_pixels > 0,
+            "Expected visible toast in settled frame"
+        );
+        if blur == 0 {
+            sharp = Some(settled);
+        } else if fallback {
+            ensure!(
+                !differs_from_sharp,
+                "Unavailable sample should use the translucent tint"
+            );
+        } else {
+            ensure!(
+                differs_from_sharp,
+                "The fixture must show background detail affected by the actual blur"
+            );
+            write_png(&destination.join("dashboard-toast-first-frame.png"), &first)?;
+        }
+        ui.set_routing_pending(false);
+        adapter.advance(250);
+        adapter.window.take_snapshot()?;
+    }
+    notice_backdrop::wire(ui);
+    ui.set_notice_blur(saved.2);
+    ui.set_notice_transparency(saved.1);
+    ui.set_reduce_motion(saved.0);
+    Ok(())
 }
 
 fn filter(key: &str, label: &str, checked: bool) -> ConnectionFilterOption {
@@ -148,7 +227,7 @@ fn main() -> Result<()> {
     let windows = Rc::new(RefCell::new(Vec::new()));
     slint::platform::set_platform(Box::new(MemoryPlatform {
         windows: windows.clone(),
-        started: Instant::now(),
+        clock: Rc::new(Cell::new(Duration::ZERO)),
     }))
     .map_err(|error| anyhow::anyhow!("Memory platform: {error}"))?;
 
@@ -247,6 +326,7 @@ fn main() -> Result<()> {
     ui.set_enabled_rule_count(1);
     ui.window().set_size(PhysicalSize::new(1240, 780));
     ui.show()?; // Only MemoryWindow::set_visible; no OS window exists.
+    check_first_notice_frame(&ui, &main_adapter, &destination)?;
     for (page, name) in [(0, "home"), (1, "routes"), (2, "proxies"), (4, "settings")] {
         ui.set_page(page);
         save(&main_adapter, &destination.join(format!("{name}.png")))?;
@@ -515,7 +595,7 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
     xray.set_default_port_label("Default · 2081".into());
     xray.set_port_labels(model(vec![
         "Default · 2081".into(),
-        "US · 2082".into(),
+        "Subscription · 12082".into(),
         "Games · 2083".into(),
     ]));
     xray.set_next_free_port("2084".into());
@@ -531,8 +611,8 @@ fn xray_previews(ui: &MainWindow, adapter: &MemoryWindow, destination: &Path) ->
         },
         XrayPortRow {
             id: "us".into(),
-            name: "US".into(),
-            number: "2082".into(),
+            name: "Subscription".into(),
+            number: "12082".into(),
             used_count: 1,
             status: "Listening".into(),
             ..Default::default()

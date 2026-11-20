@@ -239,7 +239,33 @@ component PortField inherits Rectangle {
     }
 }
 
+component ProfilePortLabel inherits Rectangle {
+    in property <XrayPortRow> port;
+    in property <color> ink: Theme.text;
+    in property <color> number-ink: Theme.secondary;
+    in property <bool> emphasize-name;
+    min-width: 0px; horizontal-stretch: 1; height: 26px;
+    port-name := Text {
+        text: root.port.name; color: root.ink; font-size: 13px;
+        font-weight: root.emphasize-name ? 600 : 400;
+        x: 0px; horizontal-alignment: left;
+        width: min(self.preferred-width, max(0px, parent.width - port-number.width - 4px));
+        height: self.preferred-height; y: (parent.height - self.height) / 2;
+        overflow: elide; accessible-role: none;
+    }
+    port-number := NumericText {
+        text: root.port.number == "" ? "" : "· " + root.port.number;
+        color: root.number-ink; font-size: 13px;
+        x: port-name.x + port-name.width + 4px; width: self.preferred-width;
+        horizontal-alignment: left; height: self.preferred-height;
+        // Segoe UI and Consolas have different ascents at the same font size.
+        y: port-name.y + port-name.font-metrics.ascent - self.font-metrics.ascent;
+        accessible-role: none;
+    }
+}
+
 component ProfilePortChoice inherits Rectangle {
+    in property <XrayPortRow> port;
     in property <string> label;
     in property <bool> selected;
     callback choose;
@@ -251,10 +277,7 @@ component ProfilePortChoice inherits Rectangle {
     accessible-action-default => { root.choose(); }
     HorizontalLayout {
         padding-left: 10px; padding-right: 9px; spacing: 8px; cross-axis-alignment: center;
-        NumericText {
-            text: root.label; color: Theme.text; font-size: 13px;
-            min-width: 0px; horizontal-stretch: 1; overflow: elide; accessible-role: none;
-        }
+        ProfilePortLabel { port: root.port; }
         Rectangle {
             width: 15px; height: 15px;
             if root.selected: UiIcon { name: "check"; width: 15px; height: 15px; ink: Theme.text; }
@@ -276,7 +299,7 @@ component ProfilePortSelector inherits Rectangle {
     private property <length> preferred-menu-height: min(6, XrayModule.ports.length) * root.row-height + 10px;
     private property <bool> opens-above: root.preferred-menu-height > root.space-below && root.space-above > root.space-below;
 
-    width: 170px; height: 36px;
+    width: 240px; height: 36px;
     border-radius: Theme.radius-small; border-width: 1px;
     border-color: root.enabled && (menu.is-open || touch.has-hover) ? Theme.muted
         : root.enabled && Theme.dark ? Theme.switch-off : Theme.border;
@@ -292,17 +315,9 @@ component ProfilePortSelector inherits Rectangle {
 
     HorizontalLayout {
         padding-left: 12px; padding-right: 10px; spacing: 6px; cross-axis-alignment: center;
-        HorizontalLayout {
-            min-width: 0px; horizontal-stretch: 1; alignment: start; spacing: 4px;
-            Text {
-                text: root.port.name; color: root.enabled ? Theme.text : Theme.disabled-text;
-                font-size: 13px; font-weight: root.enabled && !root.port.is-default ? 600 : 400;
-                min-width: 0px; overflow: elide; accessible-role: none;
-            }
-            NumericText {
-                text: root.port.number == "" ? "" : "· " + root.port.number;
-                color: root.detail-ink; font-size: 13px; accessible-role: none;
-            }
+        ProfilePortLabel {
+            port: root.port; ink: root.enabled ? Theme.text : Theme.disabled-text;
+            number-ink: root.detail-ink; emphasize-name: root.enabled && !root.port.is-default;
         }
         UiIcon { name: menu.is-open ? "chevron-up" : "chevron-down"; width: 15px; height: 15px; ink: root.detail-ink; }
     }
@@ -312,7 +327,7 @@ component ProfilePortSelector inherits Rectangle {
     }
     menu := PopupWindow {
         x: 0px; y: root.opens-above ? -self.height - 5px : root.height + 5px;
-        width: 208px;
+        width: root.width;
         height: min(root.preferred-menu-height, root.opens-above ? root.space-above : root.space-below);
         close-policy: close-on-click-outside;
         SurfaceCard {
@@ -327,13 +342,13 @@ component ProfilePortSelector inherits Rectangle {
                 VerticalLayout {
                     alignment: start;
                     padding-right: XrayModule.ports.length * root.row-height > menu.height - 10px ? Theme.scroll-gutter : 0px;
-                    for port[index] in XrayModule.ports: ProfilePortChoice {
-                        label: XrayModule.port-labels[index]; selected: index == root.saved-index;
+                    for option[index] in XrayModule.ports: ProfilePortChoice {
+                        port: option; label: XrayModule.port-labels[index]; selected: index == root.saved-index;
                         height: root.row-height;
                         choose => {
                             // Closing the popup releases the row's references to the selector.
                             if root.enabled && index != root.saved-index {
-                                XrayModule.assign-profile-port(root.profile.id, port.id);
+                                XrayModule.assign-profile-port(root.profile.id, option.id);
                             }
                             menu.close();
                         }
