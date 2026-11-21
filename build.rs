@@ -17,6 +17,7 @@ fn main() {
                 "Missing {path}. Run scripts/fetch-driver.ps1 before building."
             );
         }
+        println!("cargo:rerun-if-changed=assets/icon.svg");
         println!("cargo:rerun-if-changed=src/branding.rs");
         let icon =
             std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("true-proxy.ico");

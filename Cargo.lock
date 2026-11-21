@@ -4473,7 +4473,7 @@ dependencies = [
 
 [[package]]
 name = "true-proxy"
-version = "0.12.13"
+version = "0.12.14"
 dependencies = [
  "anyhow",
  "base64",
@@ -4483,6 +4483,7 @@ dependencies = [
  "libloading 0.9.0",
  "percent-encoding",
  "png",
+ "resvg",
  "schannel",
  "semver",
  "serde",
